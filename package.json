@@ -1,0 +1,21 @@
+{
+  "name": "anty-browser",
+  "version": "1.0.0",
+  "description": "Anti-detect browser with fingerprint spoofing and profile isolation",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "rebuild": "electron-rebuild -f -w better-sqlite3"
+  },
+  "keywords": ["antidetect", "browser", "fingerprint"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "playwright-core": "^1.49.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-rebuild": "^3.2.9"
+  }
+}
