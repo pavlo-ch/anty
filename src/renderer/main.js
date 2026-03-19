@@ -13,6 +13,7 @@ let mandatoryUpdateRequired = false;
 document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   window.api.onUpdateStatus(handleUpdateStatus);
+  await renderAppVersion();
   
   window.api.onProfileStatus((data) => {
     if (data.status === 'running') {
@@ -43,6 +44,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderProfilesList();
   await refreshAccountPage();
 });
+
+async function renderAppVersion() {
+  try {
+    const version = await window.api.getAppVersion();
+    if (!version) return;
+    const normalized = String(version).startsWith('v') ? String(version) : `v${version}`;
+    const sidebarVersion = document.getElementById('sidebar-version');
+    if (sidebarVersion) sidebarVersion.textContent = normalized;
+    const settingsVersion = document.getElementById('settings-version');
+    if (settingsVersion) settingsVersion.textContent = normalized;
+  } catch (err) {
+    console.error('Failed to load app version:', err);
+  }
+}
 
 async function loadData() {
   try {

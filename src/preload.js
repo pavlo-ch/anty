@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  // App
+  getAppVersion: () => ipcRenderer.invoke('app:version'),
+
   // Profiles
   getProfiles: () => ipcRenderer.invoke('profile:list'),
   createProfile: (data) => ipcRenderer.invoke('profile:create', data),

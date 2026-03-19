@@ -155,6 +155,18 @@ html, body {
   flex-direction: column;
   gap: 4px;
   margin-top: auto;
+  align-items: center;
+  width: 100%;
+}
+
+.sidebar-version {
+  margin-top: 8px;
+  width: 100%;
+  padding: 0 4px;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  color: var(--text-muted);
 }
 
 .nav-btn {
@@ -1032,6 +1044,12 @@ html, body {
 .placeholder-page p {
   font-size: 13px;
   color: var(--text-muted);
+}
+
+.settings-version {
+  margin-top: 2px;
+  font-size: 12px !important;
+  color: var(--text-secondary) !important;
 }
 
 /* ===== ACCOUNT PAGE ===== */

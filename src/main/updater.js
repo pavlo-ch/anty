@@ -91,7 +91,7 @@ async function logToPlatform(level, event, payload = {}) {
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers.Authorization = `Bearer ${token}`;
 
-    await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -105,6 +105,9 @@ async function logToPlatform(level, event, payload = {}) {
         device: getDeviceInfo()
       })
     });
+    if (!response.ok) {
+      logToFile('warn', 'platform_log_failed', { status: response.status, event });
+    }
   } catch (err) {
     logToFile('warn', 'platform_log_failed', { message: err.message });
   }

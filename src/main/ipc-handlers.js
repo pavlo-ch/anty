@@ -1,4 +1,4 @@
-const { ipcMain, BrowserWindow } = require('electron');
+const { app, ipcMain, BrowserWindow } = require('electron');
 const db = require('./database');
 const launcher = require('./launcher');
 const auth = require('./auth');
@@ -10,6 +10,8 @@ function requireLoggedIn() {
 }
 
 function registerIpcHandlers() {
+  ipcMain.handle('app:version', () => app.getVersion());
+
   // ---- PROFILES ----
   ipcMain.handle('profile:list', () => {
     requireLoggedIn();
