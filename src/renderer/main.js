@@ -50,8 +50,8 @@ async function renderAppVersion() {
     const version = await window.api.getAppVersion();
     if (!version) return;
     const normalized = String(version).startsWith('v') ? String(version) : `v${version}`;
-    const sidebarVersion = document.getElementById('sidebar-version');
-    if (sidebarVersion) sidebarVersion.textContent = normalized;
+    const navSettingsVersion = document.getElementById('nav-settings-version');
+    if (navSettingsVersion) navSettingsVersion.textContent = normalized;
     const settingsVersion = document.getElementById('settings-version');
     if (settingsVersion) settingsVersion.textContent = normalized;
   } catch (err) {
