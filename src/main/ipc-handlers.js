@@ -1,6 +1,7 @@
 const { ipcMain, BrowserWindow } = require('electron');
 const db = require('./database');
 const launcher = require('./launcher');
+const auth = require('./auth');
 
 function registerIpcHandlers() {
   // ---- PROFILES ----
@@ -32,6 +33,14 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('browser:stop', (_, id) => launcher.stopProfile(id));
   ipcMain.handle('browser:running', () => launcher.getRunningProfiles());
+
+  // ---- ACCOUNT / PLATFORM ----
+  ipcMain.handle('account:state', () => auth.getAccountState());
+  ipcMain.handle('account:events', (_, limit) => auth.listAccountEvents(limit));
+  ipcMain.handle('account:login', (_, payload) => auth.login(payload || {}));
+  ipcMain.handle('account:logout', (_, payload) => auth.logout(payload || {}));
+  ipcMain.handle('platform:config:get', () => auth.getPlatformConfig());
+  ipcMain.handle('platform:config:set', (_, config) => auth.setPlatformConfig(config || {}));
 }
 
 module.exports = { registerIpcHandlers };

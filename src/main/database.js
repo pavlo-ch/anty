@@ -74,6 +74,40 @@ function initDatabase() {
       FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE,
       FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT DEFAULT '',
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS account_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      email TEXT DEFAULT '',
+      display_name TEXT DEFAULT '',
+      platform_user_id TEXT DEFAULT '',
+      access_token TEXT DEFAULT '',
+      refresh_token TEXT DEFAULT '',
+      token_expires_at TEXT DEFAULT '',
+      password_encrypted TEXT DEFAULT '',
+      remember_me INTEGER DEFAULT 0,
+      is_logged_in INTEGER DEFAULT 0,
+      last_login_at TEXT DEFAULT '',
+      last_logout_at TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS account_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'info',
+      account_email TEXT DEFAULT '',
+      account_user_id TEXT DEFAULT '',
+      message TEXT DEFAULT '',
+      meta TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Seed defaults if empty
@@ -85,6 +119,10 @@ function initDatabase() {
   if (groupCount.cnt === 0) {
     db.prepare('INSERT INTO groups (name) VALUES (?)').run('Default Group');
   }
+  db.prepare(`
+    INSERT OR IGNORE INTO account_state (id)
+    VALUES (1)
+  `).run();
 
   console.log('[DB] Database initialized successfully');
   return db;
@@ -217,10 +255,28 @@ function createGroup(name) {
   return getDb().prepare('SELECT * FROM groups WHERE id = ?').get(result.lastInsertRowid);
 }
 
+// ---- APP SETTINGS ----
+function getSetting(key) {
+  const row = getDb().prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
+  return row ? row.value : '';
+}
+
+function setSetting(key, value) {
+  getDb().prepare(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = datetime('now')
+  `).run(key, value ?? '');
+  return getSetting(key);
+}
+
 module.exports = {
   initDatabase, getDb,
   listProfiles, getProfile, createProfile, updateProfile, deleteProfile,
   listProxies, createProxy, updateProxy, deleteProxy,
   listFolders, createFolder,
-  listGroups, createGroup
+  listGroups, createGroup,
+  getSetting, setSetting
 };

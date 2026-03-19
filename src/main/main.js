@@ -1,9 +1,11 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeImage } = require('electron');
 const path = require('path');
 const { initDatabase } = require('./database');
 const { registerIpcHandlers } = require('./ipc-handlers');
+const { registerUpdater } = require('./updater');
 
 let mainWindow;
+const appIconPath = path.join(__dirname, '..', 'renderer', 'assets', 'desktop-icon-mac.png');
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -14,6 +16,7 @@ function createWindow() {
     frame: false,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0a1a',
+    icon: appIconPath,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,
@@ -21,6 +24,7 @@ function createWindow() {
     }
   });
 
+  registerUpdater(mainWindow);
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   // Window controls via IPC
@@ -36,6 +40,13 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === 'darwin' && app.dock) {
+    const dockIcon = nativeImage.createFromPath(appIconPath);
+    if (!dockIcon.isEmpty()) {
+      app.dock.setIcon(dockIcon);
+    }
+  }
+
   initDatabase();
   registerIpcHandlers();
   createWindow();
