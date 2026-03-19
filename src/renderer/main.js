@@ -668,32 +668,16 @@ async function loadAccountEventsUI() {
 
 function renderAccountState(state) {
   const statusBadge = document.getElementById('account-status-badge');
-  const emailEl = document.getElementById('account-email');
-  const passwordEl = document.getElementById('account-password');
-  const rememberEl = document.getElementById('account-remember');
   const metaEl = document.getElementById('account-meta');
-  if (!statusBadge || !emailEl || !passwordEl || !rememberEl || !metaEl) return;
+  if (!statusBadge || !metaEl) return;
 
   const isLoggedIn = Boolean(state?.isLoggedIn);
   statusBadge.textContent = isLoggedIn ? 'Logged in' : 'Logged out';
   statusBadge.classList.toggle('logged-in', isLoggedIn);
 
-  if (document.activeElement !== emailEl) {
-    emailEl.value = state?.email || '';
-  }
-  if (document.activeElement !== passwordEl) {
-    passwordEl.value = state?.hasSavedPassword ? (state?.savedPassword || '') : '';
-  }
-  rememberEl.checked = Boolean(state?.rememberMe);
-
-  syncModalCredentials({
-    email: state?.email || '',
-    password: state?.hasSavedPassword ? (state?.savedPassword || '') : '',
-    rememberMe: Boolean(state?.rememberMe)
-  });
-
   const metaLines = [];
   if (state?.displayName) metaLines.push(`Name: ${escapeHtml(state.displayName)}`);
+  if (state?.email) metaLines.push(`Email: ${escapeHtml(state.email)}`);
   if (state?.platformUserId) metaLines.push(`User ID: ${escapeHtml(state.platformUserId)}`);
   if (state?.lastLoginAt) metaLines.push(`Last login: ${new Date(state.lastLoginAt).toLocaleString('uk-UA')}`);
   if (state?.lastLogoutAt) metaLines.push(`Last logout: ${new Date(state.lastLogoutAt).toLocaleString('uk-UA')}`);
@@ -727,18 +711,9 @@ function renderAccountEvents(events) {
 }
 
 async function loginAccount() {
-  const email = document.getElementById('account-email')?.value?.trim() || '';
-  const password = document.getElementById('account-password')?.value || '';
-  const rememberMe = document.getElementById('account-remember')?.checked !== false;
-
-  if (!email || !password) {
-    showToast('Enter email and password', 'error');
-    return;
-  }
-
   setAccountBusy(true);
   try {
-    accountState = await window.api.loginAccount({ email, password, rememberMe });
+    accountState = await window.api.loginAccount({ mode: 'web' });
     renderAccountState(accountState);
     await loadAccountEventsUI();
     await loadData();
@@ -754,18 +729,9 @@ async function loginAccount() {
 }
 
 async function loginFromModal() {
-  const email = document.getElementById('modal-account-email')?.value?.trim() || '';
-  const password = document.getElementById('modal-account-password')?.value || '';
-  const rememberMe = document.getElementById('modal-account-remember')?.checked !== false;
-
-  if (!email || !password) {
-    showToast('Enter email and password', 'error');
-    return;
-  }
-
   setAccountBusy(true);
   try {
-    accountState = await window.api.loginAccount({ email, password, rememberMe });
+    accountState = await window.api.loginAccount({ mode: 'web' });
     renderAccountState(accountState);
     await loadAccountEventsUI();
     await loadData();
@@ -813,16 +779,6 @@ function hideLoginModal() {
   if (modal) modal.classList.add('hidden');
 }
 
-function syncModalCredentials(data) {
-  const emailEl = document.getElementById('modal-account-email');
-  const passwordEl = document.getElementById('modal-account-password');
-  const rememberEl = document.getElementById('modal-account-remember');
-  if (!emailEl || !passwordEl || !rememberEl) return;
-  if (document.activeElement !== emailEl) emailEl.value = data.email || '';
-  if (document.activeElement !== passwordEl) passwordEl.value = data.password || '';
-  rememberEl.checked = data.rememberMe !== false;
-}
-
 async function maybeShowLoginModal() {
   if (mandatoryUpdateRequired) {
     hideLoginModal();
@@ -835,12 +791,6 @@ async function maybeShowLoginModal() {
       hideLoginModal();
       return true;
     }
-
-    syncModalCredentials({
-      email: state?.email || '',
-      password: state?.hasSavedPassword ? (state?.savedPassword || '') : '',
-      rememberMe: Boolean(state?.rememberMe)
-    });
     showLoginModal();
     return false;
   } catch (err) {

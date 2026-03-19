@@ -1,4 +1,4 @@
-const { app, safeStorage } = require('electron');
+const { app, safeStorage, shell } = require('electron');
 const db = require('./database');
 const fs = require('fs');
 const path = require('path');
@@ -26,6 +26,8 @@ function loadStaticPlatformConfig() {
       const parsed = JSON.parse(raw);
       staticPlatformConfigCache = {
         authUrl: String(parsed?.authUrl || '').trim(),
+        authStartUrl: String(parsed?.authStartUrl || '').trim(),
+        authPollUrl: String(parsed?.authPollUrl || '').trim(),
         refreshUrl: String(parsed?.refreshUrl || '').trim(),
         logoutUrl: String(parsed?.logoutUrl || '').trim(),
         logUrl: String(parsed?.logUrl || '').trim()
@@ -36,7 +38,7 @@ function loadStaticPlatformConfig() {
     }
   }
 
-  staticPlatformConfigCache = { authUrl: '', refreshUrl: '', logoutUrl: '', logUrl: '' };
+  staticPlatformConfigCache = { authUrl: '', authStartUrl: '', authPollUrl: '', refreshUrl: '', logoutUrl: '', logUrl: '' };
   return staticPlatformConfigCache;
 }
 
@@ -48,6 +50,28 @@ function getPlatformAuthUrl() {
 function getPlatformLogUrl() {
   const staticConfig = loadStaticPlatformConfig();
   return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || staticConfig.logUrl || DEFAULT_PLATFORM_LOG_URL || '').trim();
+}
+
+function getPlatformAuthStartUrl() {
+  const staticConfig = loadStaticPlatformConfig();
+  const configured = (
+    db.getSetting('platform_auth_start_url')
+    || process.env.ANTY_PLATFORM_AUTH_START_URL
+    || staticConfig.authStartUrl
+  ).trim();
+  if (configured) return configured;
+  return deriveSiblingUrl(getPlatformAuthUrl(), 'auth/start');
+}
+
+function getPlatformAuthPollUrl() {
+  const staticConfig = loadStaticPlatformConfig();
+  const configured = (
+    db.getSetting('platform_auth_poll_url')
+    || process.env.ANTY_PLATFORM_AUTH_POLL_URL
+    || staticConfig.authPollUrl
+  ).trim();
+  if (configured) return configured;
+  return deriveSiblingUrl(getPlatformAuthUrl(), 'auth/poll');
 }
 
 function deriveSiblingUrl(baseUrl, targetSegment) {
@@ -299,6 +323,10 @@ function parseJsonSafe(text) {
   }
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function getDecryptedTokensFromRow(row) {
   return {
     accessToken: decryptSecret(row?.access_token || ''),
@@ -403,11 +431,17 @@ function listAccountEvents(limit = 50) {
 
 function getPlatformConfig() {
   const authUrl = getPlatformAuthUrl();
+  const authStartUrl = getPlatformAuthStartUrl();
+  const authPollUrl = getPlatformAuthPollUrl();
   const logUrl = getPlatformLogUrl();
   return {
     authUrl,
+    authStartUrl,
+    authPollUrl,
     logUrl,
     authUrlConfigured: Boolean(authUrl),
+    authStartUrlConfigured: Boolean(authStartUrl),
+    authPollUrlConfigured: Boolean(authPollUrl),
     logUrlConfigured: Boolean(logUrl)
   };
 }
@@ -415,6 +449,12 @@ function getPlatformConfig() {
 function setPlatformConfig(config = {}) {
   if (config.authUrl !== undefined) {
     db.setSetting('platform_auth_url', String(config.authUrl || '').trim());
+  }
+  if (config.authStartUrl !== undefined) {
+    db.setSetting('platform_auth_start_url', String(config.authStartUrl || '').trim());
+  }
+  if (config.authPollUrl !== undefined) {
+    db.setSetting('platform_auth_poll_url', String(config.authPollUrl || '').trim());
   }
   if (config.logUrl !== undefined) {
     db.setSetting('platform_log_url', String(config.logUrl || '').trim());
@@ -429,7 +469,28 @@ function setPlatformConfig(config = {}) {
   return getPlatformConfig();
 }
 
-async function login(payload = {}) {
+function saveLoggedInState(normalized, options = {}) {
+  const email = String(options.email || normalized.email || '').trim();
+  const password = String(options.password || '');
+  const rememberMe = options.rememberMe !== false;
+  updateState({
+    email: normalized.email || email,
+    display_name: normalized.displayName,
+    platform_user_id: normalized.userId,
+    access_token: encryptSecret(normalized.accessToken),
+    refresh_token: encryptSecret(normalized.refreshToken),
+    token_expires_at: normalized.tokenExpiresAt,
+    password_encrypted: rememberMe && password ? encryptSecret(password) : '',
+    remember_me: rememberMe ? 1 : 0,
+    is_logged_in: 1,
+    last_login_at: new Date().toISOString()
+  });
+
+  const state = getAccountState();
+  return state;
+}
+
+async function loginWithCredentials(payload = {}) {
   const email = String(payload.email || '').trim();
   const password = String(payload.password || '');
   const rememberMe = payload.rememberMe !== false;
@@ -446,8 +507,8 @@ async function login(payload = {}) {
     throw new Error(msg);
   }
 
-  insertAccountEvent('login_attempt', 'info', 'Login started', { email });
-  void sendPlatformLog('login_attempt', 'info', 'Login started', { email });
+  insertAccountEvent('login_attempt', 'info', 'Login started', { email, mode: 'credentials' });
+  void sendPlatformLog('login_attempt', 'info', 'Login started', { email, mode: 'credentials' });
   const device = getDeviceInfo();
 
   const response = await fetch(authUrl, {
@@ -463,45 +524,179 @@ async function login(payload = {}) {
   });
 
   const body = parseJsonSafe(await response.text());
-
   if (!response.ok) {
     const errorMessage = parseErrorMessage(response.status, body);
-    insertAccountEvent('login_failed', 'error', errorMessage, { email, status: response.status });
-    void sendPlatformLog('login_failed', 'error', errorMessage, { email, status: response.status });
+    insertAccountEvent('login_failed', 'error', errorMessage, { email, status: response.status, mode: 'credentials' });
+    void sendPlatformLog('login_failed', 'error', errorMessage, { email, status: response.status, mode: 'credentials' });
     throw new Error(errorMessage);
   }
 
   const normalized = normalizeLoginPayload(body, email);
   if (!normalized.accessToken) {
     const msg = 'Login response has no access token';
-    insertAccountEvent('login_failed', 'error', msg, { email });
+    insertAccountEvent('login_failed', 'error', msg, { email, mode: 'credentials' });
     throw new Error(msg);
   }
 
-  updateState({
-    email: normalized.email || email,
-    display_name: normalized.displayName,
-    platform_user_id: normalized.userId,
-    access_token: encryptSecret(normalized.accessToken),
-    refresh_token: encryptSecret(normalized.refreshToken),
-    token_expires_at: normalized.tokenExpiresAt,
-    password_encrypted: rememberMe ? encryptSecret(password) : '',
-    remember_me: rememberMe ? 1 : 0,
-    is_logged_in: 1,
-    last_login_at: new Date().toISOString()
-  });
-
-  const state = getAccountState();
+  const state = saveLoggedInState(normalized, { email, password, rememberMe });
   insertAccountEvent('login_success', 'info', 'Login successful', {
     email: state.email,
-    userId: state.platformUserId
+    userId: state.platformUserId,
+    mode: 'credentials'
   });
   void sendPlatformLog('login_success', 'info', 'Login successful', {
     email: state.email,
-    userId: state.platformUserId
+    userId: state.platformUserId,
+    mode: 'credentials'
   });
 
   return state;
+}
+
+async function loginWithPlatformWeb(payload = {}) {
+  const startUrl = getPlatformAuthStartUrl();
+  const fallbackPollUrl = getPlatformAuthPollUrl();
+  const device = getDeviceInfo();
+  const rememberMe = payload.rememberMe !== false;
+  const timeoutMs = Number(payload.timeoutMs) > 0 ? Number(payload.timeoutMs) : 180000;
+  const pollIntervalMs = Number(payload.pollIntervalMs) > 0 ? Number(payload.pollIntervalMs) : 2000;
+
+  if (!startUrl) {
+    const msg = 'Platform auth start URL is not configured (set config/platform.json -> authStartUrl)';
+    insertAccountEvent('login_failed', 'error', msg, { mode: 'web' });
+    throw new Error(msg);
+  }
+
+  insertAccountEvent('login_attempt', 'info', 'Login started', { mode: 'web' });
+  void sendPlatformLog('login_attempt', 'info', 'Login started', { mode: 'web' });
+
+  const startResponse = await fetch(startUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source: ANTY_SOURCE,
+      appVersion: app.getVersion(),
+      device
+    })
+  });
+  const startBody = parseJsonSafe(await startResponse.text());
+  if (!startResponse.ok) {
+    const errorMessage = parseErrorMessage(startResponse.status, startBody);
+    insertAccountEvent('login_failed', 'error', errorMessage, { mode: 'web', stage: 'start', status: startResponse.status });
+    void sendPlatformLog('login_failed', 'error', errorMessage, { mode: 'web', stage: 'start', status: startResponse.status });
+    throw new Error(errorMessage);
+  }
+
+  const immediateLogin = normalizeLoginPayload(startBody, '');
+  if (immediateLogin.accessToken) {
+    const state = saveLoggedInState(immediateLogin, { rememberMe });
+    insertAccountEvent('login_success', 'info', 'Login successful', {
+      email: state.email,
+      userId: state.platformUserId,
+      mode: 'web',
+      stage: 'start'
+    });
+    void sendPlatformLog('login_success', 'info', 'Login successful', {
+      email: state.email,
+      userId: state.platformUserId,
+      mode: 'web',
+      stage: 'start'
+    });
+    return state;
+  }
+
+  const nested = startBody.data && typeof startBody.data === 'object' ? startBody.data : {};
+  const authUrl = String(startBody.authUrl || startBody.url || nested.authUrl || nested.url || '').trim();
+  const requestId = String(startBody.requestId || startBody.request_id || nested.requestId || nested.request_id || '').trim();
+  const pollToken = String(startBody.pollToken || startBody.poll_token || nested.pollToken || nested.poll_token || '').trim();
+  const responsePollUrl = String(startBody.pollUrl || startBody.poll_url || nested.pollUrl || nested.poll_url || '').trim();
+  const pollUrl = responsePollUrl || fallbackPollUrl;
+
+  if (!authUrl) {
+    const msg = 'Platform auth/start response has no authUrl';
+    insertAccountEvent('login_failed', 'error', msg, { mode: 'web', stage: 'start' });
+    throw new Error(msg);
+  }
+  if (!pollUrl) {
+    const msg = 'Platform auth poll URL is not configured (set config/platform.json -> authPollUrl)';
+    insertAccountEvent('login_failed', 'error', msg, { mode: 'web', stage: 'start' });
+    throw new Error(msg);
+  }
+  if (!requestId && !pollToken) {
+    const msg = 'Platform auth/start response has no requestId or pollToken';
+    insertAccountEvent('login_failed', 'error', msg, { mode: 'web', stage: 'start' });
+    throw new Error(msg);
+  }
+
+  await shell.openExternal(authUrl);
+  insertAccountEvent('login_browser_opened', 'info', 'Platform login page opened', { mode: 'web' });
+  void sendPlatformLog('login_browser_opened', 'info', 'Platform login page opened', { mode: 'web' });
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await delay(pollIntervalMs);
+    const pollResponse = await fetch(pollUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestId,
+        pollToken,
+        source: ANTY_SOURCE,
+        appVersion: app.getVersion(),
+        device
+      })
+    });
+
+    const pollBody = parseJsonSafe(await pollResponse.text());
+    const pollStatus = String(pollBody?.status || pollBody?.state || pollBody?.data?.status || '').toLowerCase();
+    if (pollResponse.status === 202 || pollStatus === 'pending' || pollStatus === 'waiting') {
+      continue;
+    }
+    if (!pollResponse.ok) {
+      const errorMessage = parseErrorMessage(pollResponse.status, pollBody);
+      insertAccountEvent('login_failed', 'error', errorMessage, { mode: 'web', stage: 'poll', status: pollResponse.status });
+      void sendPlatformLog('login_failed', 'error', errorMessage, { mode: 'web', stage: 'poll', status: pollResponse.status });
+      throw new Error(errorMessage);
+    }
+
+    const normalized = normalizeLoginPayload(pollBody, '');
+    if (!normalized.accessToken) {
+      if (pollStatus === 'pending' || pollStatus === 'waiting') continue;
+      const msg = 'Platform auth/poll response has no access token';
+      insertAccountEvent('login_failed', 'error', msg, { mode: 'web', stage: 'poll' });
+      throw new Error(msg);
+    }
+
+    const state = saveLoggedInState(normalized, { rememberMe });
+    insertAccountEvent('login_success', 'info', 'Login successful', {
+      email: state.email,
+      userId: state.platformUserId,
+      mode: 'web'
+    });
+    void sendPlatformLog('login_success', 'info', 'Login successful', {
+      email: state.email,
+      userId: state.platformUserId,
+      mode: 'web'
+    });
+    return state;
+  }
+
+  const timeoutMessage = 'Login timeout. Finish login on platform and try again.';
+  insertAccountEvent('login_failed', 'error', timeoutMessage, { mode: 'web', stage: 'poll_timeout' });
+  void sendPlatformLog('login_failed', 'error', timeoutMessage, { mode: 'web', stage: 'poll_timeout' });
+  throw new Error(timeoutMessage);
+}
+
+async function login(payload = {}) {
+  const mode = String(payload.mode || '').toLowerCase();
+  const email = String(payload.email || '').trim();
+  const password = String(payload.password || '');
+  if (mode === 'web' || (!email && !password)) {
+    return loginWithPlatformWeb(payload);
+  }
+
+  // Legacy fallback (only if explicitly passed credentials)
+  return loginWithCredentials(payload);
 }
 
 async function logout(payload = {}) {

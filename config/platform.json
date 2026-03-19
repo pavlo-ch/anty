@@ -1,5 +1,7 @@
 {
   "authUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/login",
+  "authStartUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/auth/start",
+  "authPollUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/auth/poll",
   "refreshUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/refresh",
   "logoutUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/logout",
   "logUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/logs"

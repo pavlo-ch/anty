@@ -434,28 +434,12 @@
               <h2>Platform Account</h2>
               <span class="account-status-badge" id="account-status-badge">Logged out</span>
             </div>
-            <p class="account-help">Use the same credentials as your platform/course account.</p>
-
-            <div class="editor-row">
-              <div class="editor-field">
-                <label class="editor-label" for="account-email">Email</label>
-                <input id="account-email" class="editor-input" type="email" placeholder="you@example.com" autocomplete="username" />
-              </div>
-              <div class="editor-field">
-                <label class="editor-label" for="account-password">Password</label>
-                <input id="account-password" class="editor-input" type="password" placeholder="Password" autocomplete="current-password" />
-              </div>
-            </div>
-
-            <label class="checkbox-label">
-              <input type="checkbox" id="account-remember" checked />
-              Save data for next login
-            </label>
+            <p class="account-help">Login happens on the platform website. Anty will open the browser, then complete login automatically.</p>
 
             <div class="account-actions">
               <button class="btn btn-open" id="btn-account-login">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M21 5v14"/></svg>
-                Login
+                Login via Platform
               </button>
               <button class="btn btn-save" id="btn-account-logout">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M9 17l-5-5 5-5"/><path d="M4 12h12"/><path d="M21 5v14"/></svg>
@@ -489,21 +473,10 @@
   <div class="login-modal hidden" id="login-modal">
     <div class="login-modal-card">
       <h3>Login to Platform</h3>
-      <p>Use the same account as on the course platform.</p>
-
-      <label class="editor-label" for="modal-account-email">Email</label>
-      <input id="modal-account-email" class="editor-input" type="email" placeholder="you@example.com" autocomplete="username" />
-
-      <label class="editor-label" for="modal-account-password">Password</label>
-      <input id="modal-account-password" class="editor-input" type="password" placeholder="Password" autocomplete="current-password" />
-
-      <label class="checkbox-label">
-        <input type="checkbox" id="modal-account-remember" checked />
-        Save data for next login
-      </label>
+      <p>Click the button below. We will open the platform login page in your browser and finish login in Anty automatically.</p>
 
       <div class="account-actions">
-        <button class="btn btn-open" id="btn-modal-login">Login</button>
+        <button class="btn btn-open" id="btn-modal-login">Login via Platform</button>
       </div>
     </div>
   </div>

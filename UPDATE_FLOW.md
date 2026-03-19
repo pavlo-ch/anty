@@ -52,6 +52,8 @@ App fetches:
 Set platform login endpoint in:
 
 - `config/platform.json -> authUrl`
+- `config/platform.json -> authStartUrl`
+- `config/platform.json -> authPollUrl`
 - `config/platform.json -> refreshUrl`
 - `config/platform.json -> logoutUrl`
 - logs endpoint in `config/platform.json -> logUrl` (format `/api/desktop/anty/logs`)
@@ -69,6 +71,6 @@ This file is included in build artifacts and used by Anty login flow.
 ## Logging
 
 - Local file:
-  - `~/Library/Application Support/Anty Browser/logs/updater.log`
+  - `~/Library/Application Support/anty-browser/logs/updater.log`
 - Optional platform API:
   - set `ANTY_PLATFORM_LOG_URL`
