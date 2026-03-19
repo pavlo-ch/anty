@@ -52,6 +52,8 @@ App fetches:
 Set platform login endpoint in:
 
 - `config/platform.json -> authUrl`
+- `config/platform.json -> refreshUrl`
+- `config/platform.json -> logoutUrl`
 - optional logs endpoint in `config/platform.json -> logUrl`
 
 This file is included in build artifacts and used by Anty login flow.

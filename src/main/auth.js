@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const DEFAULT_PLATFORM_AUTH_URL = '';
 const DEFAULT_PLATFORM_LOG_URL = '';
 const ENCRYPTED_PREFIX = 'enc:v1:';
+const ANTY_SOURCE = 'anty-browser';
 let staticPlatformConfigCache = null;
 
 function loadStaticPlatformConfig() {
@@ -25,6 +26,8 @@ function loadStaticPlatformConfig() {
       const parsed = JSON.parse(raw);
       staticPlatformConfigCache = {
         authUrl: String(parsed?.authUrl || '').trim(),
+        refreshUrl: String(parsed?.refreshUrl || '').trim(),
+        logoutUrl: String(parsed?.logoutUrl || '').trim(),
         logUrl: String(parsed?.logUrl || '').trim()
       };
       return staticPlatformConfigCache;
@@ -33,7 +36,7 @@ function loadStaticPlatformConfig() {
     }
   }
 
-  staticPlatformConfigCache = { authUrl: '', logUrl: '' };
+  staticPlatformConfigCache = { authUrl: '', refreshUrl: '', logoutUrl: '', logUrl: '' };
   return staticPlatformConfigCache;
 }
 
@@ -45,6 +48,45 @@ function getPlatformAuthUrl() {
 function getPlatformLogUrl() {
   const staticConfig = loadStaticPlatformConfig();
   return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || staticConfig.logUrl || DEFAULT_PLATFORM_LOG_URL || '').trim();
+}
+
+function deriveSiblingUrl(baseUrl, targetSegment) {
+  if (!baseUrl) return '';
+  try {
+    const normalized = new URL(baseUrl);
+    const segments = normalized.pathname.split('/').filter(Boolean);
+    const loginIndex = segments.lastIndexOf('login');
+    if (loginIndex >= 0) {
+      segments[loginIndex] = targetSegment;
+      normalized.pathname = `/${segments.join('/')}`;
+      return normalized.toString();
+    }
+  } catch (_) {
+    return '';
+  }
+  return '';
+}
+
+function getPlatformRefreshUrl() {
+  const staticConfig = loadStaticPlatformConfig();
+  const configured = (
+    db.getSetting('platform_refresh_url')
+    || process.env.ANTY_PLATFORM_REFRESH_URL
+    || staticConfig.refreshUrl
+  ).trim();
+  if (configured) return configured;
+  return deriveSiblingUrl(getPlatformAuthUrl(), 'refresh');
+}
+
+function getPlatformLogoutUrl() {
+  const staticConfig = loadStaticPlatformConfig();
+  const configured = (
+    db.getSetting('platform_logout_url')
+    || process.env.ANTY_PLATFORM_LOGOUT_URL
+    || staticConfig.logoutUrl
+  ).trim();
+  if (configured) return configured;
+  return deriveSiblingUrl(getPlatformAuthUrl(), 'logout');
 }
 
 function getOrCreateStableDeviceId() {
@@ -219,13 +261,89 @@ function parseErrorMessage(status, payload) {
   return payloadMessage || `Login failed (${status})`;
 }
 
+function parseJsonSafe(text) {
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return { raw: text };
+  }
+}
+
+function getDecryptedTokensFromRow(row) {
+  return {
+    accessToken: decryptSecret(row?.access_token || ''),
+    refreshToken: decryptSecret(row?.refresh_token || '')
+  };
+}
+
+function saveSessionTokens({ accessToken, refreshToken, expiresAt }) {
+  updateState({
+    access_token: encryptSecret(accessToken || ''),
+    refresh_token: encryptSecret(refreshToken || ''),
+    token_expires_at: expiresAt || ''
+  });
+}
+
+async function refreshSessionWithToken(refreshToken, context = 'refresh') {
+  const refreshUrl = getPlatformRefreshUrl();
+  if (!refreshUrl) {
+    return { ok: false, reason: 'refresh_url_not_configured' };
+  }
+  if (!refreshToken) {
+    return { ok: false, reason: 'missing_refresh_token' };
+  }
+
+  const device = getDeviceInfo();
+  const response = await fetch(refreshUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      refresh_token: refreshToken,
+      source: ANTY_SOURCE,
+      appVersion: app.getVersion(),
+      device
+    })
+  });
+
+  const body = parseJsonSafe(await response.text());
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      reason: body?.error || `refresh_failed_${response.status}`,
+      message: parseErrorMessage(response.status, body)
+    };
+  }
+
+  const normalized = normalizeLoginPayload(body, '');
+  if (!normalized.accessToken) {
+    return { ok: false, reason: 'missing_access_token_after_refresh' };
+  }
+
+  saveSessionTokens({
+    accessToken: normalized.accessToken,
+    refreshToken: normalized.refreshToken || refreshToken,
+    expiresAt: normalized.tokenExpiresAt
+  });
+
+  insertAccountEvent('token_refresh_success', 'info', `Token refresh successful (${context})`, {
+    context
+  });
+
+  return {
+    ok: true,
+    accessToken: normalized.accessToken,
+    refreshToken: normalized.refreshToken || refreshToken,
+    expiresAt: normalized.tokenExpiresAt
+  };
+}
+
 function getAccountState() {
   const row = getStateRow() || {};
   const rememberMe = Number(row.remember_me || 0) === 1;
   const savedPassword = rememberMe ? decryptSecret(row.password_encrypted || '') : '';
-  const expiresAt = row.token_expires_at ? new Date(row.token_expires_at).getTime() : 0;
-  const tokenExpired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= Date.now();
-  const isLoggedIn = Number(row.is_logged_in || 0) === 1 && !tokenExpired;
+  const isLoggedIn = Number(row.is_logged_in || 0) === 1;
 
   return {
     isLoggedIn,
@@ -309,21 +427,13 @@ async function login(payload = {}) {
     body: JSON.stringify({
       email,
       password,
-      source: 'anty-browser',
+      source: ANTY_SOURCE,
       appVersion: app.getVersion(),
       device
     })
   });
 
-  let body = {};
-  const text = await response.text();
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch (_) {
-      body = { raw: text };
-    }
-  }
+  const body = parseJsonSafe(await response.text());
 
   if (!response.ok) {
     const errorMessage = parseErrorMessage(response.status, body);
@@ -369,6 +479,73 @@ async function logout(payload = {}) {
   const clearSaved = Boolean(payload.clearSaved);
   const prev = getStateRow() || {};
   const keepSaved = Number(prev.remember_me || 0) === 1 && !clearSaved;
+  const logoutUrl = getPlatformLogoutUrl();
+  const device = getDeviceInfo();
+  let remoteLogoutDone = false;
+
+  async function callRemoteLogout(accessToken) {
+    if (!logoutUrl || !accessToken) {
+      return { ok: false, reason: 'missing_logout_url_or_access_token' };
+    }
+
+    const response = await fetch(logoutUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`
+      },
+      body: JSON.stringify({
+        source: ANTY_SOURCE,
+        appVersion: app.getVersion(),
+        device
+      })
+    });
+
+    const body = parseJsonSafe(await response.text());
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        reason: body?.error || `logout_failed_${response.status}`,
+        message: parseErrorMessage(response.status, body)
+      };
+    }
+
+    return { ok: true };
+  }
+
+  try {
+    const { accessToken, refreshToken } = getDecryptedTokensFromRow(prev);
+    let remoteResult = await callRemoteLogout(accessToken);
+
+    if (!remoteResult.ok && remoteResult.status === 401) {
+      insertAccountEvent('token_refresh_attempt', 'warn', 'Access token expired, trying refresh before logout', {
+        stage: 'logout',
+        status: 401
+      });
+      const refreshResult = await refreshSessionWithToken(refreshToken, 'logout_on_401');
+      if (refreshResult.ok) {
+        remoteResult = await callRemoteLogout(refreshResult.accessToken);
+      } else {
+        insertAccountEvent('token_refresh_failed', 'warn', refreshResult.message || 'Refresh failed before logout', {
+          stage: 'logout',
+          reason: refreshResult.reason,
+          status: refreshResult.status || null
+        });
+      }
+    }
+
+    if (!remoteResult.ok) {
+      insertAccountEvent('logout_remote_failed', 'warn', remoteResult.message || 'Failed to revoke device session on platform', {
+        reason: remoteResult.reason,
+        status: remoteResult.status || null
+      });
+    } else {
+      remoteLogoutDone = true;
+    }
+  } catch (err) {
+    insertAccountEvent('logout_remote_failed', 'warn', err.message || 'Failed to revoke device session on platform');
+  }
 
   updateState({
     is_logged_in: 0,
@@ -383,11 +560,13 @@ async function logout(payload = {}) {
 
   insertAccountEvent('logout', 'info', 'Logged out', {
     email: prev.email || '',
-    clearSaved
+    clearSaved,
+    remoteLogoutDone
   });
   void sendPlatformLog('logout', 'info', 'Logged out', {
     email: prev.email || '',
-    clearSaved
+    clearSaved,
+    remoteLogoutDone
   });
 
   return getAccountState();

@@ -1,4 +1,6 @@
 {
   "authUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/login",
+  "refreshUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/refresh",
+  "logoutUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/logout",
   "logUrl": ""
 }
