@@ -199,6 +199,8 @@ async function launchProfile(profileId, mainWindow) {
     const context = await chromium.launchPersistentContext(userDataDir, {
       ...launchOptions,
       ...contextOptions,
+      // Hide Chrome "controlled by automated test software" banner.
+      ignoreDefaultArgs: ['--enable-automation'],
     });
 
     // Inject fingerprint script
