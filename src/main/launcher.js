@@ -232,7 +232,6 @@ async function launchProfile(profileId, mainWindow) {
     const launchOptions = {
       headless: false,
       args: [
-        '--disable-blink-features=AutomationControlled',
         '--disable-features=IsolateOrigins,site-per-process',
         '--disable-infobars',
         '--no-first-run',

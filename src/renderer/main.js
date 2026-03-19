@@ -9,6 +9,7 @@ let runningProfiles = new Set();
 let accountState = null;
 let mandatoryUpdateRequired = false;
 let mandatoryUpdateOpenInProgress = false;
+let proxyLocaleBackfillRunning = false;
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', async () => {
@@ -43,6 +44,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await loadData();
   renderProfilesList();
+  void backfillProxyLocaleForExistingProfiles();
   await refreshAccountPage();
 });
 
@@ -451,7 +453,7 @@ function renderProfilesList(searchTerm = '') {
     const isActive = p.id === selectedProfileId;
     const isRunning = runningProfiles.has(p.id);
     const time = formatTime(p.modified_at);
-    const osEmoji = getOsEmoji(fp.osShort || fp.osName);
+    const osEmoji = getOsEmoji(fp);
     const browserIcon = getBrowserIcon(fp.browserName);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';
@@ -497,6 +499,46 @@ function selectProfile(id) {
   selectedProfileId = id;
   renderProfilesList();
   loadProfileEditor(id);
+}
+
+async function backfillProxyLocaleForExistingProfiles() {
+  if (proxyLocaleBackfillRunning) return;
+  proxyLocaleBackfillRunning = true;
+  try {
+    const candidates = profiles.filter((p) => {
+      if (!p.proxy_host) return false;
+      let fp = {};
+      try {
+        fp = JSON.parse(p.fingerprint || '{}');
+      } catch {
+        fp = {};
+      }
+      const hasCountry = Boolean(fp?.locale?.country);
+      const hasFlag = Boolean(fp?.locale?.flag);
+      return !hasCountry || !hasFlag;
+    });
+    if (!candidates.length) return;
+
+    let changed = false;
+    for (const profile of candidates) {
+      try {
+        const res = await window.api.syncProfileLocaleFromProxy(profile.id);
+        if (res?.success) changed = true;
+      } catch {
+        // Silent backfill
+      }
+    }
+
+    if (changed) {
+      await loadData();
+      renderProfilesList(document.getElementById('search-input')?.value || '');
+      if (selectedProfileId) {
+        await loadProfileEditor(selectedProfileId);
+      }
+    }
+  } finally {
+    proxyLocaleBackfillRunning = false;
+  }
 }
 
 async function loadProfileEditor(id) {
@@ -959,13 +1001,19 @@ function formatTime(dateStr) {
   return d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
 }
 
-function getOsEmoji(os) {
-  if (!os) return '💻';
-  const l = os.toLowerCase();
-  if (l.includes('win')) return '🖥️';
-  if (l.includes('mac') || l.includes('ios') || l.includes('iphone')) return '🍎';
-  if (l.includes('android')) return '📱';
-  if (l.includes('linux')) return '🐧';
+function getOsEmoji(fp) {
+  const source = [
+    fp?.osShort,
+    fp?.osName,
+    fp?.platform,
+    fp?.userAgent,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  if (!source) return '💻';
+  if (source.includes('win')) return '🪟';
+  if (source.includes('mac') || source.includes('darwin') || source.includes('os x') || source.includes('macintosh')) return '🍎';
+  if (source.includes('android')) return '📱';
+  if (source.includes('linux')) return '🐧';
   return '💻';
 }
 
