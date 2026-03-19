@@ -202,20 +202,49 @@ async function sendPlatformLog(eventType, status, message, meta = {}) {
   if (!url) return;
 
   try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        app: 'anty-browser',
-        version: app.getVersion(),
-        event: eventType,
-        status: status || 'info',
-        message: message || '',
-        meta,
-        ts: new Date().toISOString()
-      })
-    });
+    const row = getStateRow() || {};
+    const { accessToken, refreshToken } = getDecryptedTokensFromRow(row);
+    const device = getDeviceInfo();
+
+    const sendOnce = async (token) => {
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          source: ANTY_SOURCE,
+          appVersion: app.getVersion(),
+          level: status || 'info',
+          category: 'auth',
+          event: eventType,
+          message: message || '',
+          context: meta || {},
+          device
+        })
+      });
+      const body = parseJsonSafe(await response.text());
+      return { ok: response.ok, status: response.status, body };
+    };
+
+    let result = await sendOnce(accessToken);
+    if (!result.ok && result.status === 401 && refreshToken) {
+      const refreshed = await refreshSessionWithToken(refreshToken, 'platform_logs_on_401');
+      if (refreshed.ok) {
+        result = await sendOnce(refreshed.accessToken);
+      }
+    }
+
+    if (!result.ok && eventType !== 'platform_log_failed') {
+      insertAccountEvent('platform_log_failed', 'warn', `Platform logs API failed (${result.status})`, {
+        originEvent: eventType,
+        status: result.status,
+        error: result.body?.error || null
+      });
+    }
   } catch (err) {
+    if (eventType === 'platform_log_failed') return;
     insertAccountEvent('platform_log_failed', 'warn', err.message, { originEvent: eventType });
   }
 }

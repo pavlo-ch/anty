@@ -1,7 +1,9 @@
-const { app, dialog, ipcMain, shell } = require('electron');
+const { app, dialog, ipcMain, shell, safeStorage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
 const db = require('./database');
 
 let mainWindow = null;
@@ -14,9 +16,54 @@ let mandatoryUpdateInfo = null;
 let autoOpenedMandatoryVersion = null;
 const DEFAULT_GITHUB_UPDATE_URL = 'https://github.com/pavlo-ch/anty/releases/latest/download';
 const DEFAULT_PLATFORM_LOG_URL = '';
+const ENCRYPTED_PREFIX = 'enc:v1:';
+const ANTY_SOURCE = 'anty-browser';
 
 function getPlatformLogUrl() {
   return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || DEFAULT_PLATFORM_LOG_URL || '').trim();
+}
+
+function getOrCreateStableDeviceId() {
+  const existing = String(db.getSetting('anty_device_id') || '').trim();
+  if (existing) return existing;
+  const generated = (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')).replace(/-/g, '');
+  db.setSetting('anty_device_id', generated);
+  return generated;
+}
+
+function getDeviceInfo() {
+  return {
+    deviceId: getOrCreateStableDeviceId(),
+    deviceName: os.hostname(),
+    os: `${os.platform()}-${os.release()}`,
+    arch: os.arch()
+  };
+}
+
+function decryptSecret(value) {
+  if (!value) return '';
+  try {
+    if (String(value).startsWith(ENCRYPTED_PREFIX)) {
+      const encoded = String(value).slice(ENCRYPTED_PREFIX.length);
+      const buffer = Buffer.from(encoded, 'base64');
+      if (safeStorage.isEncryptionAvailable()) {
+        return safeStorage.decryptString(buffer);
+      }
+      return buffer.toString('utf8');
+    }
+  } catch (_) {
+    // Ignore decrypt failures and fallback to plain empty token.
+  }
+  return '';
+}
+
+function getAccessTokenForLogs() {
+  try {
+    const row = db.getDb().prepare('SELECT access_token FROM account_state WHERE id = 1').get();
+    return decryptSecret(row?.access_token || '');
+  } catch (_) {
+    return '';
+  }
 }
 
 function logToFile(level, event, payload = {}) {
@@ -40,16 +87,22 @@ async function logToPlatform(level, event, payload = {}) {
   if (!url) return;
 
   try {
+    const token = getAccessTokenForLogs();
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
     await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
-        app: 'anty-browser',
-        version: app.getVersion(),
+        source: ANTY_SOURCE,
+        appVersion: app.getVersion(),
         level,
+        category: 'updater',
         event,
-        payload,
-        ts: new Date().toISOString()
+        message: `Updater event: ${event}`,
+        context: payload,
+        device: getDeviceInfo()
       })
     });
   } catch (err) {
