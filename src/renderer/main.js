@@ -711,6 +711,7 @@ function renderAccountEvents(events) {
 }
 
 async function loginAccount() {
+  setLoginModalError('');
   setAccountBusy(true);
   try {
     accountState = await window.api.loginAccount({ mode: 'web' });
@@ -721,7 +722,9 @@ async function loginAccount() {
     hideLoginModal();
     showToast('Login successful', 'success');
   } catch (err) {
-    showToast(err.message || 'Login failed', 'error');
+    const msg = err.message || 'Login failed';
+    setLoginModalError(msg);
+    showToast(msg, 'error');
     await loadAccountEventsUI();
   } finally {
     setAccountBusy(false);
@@ -729,6 +732,7 @@ async function loginAccount() {
 }
 
 async function loginFromModal() {
+  setLoginModalError('');
   setAccountBusy(true);
   try {
     accountState = await window.api.loginAccount({ mode: 'web' });
@@ -739,7 +743,9 @@ async function loginFromModal() {
     hideLoginModal();
     showToast('Login successful', 'success');
   } catch (err) {
-    showToast(err.message || 'Login failed', 'error');
+    const msg = err.message || 'Login failed';
+    setLoginModalError(msg);
+    showToast(msg, 'error');
     await loadAccountEventsUI();
   } finally {
     setAccountBusy(false);
@@ -777,6 +783,20 @@ function showLoginModal() {
 function hideLoginModal() {
   const modal = document.getElementById('login-modal');
   if (modal) modal.classList.add('hidden');
+  setLoginModalError('');
+}
+
+function setLoginModalError(message) {
+  const errorEl = document.getElementById('login-modal-error');
+  if (!errorEl) return;
+  const msg = String(message || '').trim();
+  if (!msg) {
+    errorEl.textContent = '';
+    errorEl.classList.add('hidden');
+    return;
+  }
+  errorEl.textContent = msg;
+  errorEl.classList.remove('hidden');
 }
 
 async function maybeShowLoginModal() {

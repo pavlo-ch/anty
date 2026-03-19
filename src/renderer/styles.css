@@ -1193,6 +1193,21 @@ html, body {
   font-size: 12px;
 }
 
+.login-modal-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(244, 67, 54, 0.6);
+  background: rgba(244, 67, 54, 0.14);
+  color: #ffd9d6;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.login-modal-error.hidden {
+  display: none;
+}
+
 /* ===== FORCE UPDATE MODAL ===== */
 .update-lock-modal {
   position: fixed;
@@ -1275,7 +1290,7 @@ html, body {
   color: var(--text-primary);
   font-size: 13px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  z-index: 1000;
+  z-index: 2000;
   animation: slideUp 0.3s ease;
   display: flex;
   align-items: center;
