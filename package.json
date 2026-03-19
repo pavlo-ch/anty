@@ -1,21 +1,59 @@
 {
   "name": "anty-browser",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "Anti-detect browser with fingerprint spoofing and profile isolation",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "rebuild": "electron-rebuild -f -w better-sqlite3"
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "dist:mac": "electron-builder --mac dmg",
+    "dist:mac:publish": "electron-builder --mac dmg --publish always"
   },
-  "keywords": ["antidetect", "browser", "fingerprint"],
+  "keywords": [
+    "antidetect",
+    "browser",
+    "fingerprint"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "better-sqlite3": "^11.7.0",
+    "electron-updater": "^6.8.3",
     "playwright-core": "^1.49.0"
   },
   "devDependencies": {
     "electron": "^33.2.0",
+    "electron-builder": "^26.8.1",
     "electron-rebuild": "^3.2.9"
+  },
+  "build": {
+    "appId": "com.anty.browser",
+    "productName": "Anty Browser",
+    "artifactName": "Anty-Browser.${ext}",
+    "afterSign": "scripts/notarize.js",
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities",
+      "icon": "src/renderer/assets/desktop-icon-mac.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "pavlo-ch",
+      "repo": "anty",
+      "releaseType": "release"
+    }
   }
 }

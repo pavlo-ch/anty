@@ -1,0 +1,63 @@
+# Update Flow (Automatic GitHub Releases + Notarization)
+
+## What is automated now
+
+- GitHub Actions workflow: `.github/workflows/release-mac.yml`
+- Trigger: push tag `v*` (example: `v1.0.4`)
+- Pipeline does automatically:
+  - builds DMG
+  - signs app with Apple certificate
+  - notarizes app with Apple
+  - publishes release assets to GitHub
+
+## Required GitHub Secrets
+
+Set in `Repo -> Settings -> Secrets and variables -> Actions`:
+
+- `APPLE_CERTIFICATE_P12_BASE64` (base64 of Developer ID Application `.p12`)
+- `APPLE_CERTIFICATE_PASSWORD` (password of `.p12`)
+- `APPLE_ID` (Apple ID email)
+- `APPLE_APP_SPECIFIC_PASSWORD` (app-specific password for Apple ID)
+- `APPLE_TEAM_ID` (Apple Developer Team ID)
+
+## One-command release flow
+
+1. Update version in `package.json` (example `1.0.4`)
+2. Commit and push:
+   - `git add .`
+   - `git commit -m "release: v1.0.4"`
+   - `git push`
+3. Create and push tag:
+   - `git tag v1.0.4`
+   - `git push origin v1.0.4`
+4. Wait for workflow `Release macOS` to finish.
+
+Release will include:
+- `Anty-Browser.dmg`
+- `Anty-Browser.dmg.blockmap`
+- `latest-mac.yml`
+
+## Auto-update URL (stable)
+
+Use this URL in app/web:
+
+- `https://github.com/pavlo-ch/anty/releases/latest/download`
+
+App fetches:
+- `latest-mac.yml` from that URL
+- DMG from URL inside that file
+
+## Runtime update flow in app
+
+1. App starts, waits ~15 sec
+2. Calls updater check
+3. Downloads update when available
+4. Shows restart prompt
+5. Installs on restart
+
+## Logging
+
+- Local file:
+  - `~/Library/Application Support/Anty Browser/logs/updater.log`
+- Optional platform API:
+  - set `ANTY_PLATFORM_LOG_URL`
