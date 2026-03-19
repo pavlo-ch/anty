@@ -7,6 +7,7 @@ const crypto = require('crypto');
 
 const DEFAULT_PLATFORM_AUTH_URL = '';
 const DEFAULT_PLATFORM_LOG_URL = '';
+const ENCRYPTED_PREFIX = 'enc:v1:';
 let staticPlatformConfigCache = null;
 
 function loadStaticPlatformConfig() {
@@ -46,11 +47,18 @@ function getPlatformLogUrl() {
   return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || staticConfig.logUrl || DEFAULT_PLATFORM_LOG_URL || '').trim();
 }
 
+function getOrCreateStableDeviceId() {
+  const existing = String(db.getSetting('anty_device_id') || '').trim();
+  if (existing) return existing;
+
+  const generated = (crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex')).replace(/-/g, '');
+  db.setSetting('anty_device_id', generated);
+  return generated;
+}
+
 function getDeviceInfo() {
-  const raw = `${os.hostname()}|${os.platform()}|${os.arch()}`;
-  const deviceId = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32);
   return {
-    deviceId,
+    deviceId: getOrCreateStableDeviceId(),
     deviceName: os.hostname(),
     os: `${os.platform()}-${os.release()}`,
     arch: os.arch()
@@ -61,23 +69,42 @@ function encryptSecret(secret) {
   if (!secret) return '';
   try {
     if (safeStorage.isEncryptionAvailable()) {
-      return safeStorage.encryptString(secret).toString('base64');
+      return `${ENCRYPTED_PREFIX}${safeStorage.encryptString(secret).toString('base64')}`;
     }
   } catch (_) {}
-  return Buffer.from(secret, 'utf8').toString('base64');
+  return `${ENCRYPTED_PREFIX}${Buffer.from(secret, 'utf8').toString('base64')}`;
 }
 
 function decryptSecret(value) {
   if (!value) return '';
-  try {
-    const asBuffer = Buffer.from(value, 'base64');
-    if (safeStorage.isEncryptionAvailable()) {
-      return safeStorage.decryptString(asBuffer);
+  if (value.startsWith(ENCRYPTED_PREFIX)) {
+    const encoded = value.slice(ENCRYPTED_PREFIX.length);
+    try {
+      const asBuffer = Buffer.from(encoded, 'base64');
+      if (safeStorage.isEncryptionAvailable()) {
+        return safeStorage.decryptString(asBuffer);
+      }
+      return asBuffer.toString('utf8');
+    } catch (_) {
+      return '';
     }
-    return asBuffer.toString('utf8');
-  } catch (_) {
-    return '';
   }
+
+  // Legacy fallback for old versions that stored base64 directly.
+  try {
+    const looksLikeBase64 = /^[A-Za-z0-9+/=]+$/.test(value) && value.length % 4 === 0;
+    if (looksLikeBase64) {
+      const asBuffer = Buffer.from(value, 'base64');
+      if (safeStorage.isEncryptionAvailable()) {
+        return safeStorage.decryptString(asBuffer);
+      }
+      return asBuffer.toString('utf8');
+    }
+  } catch (_) {
+    // Fall through to plaintext fallback.
+  }
+
+  return value;
 }
 
 function getStateRow() {
@@ -175,17 +202,30 @@ function normalizeLoginPayload(payload, fallbackEmail) {
 }
 
 function parseErrorMessage(status, payload) {
-  if (payload && typeof payload === 'object') {
-    return payload.message || payload.error || payload.detail || `Login failed (${status})`;
+  const payloadMessage = payload && typeof payload === 'object'
+    ? (payload.message || payload.error || payload.detail || '')
+    : '';
+  const withDetails = (base) => (payloadMessage ? `${base} ${payloadMessage}` : base);
+
+  if (status === 401) {
+    return withDetails('401: потрібен повторний вхід.');
   }
-  return `Login failed (${status})`;
+  if (status === 403) {
+    return withDetails('403: нема доступу до Anty Browser або перевищено ліміт девайсів.');
+  }
+  if (status === 423) {
+    return withDetails('423: акаунт заблокований або неактивний.');
+  }
+  return payloadMessage || `Login failed (${status})`;
 }
 
 function getAccountState() {
   const row = getStateRow() || {};
   const rememberMe = Number(row.remember_me || 0) === 1;
   const savedPassword = rememberMe ? decryptSecret(row.password_encrypted || '') : '';
-  const isLoggedIn = Number(row.is_logged_in || 0) === 1;
+  const expiresAt = row.token_expires_at ? new Date(row.token_expires_at).getTime() : 0;
+  const tokenExpired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= Date.now();
+  const isLoggedIn = Number(row.is_logged_in || 0) === 1 && !tokenExpired;
 
   return {
     isLoggedIn,
@@ -303,8 +343,8 @@ async function login(payload = {}) {
     email: normalized.email || email,
     display_name: normalized.displayName,
     platform_user_id: normalized.userId,
-    access_token: normalized.accessToken,
-    refresh_token: normalized.refreshToken,
+    access_token: encryptSecret(normalized.accessToken),
+    refresh_token: encryptSecret(normalized.refreshToken),
     token_expires_at: normalized.tokenExpiresAt,
     password_encrypted: rememberMe ? encryptSecret(password) : '',
     remember_me: rememberMe ? 1 : 0,
