@@ -155,6 +155,10 @@ function getAccountState() {
   };
 }
 
+function isLoggedIn() {
+  return Boolean(getAccountState().isLoggedIn);
+}
+
 function listAccountEvents(limit = 50) {
   const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, Math.floor(limit))) : 50;
   return db.getDb().prepare(`
@@ -305,6 +309,7 @@ async function logout(payload = {}) {
 module.exports = {
   login,
   logout,
+  isLoggedIn,
   getAccountState,
   listAccountEvents,
   getPlatformConfig,
