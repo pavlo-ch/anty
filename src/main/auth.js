@@ -1,15 +1,60 @@
 const { app, safeStorage } = require('electron');
 const db = require('./database');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
 
 const DEFAULT_PLATFORM_AUTH_URL = '';
 const DEFAULT_PLATFORM_LOG_URL = '';
+let staticPlatformConfigCache = null;
+
+function loadStaticPlatformConfig() {
+  if (staticPlatformConfigCache) return staticPlatformConfigCache;
+
+  const candidatePaths = [
+    path.join(app.getAppPath(), 'config', 'platform.json'),
+    path.join(process.cwd(), 'config', 'platform.json')
+  ];
+
+  for (const filePath of candidatePaths) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      staticPlatformConfigCache = {
+        authUrl: String(parsed?.authUrl || '').trim(),
+        logUrl: String(parsed?.logUrl || '').trim()
+      };
+      return staticPlatformConfigCache;
+    } catch (_) {
+      // Ignore invalid config file and continue fallback chain.
+    }
+  }
+
+  staticPlatformConfigCache = { authUrl: '', logUrl: '' };
+  return staticPlatformConfigCache;
+}
 
 function getPlatformAuthUrl() {
-  return (db.getSetting('platform_auth_url') || process.env.ANTY_PLATFORM_AUTH_URL || DEFAULT_PLATFORM_AUTH_URL || '').trim();
+  const staticConfig = loadStaticPlatformConfig();
+  return (db.getSetting('platform_auth_url') || process.env.ANTY_PLATFORM_AUTH_URL || staticConfig.authUrl || DEFAULT_PLATFORM_AUTH_URL || '').trim();
 }
 
 function getPlatformLogUrl() {
-  return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || DEFAULT_PLATFORM_LOG_URL || '').trim();
+  const staticConfig = loadStaticPlatformConfig();
+  return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || staticConfig.logUrl || DEFAULT_PLATFORM_LOG_URL || '').trim();
+}
+
+function getDeviceInfo() {
+  const raw = `${os.hostname()}|${os.platform()}|${os.arch()}`;
+  const deviceId = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32);
+  return {
+    deviceId,
+    deviceName: os.hostname(),
+    os: `${os.platform()}-${os.release()}`,
+    arch: os.arch()
+  };
 }
 
 function encryptSecret(secret) {
@@ -204,7 +249,7 @@ async function login(payload = {}) {
   const authUrl = getPlatformAuthUrl();
 
   if (!authUrl) {
-    const msg = 'Platform auth URL is not configured';
+    const msg = 'Platform auth URL is not configured (set config/platform.json -> authUrl)';
     insertAccountEvent('login_failed', 'error', msg);
     throw new Error(msg);
   }
@@ -216,6 +261,7 @@ async function login(payload = {}) {
 
   insertAccountEvent('login_attempt', 'info', 'Login started', { email });
   void sendPlatformLog('login_attempt', 'info', 'Login started', { email });
+  const device = getDeviceInfo();
 
   const response = await fetch(authUrl, {
     method: 'POST',
@@ -224,7 +270,8 @@ async function login(payload = {}) {
       email,
       password,
       source: 'anty-browser',
-      appVersion: app.getVersion()
+      appVersion: app.getVersion(),
+      device
     })
   });
 

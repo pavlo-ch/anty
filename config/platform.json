@@ -1,0 +1,4 @@
+{
+  "authUrl": "https://your-platform.example.com/api/desktop/anty/login",
+  "logUrl": "https://your-platform.example.com/api/app-logs"
+}

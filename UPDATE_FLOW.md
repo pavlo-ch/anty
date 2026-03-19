@@ -47,6 +47,15 @@ App fetches:
 - `latest-mac.yml` from that URL
 - DMG from URL inside that file
 
+## Platform Login Config (No UI)
+
+Set platform login endpoint in:
+
+- `config/platform.json -> authUrl`
+- optional logs endpoint in `config/platform.json -> logUrl`
+
+This file is included in build artifacts and used by Anty login flow.
+
 ## Runtime update flow in app
 
 1. App starts and checks `latest-mac.yml`

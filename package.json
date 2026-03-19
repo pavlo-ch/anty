@@ -47,6 +47,7 @@
     },
     "files": [
       "src/**/*",
+      "config/**/*",
       "package.json"
     ],
     "publish": {
