@@ -1,13 +1,13 @@
 {
   "name": "anty-browser",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Anti-detect browser with fingerprint spoofing and profile isolation",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "dist:mac": "electron-builder --mac dmg",
-    "dist:mac:publish": "electron-builder --mac dmg --publish always"
+    "dist:mac": "electron-builder --mac dmg --universal",
+    "dist:mac:publish": "electron-builder --mac dmg --universal --publish always"
   },
   "keywords": [
     "antidetect",
