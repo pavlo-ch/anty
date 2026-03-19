@@ -31,7 +31,11 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('profile:delete', (_, id) => {
     requireLoggedIn();
-    return db.deleteProfile(id);
+    return launcher.deleteProfile(id);
+  });
+  ipcMain.handle('profile:sync-locale-from-proxy', async (_, id) => {
+    requireLoggedIn();
+    return launcher.syncProfileLocaleFromProxy(id);
   });
 
   // ---- PROXIES ----

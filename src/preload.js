@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   createProfile: (data) => ipcRenderer.invoke('profile:create', data),
   updateProfile: (id, data) => ipcRenderer.invoke('profile:update', id, data),
   deleteProfile: (id) => ipcRenderer.invoke('profile:delete', id),
+  syncProfileLocaleFromProxy: (id) => ipcRenderer.invoke('profile:sync-locale-from-proxy', id),
   getProfile: (id) => ipcRenderer.invoke('profile:get', id),
 
   // Proxies

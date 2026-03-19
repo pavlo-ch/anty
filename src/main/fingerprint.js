@@ -191,6 +191,31 @@ const LANGUAGES = [
   { lang: 'th-TH', langs: ['th-TH', 'th', 'en'], timezone: 'Asia/Bangkok', country: 'TH', flag: '🇹🇭' },
 ];
 
+function countryCodeToFlag(countryCode) {
+  const code = String(countryCode || '').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return '';
+  return String.fromCodePoint(...code.split('').map((ch) => 127397 + ch.charCodeAt(0)));
+}
+
+function getLocaleByCountry(countryCode, timezone) {
+  const code = String(countryCode || '').trim().toUpperCase();
+  const tz = String(timezone || '').trim();
+  if (!code) return null;
+
+  const candidates = LANGUAGES.filter((item) => item.country === code);
+  if (candidates.length === 0) return null;
+
+  const exactTz = tz ? candidates.find((item) => item.timezone === tz) : null;
+  const picked = exactTz || candidates[0];
+  return {
+    lang: picked.lang,
+    langs: [...picked.langs],
+    timezone: tz || picked.timezone,
+    country: code,
+    flag: picked.flag || countryCodeToFlag(code),
+  };
+}
+
 function randomItem(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
@@ -556,4 +581,10 @@ function buildInjectionScript(fingerprint) {
 `;
 }
 
-module.exports = { generateFingerprint, buildInjectionScript, FINGERPRINT_PROFILES };
+module.exports = {
+  generateFingerprint,
+  buildInjectionScript,
+  FINGERPRINT_PROFILES,
+  getLocaleByCountry,
+  countryCodeToFlag,
+};

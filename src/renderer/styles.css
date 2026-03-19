@@ -441,7 +441,7 @@ html, body {
 .profile-item-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
 }
 
 .profile-item-name {
@@ -457,6 +457,7 @@ html, body {
 .profile-item-time {
   font-size: 11px;
   color: var(--text-muted);
+  margin-left: auto;
   flex-shrink: 0;
 }
 
@@ -532,6 +533,31 @@ html, body {
 
 .profile-item:hover .profile-item-actions {
   opacity: 1;
+}
+
+.profile-item.active .profile-item-actions {
+  opacity: 1;
+}
+
+.profile-delete-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.profile-delete-btn:hover {
+  color: #fff;
+  background: rgba(244, 67, 54, 0.9);
+  border-color: rgba(244, 67, 54, 1);
 }
 
 .profile-launch-btn {
@@ -864,6 +890,17 @@ html, body {
 
 .btn-open:active {
   transform: translateY(0);
+}
+
+.btn-danger {
+  background: rgba(244, 67, 54, 0.1);
+  color: #ff9a92;
+  border: 1px solid rgba(244, 67, 54, 0.35);
+}
+
+.btn-danger:hover {
+  background: rgba(244, 67, 54, 0.22);
+  border-color: rgba(244, 67, 54, 0.55);
 }
 
 /* ===== PROFILE INFO COLUMN ===== */

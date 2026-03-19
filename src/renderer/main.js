@@ -131,6 +131,9 @@ function setupEventListeners() {
 
   // Save & Open profile
   document.getElementById('btn-save-profile').addEventListener('click', saveProfile);
+  document.getElementById('btn-delete-profile')?.addEventListener('click', () => {
+    if (selectedProfileId) confirmDeleteProfile(selectedProfileId);
+  });
   document.getElementById('btn-open-profile').addEventListener('click', () => {
     if (selectedProfileId) {
       if (runningProfiles.has(selectedProfileId)) {
@@ -252,6 +255,12 @@ async function saveProfile() {
     }
 
     await window.api.updateProfile(selectedProfileId, data);
+    if (proxySelectVal) {
+      const syncResult = await syncProfileLocaleFromProxy(selectedProfileId, { silentSuccess: true });
+      if (!syncResult?.success && syncResult?.error) {
+        showToast(`Proxy locale sync failed: ${syncResult.error}`, 'error');
+      }
+    }
     await loadData();
     renderProfilesList();
     loadProfileEditor(selectedProfileId);
@@ -263,7 +272,11 @@ async function saveProfile() {
 
 async function deleteProfile(id) {
   try {
-    await window.api.deleteProfile(id);
+    const result = await window.api.deleteProfile(id);
+    if (!result?.success) {
+      showToast(result?.error || 'Failed to delete profile', 'error');
+      return;
+    }
     if (selectedProfileId === id) {
       selectedProfileId = null;
       hideEditor();
@@ -273,6 +286,33 @@ async function deleteProfile(id) {
     showToast('Profile deleted', 'success');
   } catch (err) {
     showToast('Failed to delete profile', 'error');
+  }
+}
+
+function confirmDeleteProfile(id) {
+  const profile = profiles.find((p) => p.id === id);
+  const isRunning = runningProfiles.has(id);
+  const name = profile?.name || `Profile ${id}`;
+  const warn = isRunning
+    ? `Profile "${name}" is running and will be stopped. Delete permanently?`
+    : `Delete profile "${name}" permanently?`;
+  if (!window.confirm(warn)) return;
+  void deleteProfile(id);
+}
+
+async function syncProfileLocaleFromProxy(profileId, options = {}) {
+  try {
+    const result = await window.api.syncProfileLocaleFromProxy(profileId);
+    if (!result?.success) return result;
+    if (!options.silentSuccess) {
+      const c = result?.proxy?.countryCode || '';
+      const l = result?.proxy?.language || '';
+      const f = result?.proxy?.flag || '';
+      showToast(`Locale synced from proxy: ${f} ${c} ${l}`.trim(), 'success');
+    }
+    return result;
+  } catch (err) {
+    return { success: false, error: err.message || 'Locale sync failed' };
   }
 }
 
@@ -327,6 +367,10 @@ async function saveProxy() {
     // Link to current profile
     if (selectedProfileId) {
       await window.api.updateProfile(selectedProfileId, { proxy_id: proxy.id });
+      const syncResult = await syncProfileLocaleFromProxy(selectedProfileId, { silentSuccess: false });
+      if (!syncResult?.success && syncResult?.error) {
+        showToast(`Proxy saved, but locale sync failed: ${syncResult.error}`, 'error');
+      }
     }
     await loadData();
     populateProxySelect(proxy.id);
@@ -363,7 +407,9 @@ async function checkCurrentProxy() {
   try {
     const result = await window.api.checkProxy(proxyData);
     if (result.success) {
-      showToast(`✅ Proxy OK! IP: ${result.ip}`, 'success');
+      const countryPart = result.countryCode ? ` ${result.flag || ''} ${result.countryCode}` : '';
+      const langPart = result.language ? ` ${result.language}` : '';
+      showToast(`✅ Proxy OK! IP: ${result.ip}${countryPart}${langPart}`, 'success');
     } else {
       showToast(`❌ Proxy check failed: ${result.error}`, 'error');
     }
@@ -415,13 +461,20 @@ function renderProfilesList(searchTerm = '') {
         <div class="profile-item-header">
           <span class="profile-item-name">${escapeHtml(p.name)}</span>
           <span class="profile-item-time">${time}</span>
-          <button class="profile-launch-btn ${isRunning ? 'running' : ''}" 
-                  onclick="event.stopPropagation(); ${isRunning ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}" 
-                  title="${isRunning ? 'Stop' : 'Launch'}">
-            ${isRunning 
-              ? '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>' 
-              : '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>'}
-          </button>
+          <div class="profile-item-actions">
+            <button class="profile-delete-btn"
+                    onclick="event.stopPropagation(); confirmDeleteProfile(${p.id})"
+                    title="Delete profile">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+            </button>
+            <button class="profile-launch-btn ${isRunning ? 'running' : ''}" 
+                    onclick="event.stopPropagation(); ${isRunning ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}" 
+                    title="${isRunning ? 'Stop' : 'Launch'}">
+              ${isRunning 
+                ? '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>' 
+                : '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>'}
+            </button>
+          </div>
         </div>
         <div class="profile-item-meta">
           <div class="profile-item-badges">
@@ -947,3 +1000,4 @@ window.selectProfile = selectProfile;
 window.launchProfile = launchProfile;
 window.stopProfile = stopProfile;
 window.deleteProfile = deleteProfile;
+window.confirmDeleteProfile = confirmDeleteProfile;

@@ -1,11 +1,10 @@
 const { chromium } = require('playwright-core');
 const path = require('path');
 const { app } = require('electron');
-const { buildInjectionScript } = require('./fingerprint');
-const { getProfile, updateProfile } = require('./database');
+const fs = require('fs');
+const { buildInjectionScript, getLocaleByCountry } = require('./fingerprint');
+const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('./database');
 const http = require('http');
-const https = require('https');
-const { URL } = require('url');
 
 // Track running browser instances
 const runningBrowsers = new Map(); // profileId -> { browser, context, page }
@@ -14,73 +13,197 @@ function getUserDataDir(profileId) {
   return path.join(app.getPath('userData'), 'profiles', `profile_${profileId}`);
 }
 
+function toNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function buildProxyHeaders(proxyData) {
+  if (!proxyData.username) return {};
+  const auth = Buffer.from(`${proxyData.username}:${proxyData.password || ''}`).toString('base64');
+  return { 'Proxy-Authorization': `Basic ${auth}` };
+}
+
+function requestThroughHttpProxy(proxyData, targetUrl, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: proxyData.host,
+      port: toNumber(proxyData.port, 0),
+      path: targetUrl,
+      method: 'GET',
+      timeout: timeoutMs,
+      headers: buildProxyHeaders(proxyData),
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve({
+        ok: true,
+        statusCode: res.statusCode || 0,
+        body: data,
+      }));
+    });
+    req.on('error', (err) => resolve({ ok: false, error: err.message }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, error: 'Connection timeout' });
+    });
+    req.end();
+  });
+}
+
 // ===== PROXY CHECK =====
 async function checkProxy(proxyData) {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      resolve({ success: false, error: 'Timeout (10s)', ip: null, country: null });
-    }, 10000);
+  const proxyType = String(proxyData.type || 'http').toLowerCase();
+  if (proxyType !== 'http' && proxyType !== 'https') {
+    return {
+      success: false,
+      error: 'Proxy check for locale supports only HTTP/HTTPS proxies.',
+      ip: null,
+      country: null,
+    };
+  }
 
-    try {
-      const proxyUrl = `${proxyData.type || 'http'}://${proxyData.host}:${proxyData.port}`;
-      
-      // Use a simple HTTP request through proxy to check IP
-      const options = {
-        hostname: 'api.ipify.org',
-        port: 80,
-        path: '/?format=json',
-        method: 'GET',
-        timeout: 8000,
-      };
+  if (!proxyData.host || !proxyData.port) {
+    return {
+      success: false,
+      error: 'Proxy host/port is required.',
+      ip: null,
+      country: null,
+    };
+  }
 
-      // For HTTP proxy, connect via proxy
-      if (proxyData.type === 'http' || proxyData.type === 'https') {
-        options.hostname = proxyData.host;
-        options.port = proxyData.port;
-        options.path = 'http://api.ipify.org/?format=json';
-        if (proxyData.username) {
-          const auth = Buffer.from(`${proxyData.username}:${proxyData.password || ''}`).toString('base64');
-          options.headers = { 'Proxy-Authorization': `Basic ${auth}` };
-        }
-      }
-
-      const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          clearTimeout(timeout);
-          try {
-            const json = JSON.parse(data);
-            resolve({ success: true, ip: json.ip, country: null, latency: Date.now() });
-          } catch {
-            // Maybe we got the IP as plain text
-            const ip = data.trim();
-            if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-              resolve({ success: true, ip: ip, country: null });
-            } else {
-              resolve({ success: true, ip: 'Connected', country: null });
-            }
-          }
-        });
-      });
-
-      req.on('error', (err) => {
-        clearTimeout(timeout);
-        resolve({ success: false, error: err.message, ip: null });
-      });
-
-      req.on('timeout', () => {
-        clearTimeout(timeout);
-        req.destroy();
-        resolve({ success: false, error: 'Connection timeout', ip: null });
-      });
-
-      req.end();
-    } catch (err) {
-      clearTimeout(timeout);
-      resolve({ success: false, error: err.message, ip: null });
+  const startedAt = Date.now();
+  try {
+    const geoResponse = await requestThroughHttpProxy(
+      proxyData,
+      'http://ip-api.com/json/?fields=status,message,query,countryCode,timezone,country',
+      10000
+    );
+    if (!geoResponse.ok) {
+      return { success: false, error: geoResponse.error || 'Proxy request failed', ip: null, country: null };
     }
-  });
+    if (geoResponse.statusCode >= 400) {
+      return { success: false, error: `Proxy request failed (${geoResponse.statusCode})`, ip: null, country: null };
+    }
+
+    let geo = null;
+    try {
+      geo = JSON.parse(geoResponse.body || '{}');
+    } catch {
+      geo = null;
+    }
+    if (!geo || geo.status !== 'success') {
+      return {
+        success: false,
+        error: geo?.message || 'Failed to resolve proxy geolocation.',
+        ip: null,
+        country: null,
+      };
+    }
+
+    const countryCode = String(geo.countryCode || '').toUpperCase();
+    const timezone = String(geo.timezone || '');
+    const locale = getLocaleByCountry(countryCode, timezone);
+
+    return {
+      success: true,
+      ip: String(geo.query || ''),
+      country: String(geo.country || ''),
+      countryCode,
+      timezone,
+      language: locale?.lang || null,
+      languages: locale?.langs || null,
+      flag: locale?.flag || null,
+      latencyMs: Date.now() - startedAt,
+    };
+  } catch (err) {
+    return { success: false, error: err.message, ip: null, country: null };
+  }
+}
+
+async function syncProfileLocaleFromProxy(profileId) {
+  const profile = getProfile(profileId);
+  if (!profile) {
+    return { success: false, error: 'Profile not found' };
+  }
+  if (!profile.proxy_host || !profile.proxy_port) {
+    return { success: false, error: 'Profile has no proxy configured' };
+  }
+
+  const proxyData = {
+    type: profile.proxy_type || 'http',
+    host: profile.proxy_host,
+    port: profile.proxy_port,
+    username: profile.proxy_username || '',
+    password: profile.proxy_password || '',
+  };
+  const proxyCheck = await checkProxy(proxyData);
+  if (!proxyCheck.success) {
+    return proxyCheck;
+  }
+
+  const locale = getLocaleByCountry(proxyCheck.countryCode, proxyCheck.timezone);
+  if (!locale) {
+    return { success: false, error: `No locale preset for country ${proxyCheck.countryCode || 'unknown'}` };
+  }
+
+  let fingerprint = {};
+  try {
+    fingerprint = JSON.parse(profile.fingerprint || '{}');
+  } catch {
+    fingerprint = {};
+  }
+
+  fingerprint.locale = {
+    language: locale.lang,
+    languages: locale.langs,
+    timezone: locale.timezone,
+    country: locale.country,
+    flag: locale.flag,
+  };
+
+  const updated = updateProfile(profileId, { fingerprint });
+  return {
+    success: true,
+    profile: updated,
+    proxy: {
+      ip: proxyCheck.ip,
+      countryCode: proxyCheck.countryCode,
+      timezone: proxyCheck.timezone,
+      language: locale.lang,
+      flag: locale.flag,
+    },
+  };
+}
+
+async function deleteProfile(profileId) {
+  const numericId = toNumber(profileId, 0);
+  if (!numericId) {
+    return { success: false, error: 'Invalid profile id' };
+  }
+
+  if (runningBrowsers.has(numericId)) {
+    const stopped = await stopProfile(numericId);
+    if (!stopped.success) {
+      return { success: false, error: `Failed to stop running profile: ${stopped.error}` };
+    }
+  }
+
+  const result = deleteProfileRow(numericId);
+  if (!result.changes) {
+    return { success: false, error: 'Profile not found' };
+  }
+
+  const userDataDir = getUserDataDir(numericId);
+  try {
+    if (fs.existsSync(userDataDir)) {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    return { success: false, error: `Profile removed from DB, but files cleanup failed: ${err.message}` };
+  }
+
+  return { success: true };
 }
 
 async function launchProfile(profileId, mainWindow) {
@@ -127,7 +250,6 @@ async function launchProfile(profileId, mainWindow) {
     ];
 
     let executablePath = null;
-    const fs = require('fs');
     for (const p of chromiumPaths) {
       if (fs.existsSync(p)) {
         executablePath = p;
@@ -280,4 +402,11 @@ function getRunningProfiles() {
   return Array.from(runningBrowsers.keys());
 }
 
-module.exports = { launchProfile, stopProfile, getRunningProfiles, checkProxy };
+module.exports = {
+  launchProfile,
+  stopProfile,
+  getRunningProfiles,
+  checkProxy,
+  syncProfileLocaleFromProxy,
+  deleteProfile,
+};
