@@ -6,12 +6,13 @@ let folders = [];
 let groups = [];
 let selectedProfileId = null;
 let runningProfiles = new Set();
+let accountState = null;
+let mandatoryUpdateRequired = false;
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', async () => {
-  await loadData();
   setupEventListeners();
-  renderProfilesList();
+  window.api.onUpdateStatus(handleUpdateStatus);
   
   window.api.onProfileStatus((data) => {
     if (data.status === 'running') {
@@ -24,6 +25,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       loadProfileEditor(data.profileId);
     }
   });
+
+  try {
+    const startupUpdate = await window.api.startupUpdateCheck();
+    if (startupUpdate?.required) {
+      showMandatoryUpdateModal(startupUpdate);
+      return;
+    }
+  } catch (err) {
+    console.error('Startup update check failed:', err);
+  }
+
+  await loadData();
+  renderProfilesList();
+  await refreshAccountPage();
+  await maybeShowLoginModal();
 });
 
 async function loadData() {
@@ -52,6 +68,9 @@ function setupEventListeners() {
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
       const pageEl = document.getElementById(`page-${page}`);
       if (pageEl) pageEl.classList.add('active');
+      if (page === 'account') {
+        refreshAccountPage();
+      }
     });
   });
 
@@ -151,6 +170,29 @@ function setupEventListeners() {
     await window.api.updateProfile(selectedProfileId, {
       notes: document.getElementById('profile-notes').value
     });
+  });
+
+  // Account
+  document.getElementById('btn-account-login')?.addEventListener('click', loginAccount);
+  document.getElementById('btn-account-logout')?.addEventListener('click', logoutAccount);
+  document.getElementById('btn-platform-config-save')?.addEventListener('click', savePlatformConfig);
+
+  document.getElementById('btn-modal-login')?.addEventListener('click', loginFromModal);
+  document.getElementById('btn-modal-open-account')?.addEventListener('click', () => {
+    hideLoginModal();
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    const accountBtn = document.querySelector('.nav-btn[data-page="account"]');
+    if (accountBtn) accountBtn.classList.add('active');
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    const accountPage = document.getElementById('page-account');
+    if (accountPage) accountPage.classList.add('active');
+  });
+
+  document.getElementById('btn-update-lock-install')?.addEventListener('click', async () => {
+    await triggerMandatoryUpdateDownload(false);
+  });
+  document.getElementById('btn-update-lock-exit')?.addEventListener('click', () => {
+    window.api.closeWindow();
   });
 }
 
@@ -577,6 +619,292 @@ function populateProxySelect(selectedId) {
     proxies.map(p => 
       `<option value="${p.id}" ${p.id == selectedId ? 'selected' : ''}>${escapeHtml(p.name || p.host || 'Proxy ' + p.id)}</option>`
     ).join('');
+}
+
+// ===== ACCOUNT =====
+async function refreshAccountPage() {
+  try {
+    await Promise.all([
+      loadAccountStateUI(),
+      loadPlatformConfigUI(),
+      loadAccountEventsUI()
+    ]);
+  } catch (err) {
+    console.error('Failed to refresh account page:', err);
+  }
+}
+
+function setAccountBusy(isBusy) {
+  const loginBtn = document.getElementById('btn-account-login');
+  const logoutBtn = document.getElementById('btn-account-logout');
+  const saveCfgBtn = document.getElementById('btn-platform-config-save');
+
+  if (loginBtn) loginBtn.disabled = isBusy;
+  if (logoutBtn) logoutBtn.disabled = isBusy;
+  if (saveCfgBtn) saveCfgBtn.disabled = isBusy;
+  const modalLoginBtn = document.getElementById('btn-modal-login');
+  const modalOpenBtn = document.getElementById('btn-modal-open-account');
+  if (modalLoginBtn) modalLoginBtn.disabled = isBusy;
+  if (modalOpenBtn) modalOpenBtn.disabled = isBusy;
+  const updateInstallBtn = document.getElementById('btn-update-lock-install');
+  if (updateInstallBtn) updateInstallBtn.disabled = isBusy;
+}
+
+async function loadAccountStateUI() {
+  accountState = await window.api.getAccountState();
+  renderAccountState(accountState);
+}
+
+async function loadPlatformConfigUI() {
+  const config = await window.api.getPlatformConfig();
+  const authUrlEl = document.getElementById('platform-auth-url');
+  const logUrlEl = document.getElementById('platform-log-url');
+
+  if (authUrlEl && document.activeElement !== authUrlEl) {
+    authUrlEl.value = config.authUrl || '';
+  }
+  if (logUrlEl && document.activeElement !== logUrlEl) {
+    logUrlEl.value = config.logUrl || '';
+  }
+}
+
+async function loadAccountEventsUI() {
+  const events = await window.api.getAccountEvents(40);
+  renderAccountEvents(events || []);
+}
+
+function renderAccountState(state) {
+  const statusBadge = document.getElementById('account-status-badge');
+  const emailEl = document.getElementById('account-email');
+  const passwordEl = document.getElementById('account-password');
+  const rememberEl = document.getElementById('account-remember');
+  const metaEl = document.getElementById('account-meta');
+  if (!statusBadge || !emailEl || !passwordEl || !rememberEl || !metaEl) return;
+
+  const isLoggedIn = Boolean(state?.isLoggedIn);
+  statusBadge.textContent = isLoggedIn ? 'Logged in' : 'Logged out';
+  statusBadge.classList.toggle('logged-in', isLoggedIn);
+
+  if (document.activeElement !== emailEl) {
+    emailEl.value = state?.email || '';
+  }
+  if (document.activeElement !== passwordEl) {
+    passwordEl.value = state?.hasSavedPassword ? (state?.savedPassword || '') : '';
+  }
+  rememberEl.checked = Boolean(state?.rememberMe);
+
+  syncModalCredentials({
+    email: state?.email || '',
+    password: state?.hasSavedPassword ? (state?.savedPassword || '') : '',
+    rememberMe: Boolean(state?.rememberMe)
+  });
+
+  const metaLines = [];
+  if (state?.displayName) metaLines.push(`Name: ${escapeHtml(state.displayName)}`);
+  if (state?.platformUserId) metaLines.push(`User ID: ${escapeHtml(state.platformUserId)}`);
+  if (state?.lastLoginAt) metaLines.push(`Last login: ${new Date(state.lastLoginAt).toLocaleString('uk-UA')}`);
+  if (state?.lastLogoutAt) metaLines.push(`Last logout: ${new Date(state.lastLogoutAt).toLocaleString('uk-UA')}`);
+  if (!metaLines.length) metaLines.push('No account activity yet.');
+  metaEl.innerHTML = metaLines.join('<br>');
+}
+
+function renderAccountEvents(events) {
+  const container = document.getElementById('account-events');
+  if (!container) return;
+
+  if (!events.length) {
+    container.innerHTML = '<div class="account-event-item"><div class="account-event-message">No login/logout events yet.</div></div>';
+    return;
+  }
+
+  container.innerHTML = events.map((event) => {
+    const time = new Date(`${event.created_at}Z`).toLocaleString('uk-UA');
+    const type = escapeHtml(event.event_type || 'event');
+    const message = escapeHtml(event.message || '');
+    return `
+      <div class="account-event-item">
+        <div class="account-event-top">
+          <span class="account-event-type">${type}</span>
+          <span class="account-event-time">${time}</span>
+        </div>
+        <div class="account-event-message">${message}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function loginAccount() {
+  const email = document.getElementById('account-email')?.value?.trim() || '';
+  const password = document.getElementById('account-password')?.value || '';
+  const rememberMe = document.getElementById('account-remember')?.checked !== false;
+
+  if (!email || !password) {
+    showToast('Enter email and password', 'error');
+    return;
+  }
+
+  setAccountBusy(true);
+  try {
+    accountState = await window.api.loginAccount({ email, password, rememberMe });
+    renderAccountState(accountState);
+    await loadAccountEventsUI();
+    showToast('Login successful', 'success');
+  } catch (err) {
+    showToast(err.message || 'Login failed', 'error');
+    await loadAccountEventsUI();
+  } finally {
+    setAccountBusy(false);
+  }
+}
+
+async function loginFromModal() {
+  const email = document.getElementById('modal-account-email')?.value?.trim() || '';
+  const password = document.getElementById('modal-account-password')?.value || '';
+  const rememberMe = document.getElementById('modal-account-remember')?.checked !== false;
+
+  if (!email || !password) {
+    showToast('Enter email and password', 'error');
+    return;
+  }
+
+  setAccountBusy(true);
+  try {
+    accountState = await window.api.loginAccount({ email, password, rememberMe });
+    renderAccountState(accountState);
+    await loadAccountEventsUI();
+    hideLoginModal();
+    showToast('Login successful', 'success');
+  } catch (err) {
+    showToast(err.message || 'Login failed', 'error');
+    await loadAccountEventsUI();
+  } finally {
+    setAccountBusy(false);
+  }
+}
+
+async function logoutAccount() {
+  setAccountBusy(true);
+  try {
+    accountState = await window.api.logoutAccount({ clearSaved: false });
+    renderAccountState(accountState);
+    await loadAccountEventsUI();
+    showToast('Logged out', 'success');
+  } catch (err) {
+    showToast(err.message || 'Logout failed', 'error');
+  } finally {
+    setAccountBusy(false);
+  }
+}
+
+async function savePlatformConfig() {
+  const authUrl = document.getElementById('platform-auth-url')?.value?.trim() || '';
+  const logUrl = document.getElementById('platform-log-url')?.value?.trim() || '';
+
+  setAccountBusy(true);
+  try {
+    await window.api.setPlatformConfig({ authUrl, logUrl });
+    await loadAccountEventsUI();
+    showToast('Platform endpoints saved', 'success');
+  } catch (err) {
+    showToast(err.message || 'Failed to save endpoints', 'error');
+  } finally {
+    setAccountBusy(false);
+  }
+}
+
+function showLoginModal() {
+  const modal = document.getElementById('login-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+function hideLoginModal() {
+  const modal = document.getElementById('login-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function syncModalCredentials(data) {
+  const emailEl = document.getElementById('modal-account-email');
+  const passwordEl = document.getElementById('modal-account-password');
+  const rememberEl = document.getElementById('modal-account-remember');
+  if (!emailEl || !passwordEl || !rememberEl) return;
+  if (document.activeElement !== emailEl) emailEl.value = data.email || '';
+  if (document.activeElement !== passwordEl) passwordEl.value = data.password || '';
+  rememberEl.checked = data.rememberMe !== false;
+}
+
+async function maybeShowLoginModal() {
+  if (mandatoryUpdateRequired) {
+    hideLoginModal();
+    return;
+  }
+
+  try {
+    const state = await window.api.getAccountState();
+    if (state?.isLoggedIn) {
+      hideLoginModal();
+      return;
+    }
+
+    syncModalCredentials({
+      email: state?.email || '',
+      password: state?.hasSavedPassword ? (state?.savedPassword || '') : '',
+      rememberMe: Boolean(state?.rememberMe)
+    });
+    showLoginModal();
+  } catch (err) {
+    console.error('Failed to check account state for modal:', err);
+    showLoginModal();
+  }
+}
+
+function handleUpdateStatus(data) {
+  if (!data || !data.state) return;
+
+  if (data.state === 'required') {
+    showMandatoryUpdateModal(data);
+    return;
+  }
+
+  if (data.state === 'available' && data.version) {
+    showMandatoryUpdateModal({
+      version: data.version,
+      currentVersion: null
+    });
+    return;
+  }
+}
+
+function showMandatoryUpdateModal(data = {}) {
+  mandatoryUpdateRequired = true;
+  hideLoginModal();
+
+  const modal = document.getElementById('update-lock-modal');
+  const text = document.getElementById('update-lock-text');
+  if (text) {
+    const nextVersion = data?.version ? `v${data.version}` : 'нова версія';
+    const currentVersion = data?.currentVersion ? ` (поточна v${data.currentVersion})` : '';
+    text.textContent = `Доступ заблоковано. Потрібно встановити ${nextVersion}${currentVersion}. Натисни "Оновити зараз", встанови додаток з DMG і перезапусти Anty Browser.`;
+  }
+  if (modal) modal.classList.remove('hidden');
+
+  void triggerMandatoryUpdateDownload(true);
+}
+
+async function triggerMandatoryUpdateDownload(isAuto) {
+  try {
+    const result = await window.api.openUpdateInstaller();
+    if (!result?.ok && !isAuto) {
+      showToast(result?.message || 'Не вдалося відкрити інсталятор', 'error');
+      return;
+    }
+    if (!isAuto) {
+      showToast('Інсталятор оновлення відкрито', 'success');
+    }
+  } catch (err) {
+    if (!isAuto) {
+      showToast('Помилка відкриття інсталятора: ' + err.message, 'error');
+    }
+  }
 }
 
 // ===== HELPERS =====

@@ -49,11 +49,11 @@ App fetches:
 
 ## Runtime update flow in app
 
-1. App starts, waits ~15 sec
-2. Calls updater check
-3. Downloads update when available
-4. Shows restart prompt
-5. Installs on restart
+1. App starts and checks `latest-mac.yml`
+2. If remote version is newer:
+3. App is blocked by a full-screen mandatory update modal
+4. DMG download opens automatically
+5. User installs update and restarts app
 
 ## Logging
 

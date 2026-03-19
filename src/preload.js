@@ -28,13 +28,31 @@ contextBridge.exposeInMainWorld('api', {
   stopProfile: (id) => ipcRenderer.invoke('browser:stop', id),
   getRunningProfiles: () => ipcRenderer.invoke('browser:running'),
 
+  // Account / platform auth
+  getAccountState: () => ipcRenderer.invoke('account:state'),
+  getAccountEvents: (limit = 50) => ipcRenderer.invoke('account:events', limit),
+  loginAccount: (payload) => ipcRenderer.invoke('account:login', payload),
+  logoutAccount: (payload) => ipcRenderer.invoke('account:logout', payload),
+  getPlatformConfig: () => ipcRenderer.invoke('platform:config:get'),
+  setPlatformConfig: (config) => ipcRenderer.invoke('platform:config:set', config),
+
   // Window controls
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),
   closeWindow: () => ipcRenderer.send('window:close'),
 
+  // App updates
+  getUpdateConfigStatus: () => ipcRenderer.invoke('app:update:status'),
+  startupUpdateCheck: () => ipcRenderer.invoke('app:update:startup-check'),
+  checkAppUpdates: () => ipcRenderer.invoke('app:update:check'),
+  installDownloadedUpdate: () => ipcRenderer.invoke('app:update:install'),
+  openUpdateInstaller: () => ipcRenderer.invoke('app:update:open-installer'),
+
   // Events
   onProfileStatus: (callback) => {
     ipcRenderer.on('browser:status', (_, data) => callback(data));
+  },
+  onUpdateStatus: (callback) => {
+    ipcRenderer.on('app:update-status', (_, data) => callback(data));
   }
 });

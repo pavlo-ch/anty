@@ -130,6 +130,14 @@ html, body {
   transition: opacity var(--transition), transform var(--transition);
 }
 
+.sidebar-logo img {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
 .sidebar-logo:hover {
   opacity: 1;
   transform: scale(1.1);
@@ -1026,6 +1034,189 @@ html, body {
   color: var(--text-muted);
 }
 
+/* ===== ACCOUNT PAGE ===== */
+.account-page {
+  flex: 1;
+  padding: 24px;
+  overflow-y: auto;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  align-content: start;
+}
+
+.account-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.account-card:last-child {
+  grid-column: 1 / -1;
+}
+
+.account-card h2,
+.account-card h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.account-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.account-help {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+
+.account-status-badge {
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+}
+
+.account-status-badge.logged-in {
+  color: #dff5e0;
+  border-color: rgba(76, 175, 80, 0.45);
+  background: rgba(76, 175, 80, 0.2);
+}
+
+.account-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.account-meta {
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-events {
+  display: grid;
+  gap: 8px;
+}
+
+.account-event-item {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.account-event-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.account-event-type {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.account-event-time {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.account-event-message {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* ===== LOGIN MODAL ===== */
+.login-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 5, 18, 0.7);
+  backdrop-filter: blur(4px);
+  z-index: 1400;
+}
+
+.login-modal.hidden {
+  display: none;
+}
+
+.login-modal-card {
+  width: min(420px, calc(100vw - 32px));
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.login-modal-card h3 {
+  margin: 0 0 6px;
+  color: var(--text-primary);
+}
+
+.login-modal-card p {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* ===== FORCE UPDATE MODAL ===== */
+.update-lock-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(3, 3, 15, 0.86);
+  backdrop-filter: blur(6px);
+  z-index: 1600;
+}
+
+.update-lock-modal.hidden {
+  display: none;
+}
+
+.update-lock-card {
+  width: min(460px, calc(100vw - 32px));
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.update-lock-card h3 {
+  margin: 0 0 8px;
+  color: var(--text-primary);
+}
+
+.update-lock-card p {
+  margin: 0 0 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.update-lock-actions {
+  display: flex;
+  gap: 10px;
+}
+
 /* ===== TAGS BUTTON ===== */
 .tags-btn {
   width: 100%;
@@ -1131,4 +1322,6 @@ html, body {
 
 @media (max-width: 760px) {
   .profiles-list-column { width: 200px; min-width: 200px; }
+  .account-page { grid-template-columns: 1fr; }
+  .account-card:last-child { grid-column: auto; }
 }
