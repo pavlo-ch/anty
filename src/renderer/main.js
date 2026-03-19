@@ -8,6 +8,7 @@ let selectedProfileId = null;
 let runningProfiles = new Set();
 let accountState = null;
 let mandatoryUpdateRequired = false;
+let mandatoryUpdateOpenInProgress = false;
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', async () => {
@@ -897,29 +898,31 @@ function showMandatoryUpdateModal(data = {}) {
   const modal = document.getElementById('update-lock-modal');
   const text = document.getElementById('update-lock-text');
   if (text) {
-    const nextVersion = data?.version ? `v${data.version}` : 'нова версія';
-    const currentVersion = data?.currentVersion ? ` (поточна v${data.currentVersion})` : '';
-    text.textContent = `Доступ заблоковано. Потрібно встановити ${nextVersion}${currentVersion}. Натисни "Оновити зараз", встанови додаток з DMG і перезапусти Anty Browser.`;
+    const nextVersion = data?.version ? `v${data.version}` : 'a newer version';
+    const currentVersion = data?.currentVersion ? ` (current v${data.currentVersion})` : '';
+    text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now", install the DMG, then restart Anty Browser.`;
   }
   if (modal) modal.classList.remove('hidden');
-
-  void triggerMandatoryUpdateDownload(true);
 }
 
-async function triggerMandatoryUpdateDownload(isAuto) {
+async function triggerMandatoryUpdateDownload(isAuto = false) {
+  if (mandatoryUpdateOpenInProgress) return;
+  mandatoryUpdateOpenInProgress = true;
   try {
     const result = await window.api.openUpdateInstaller();
     if (!result?.ok && !isAuto) {
-      showToast(result?.message || 'Не вдалося відкрити інсталятор', 'error');
+      showToast(result?.message || 'Failed to open installer', 'error');
       return;
     }
     if (!isAuto) {
-      showToast('Інсталятор оновлення відкрито', 'success');
+      showToast('Installer opened', 'success');
     }
   } catch (err) {
     if (!isAuto) {
-      showToast('Помилка відкриття інсталятора: ' + err.message, 'error');
+      showToast('Failed to open installer: ' + err.message, 'error');
     }
+  } finally {
+    mandatoryUpdateOpenInProgress = false;
   }
 }
 

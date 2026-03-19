@@ -13,7 +13,6 @@ let downloadTriggered = false;
 let activeUpdateSource = 'generic';
 let activeUpdateUrl = null;
 let mandatoryUpdateInfo = null;
-let autoOpenedMandatoryVersion = null;
 const DEFAULT_GITHUB_UPDATE_URL = 'https://github.com/pavlo-ch/anty/releases/latest/download';
 const DEFAULT_PLATFORM_LOG_URL = '';
 const ENCRYPTED_PREFIX = 'enc:v1:';
@@ -253,11 +252,6 @@ async function checkMandatoryUpdate() {
       currentVersion,
       downloadUrl: latest.downloadUrl
     });
-
-    if (autoOpenedMandatoryVersion !== latest.version) {
-      autoOpenedMandatoryVersion = latest.version;
-      await openInstallerDownload(latest.downloadUrl, 'auto');
-    }
 
     return { required: true, ...mandatoryUpdateInfo };
   } catch (err) {
