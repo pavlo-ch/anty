@@ -11,6 +11,11 @@ function requireLoggedIn() {
 
 function registerIpcHandlers() {
   ipcMain.handle('app:version', () => app.getVersion());
+  ipcMain.handle('app:restart', () => {
+    app.relaunch();
+    app.exit(0);
+    return { ok: true };
+  });
 
   // ---- PROFILES ----
   ipcMain.handle('profile:list', () => {

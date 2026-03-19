@@ -10,6 +10,17 @@ let accountState = null;
 let mandatoryUpdateRequired = false;
 let mandatoryUpdateOpenInProgress = false;
 let proxyLocaleBackfillRunning = false;
+let mandatoryUpdateFlow = {
+  version: null,
+  currentVersion: null,
+  downloading: false,
+  downloaded: false,
+  progress: 0,
+  downloadedBytes: 0,
+  totalBytes: 0,
+  error: '',
+  installerOpened: false,
+};
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', async () => {
@@ -205,9 +216,8 @@ function setupEventListeners() {
 
   document.getElementById('btn-modal-login')?.addEventListener('click', loginFromModal);
 
-  document.getElementById('btn-update-lock-install')?.addEventListener('click', async () => {
-    await triggerMandatoryUpdateDownload(false);
-  });
+  document.getElementById('btn-update-lock-install')?.addEventListener('click', handleMandatoryUpdatePrimaryAction);
+  document.getElementById('btn-update-lock-restart')?.addEventListener('click', handleMandatoryRestartAction);
   document.getElementById('btn-update-lock-exit')?.addEventListener('click', () => {
     window.api.closeWindow();
   });
@@ -750,6 +760,8 @@ function setAccountBusy(isBusy) {
   if (modalLoginBtn) modalLoginBtn.disabled = isBusy;
   const updateInstallBtn = document.getElementById('btn-update-lock-install');
   if (updateInstallBtn) updateInstallBtn.disabled = isBusy;
+  const updateRestartBtn = document.getElementById('btn-update-lock-restart');
+  if (updateRestartBtn) updateRestartBtn.disabled = isBusy;
 }
 
 async function loadAccountStateUI() {
@@ -924,6 +936,52 @@ function handleUpdateStatus(data) {
     return;
   }
 
+  if (data.state === 'mandatory_downloading') {
+    mandatoryUpdateFlow.downloading = true;
+    mandatoryUpdateFlow.downloaded = false;
+    mandatoryUpdateFlow.error = '';
+    mandatoryUpdateFlow.progress = Number(data.percent || 0);
+    mandatoryUpdateFlow.downloadedBytes = Number(data.downloadedBytes || 0);
+    mandatoryUpdateFlow.totalBytes = Number(data.totalBytes || 0);
+    if (data.version) mandatoryUpdateFlow.version = data.version;
+    renderMandatoryUpdateUi();
+    return;
+  }
+
+  if (data.state === 'mandatory_downloaded') {
+    mandatoryUpdateFlow.downloading = false;
+    mandatoryUpdateFlow.downloaded = true;
+    mandatoryUpdateFlow.error = '';
+    mandatoryUpdateFlow.progress = 100;
+    mandatoryUpdateFlow.downloadedBytes = Number(data.downloadedBytes || 0);
+    mandatoryUpdateFlow.totalBytes = Number(data.totalBytes || 0);
+    if (data.version) mandatoryUpdateFlow.version = data.version;
+    renderMandatoryUpdateUi();
+    return;
+  }
+
+  if (data.state === 'mandatory_download_error') {
+    mandatoryUpdateFlow.downloading = false;
+    mandatoryUpdateFlow.downloaded = false;
+    mandatoryUpdateFlow.error = data.message || 'Failed to download update.';
+    renderMandatoryUpdateUi();
+    return;
+  }
+
+  if (data.state === 'mandatory_download_retry') {
+    mandatoryUpdateFlow.downloading = true;
+    mandatoryUpdateFlow.error = data.message || '';
+    renderMandatoryUpdateUi();
+    return;
+  }
+
+  if (data.state === 'mandatory_installer_opened') {
+    mandatoryUpdateFlow.installerOpened = true;
+    mandatoryUpdateFlow.error = '';
+    renderMandatoryUpdateUi();
+    return;
+  }
+
   if (data.state === 'available' && data.version) {
     showMandatoryUpdateModal({
       version: data.version,
@@ -937,34 +995,166 @@ function showMandatoryUpdateModal(data = {}) {
   mandatoryUpdateRequired = true;
   hideLoginModal();
 
+  mandatoryUpdateFlow = {
+    version: data?.version || mandatoryUpdateFlow.version || null,
+    currentVersion: data?.currentVersion || mandatoryUpdateFlow.currentVersion || null,
+    downloading: false,
+    downloaded: Boolean(data?.downloaded || data?.localFilePath || mandatoryUpdateFlow.downloaded),
+    progress: Number(data?.downloaded ? 100 : mandatoryUpdateFlow.progress || 0),
+    downloadedBytes: Number(mandatoryUpdateFlow.downloadedBytes || 0),
+    totalBytes: Number(mandatoryUpdateFlow.totalBytes || 0),
+    error: '',
+    installerOpened: false,
+  };
+
   const modal = document.getElementById('update-lock-modal');
   const text = document.getElementById('update-lock-text');
   if (text) {
-    const nextVersion = data?.version ? `v${data.version}` : 'a newer version';
-    const currentVersion = data?.currentVersion ? ` (current v${data.currentVersion})` : '';
+    const nextVersion = mandatoryUpdateFlow.version ? `v${mandatoryUpdateFlow.version}` : 'a newer version';
+    const currentVersion = mandatoryUpdateFlow.currentVersion ? ` (current v${mandatoryUpdateFlow.currentVersion})` : '';
     text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now", install the DMG, then restart Anty Browser.`;
   }
   if (modal) modal.classList.remove('hidden');
+  renderMandatoryUpdateUi();
 }
 
-async function triggerMandatoryUpdateDownload(isAuto = false) {
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!value || value < 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let current = value;
+  let idx = 0;
+  while (current >= 1024 && idx < units.length - 1) {
+    current /= 1024;
+    idx += 1;
+  }
+  return `${current.toFixed(current >= 100 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function renderMandatoryUpdateUi() {
+  const primaryBtn = document.getElementById('btn-update-lock-install');
+  const restartBtn = document.getElementById('btn-update-lock-restart');
+  const statusEl = document.getElementById('update-lock-substatus');
+  const progressEl = document.getElementById('update-lock-progress');
+  const progressFillEl = document.getElementById('update-lock-progress-fill');
+  if (!primaryBtn || !restartBtn || !statusEl || !progressEl || !progressFillEl) return;
+
+  if (mandatoryUpdateFlow.downloading) {
+    const pct = Math.min(100, Math.max(0, Number(mandatoryUpdateFlow.progress || 0)));
+    primaryBtn.textContent = `Downloading... ${pct.toFixed(0)}%`;
+    primaryBtn.disabled = true;
+    restartBtn.classList.add('hidden');
+    statusEl.classList.remove('hidden');
+    if (mandatoryUpdateFlow.error) {
+      statusEl.textContent = `${mandatoryUpdateFlow.error} Retrying...`;
+    } else {
+      statusEl.textContent = `Downloading ${formatBytes(mandatoryUpdateFlow.downloadedBytes)} / ${formatBytes(mandatoryUpdateFlow.totalBytes)}.`;
+    }
+    progressEl.classList.remove('hidden');
+    progressFillEl.style.width = `${pct}%`;
+    return;
+  }
+
+  primaryBtn.disabled = false;
+  progressEl.classList.add('hidden');
+  progressFillEl.style.width = `${Math.min(100, Math.max(0, Number(mandatoryUpdateFlow.progress || 0)))}%`;
+
+  if (mandatoryUpdateFlow.error) {
+    primaryBtn.textContent = 'Retry Download';
+    restartBtn.classList.add('hidden');
+    statusEl.classList.remove('hidden');
+    statusEl.textContent = mandatoryUpdateFlow.error;
+    return;
+  }
+
+  if (mandatoryUpdateFlow.downloaded) {
+    primaryBtn.textContent = mandatoryUpdateFlow.installerOpened ? 'Open Installer Again' : 'Install Update';
+    if (mandatoryUpdateFlow.installerOpened) {
+      restartBtn.classList.remove('hidden');
+      statusEl.classList.remove('hidden');
+      statusEl.textContent = 'Installer opened. Install/replace Anty Browser, then click Restart App.';
+    } else {
+      restartBtn.classList.add('hidden');
+      statusEl.classList.remove('hidden');
+      statusEl.textContent = 'Update downloaded. Click Install Update.';
+    }
+    return;
+  }
+
+  primaryBtn.textContent = 'Update Now';
+  restartBtn.classList.add('hidden');
+  statusEl.classList.add('hidden');
+  statusEl.textContent = '';
+}
+
+async function triggerMandatoryUpdateDownload() {
   if (mandatoryUpdateOpenInProgress) return;
   mandatoryUpdateOpenInProgress = true;
   try {
-    const result = await window.api.openUpdateInstaller();
-    if (!result?.ok && !isAuto) {
-      showToast(result?.message || 'Failed to open installer', 'error');
+    mandatoryUpdateFlow.error = '';
+    mandatoryUpdateFlow.downloading = true;
+    mandatoryUpdateFlow.progress = 0;
+    renderMandatoryUpdateUi();
+
+    const result = await window.api.downloadMandatoryUpdate({ retryCount: 3 });
+    if (!result?.ok) {
+      mandatoryUpdateFlow.downloading = false;
+      mandatoryUpdateFlow.downloaded = false;
+      mandatoryUpdateFlow.error = result?.message || 'Failed to download update';
+      renderMandatoryUpdateUi();
+      showToast(mandatoryUpdateFlow.error, 'error');
       return;
     }
-    if (!isAuto) {
-      showToast('Installer opened', 'success');
-    }
+
+    mandatoryUpdateFlow.downloading = false;
+    mandatoryUpdateFlow.downloaded = true;
+    mandatoryUpdateFlow.error = '';
+    mandatoryUpdateFlow.progress = 100;
+    renderMandatoryUpdateUi();
+    showToast('Update downloaded', 'success');
   } catch (err) {
-    if (!isAuto) {
-      showToast('Failed to open installer: ' + err.message, 'error');
-    }
+    mandatoryUpdateFlow.downloading = false;
+    mandatoryUpdateFlow.downloaded = false;
+    mandatoryUpdateFlow.error = err.message || 'Failed to download update';
+    renderMandatoryUpdateUi();
+    showToast('Failed to download update: ' + err.message, 'error');
   } finally {
     mandatoryUpdateOpenInProgress = false;
+  }
+}
+
+async function handleMandatoryUpdatePrimaryAction() {
+  if (mandatoryUpdateFlow.downloading) return;
+  if (!mandatoryUpdateFlow.downloaded) {
+    await triggerMandatoryUpdateDownload();
+    return;
+  }
+
+  try {
+    const opened = await window.api.openUpdateInstaller();
+    if (!opened?.ok) {
+      mandatoryUpdateFlow.error = opened?.message || 'Failed to open installer';
+      renderMandatoryUpdateUi();
+      showToast(mandatoryUpdateFlow.error, 'error');
+      return;
+    }
+
+    mandatoryUpdateFlow.error = '';
+    mandatoryUpdateFlow.installerOpened = true;
+    renderMandatoryUpdateUi();
+    showToast('Installer opened', 'success');
+  } catch (err) {
+    mandatoryUpdateFlow.error = err.message || 'Failed to open installer';
+    renderMandatoryUpdateUi();
+    showToast(mandatoryUpdateFlow.error, 'error');
+  }
+}
+
+async function handleMandatoryRestartAction() {
+  try {
+    await window.api.restartApp();
+  } catch (err) {
+    showToast('Failed to restart app: ' + err.message, 'error');
   }
 }
 

@@ -490,8 +490,13 @@
     <div class="update-lock-card">
       <h3>Update Required</h3>
       <p id="update-lock-text">Access will be restored after installing the latest version.</p>
+      <p class="update-lock-substatus hidden" id="update-lock-substatus"></p>
+      <div class="update-lock-progress hidden" id="update-lock-progress">
+        <div class="update-lock-progress-fill" id="update-lock-progress-fill"></div>
+      </div>
       <div class="update-lock-actions">
         <button class="btn btn-open" id="btn-update-lock-install">Update Now</button>
+        <button class="btn btn-save hidden" id="btn-update-lock-restart">Restart App</button>
         <button class="btn btn-save" id="btn-update-lock-exit">Exit</button>
       </div>
     </div>

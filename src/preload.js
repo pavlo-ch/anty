@@ -48,7 +48,9 @@ contextBridge.exposeInMainWorld('api', {
   startupUpdateCheck: () => ipcRenderer.invoke('app:update:startup-check'),
   checkAppUpdates: () => ipcRenderer.invoke('app:update:check'),
   installDownloadedUpdate: () => ipcRenderer.invoke('app:update:install'),
+  downloadMandatoryUpdate: (options) => ipcRenderer.invoke('app:update:download-mandatory', options || {}),
   openUpdateInstaller: () => ipcRenderer.invoke('app:update:open-installer'),
+  restartApp: () => ipcRenderer.invoke('app:restart'),
 
   // Events
   onProfileStatus: (callback) => {
