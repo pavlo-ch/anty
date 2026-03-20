@@ -1,4 +1,4 @@
-const { app, ipcMain, BrowserWindow } = require('electron');
+const { app, ipcMain, BrowserWindow, shell } = require('electron');
 const db = require('./database');
 const launcher = require('./launcher');
 const auth = require('./auth');
@@ -11,6 +11,16 @@ function requireLoggedIn() {
 
 function registerIpcHandlers() {
   ipcMain.handle('app:version', () => app.getVersion());
+  ipcMain.handle('app:open-external', async (_, url) => {
+    const target = String(url || '').trim();
+    if (!target) return { ok: false, reason: 'missing_url' };
+    try {
+      await shell.openExternal(target);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: 'open_failed', message: err.message };
+    }
+  });
   ipcMain.handle('app:restart', () => {
     app.relaunch();
     app.exit(0);

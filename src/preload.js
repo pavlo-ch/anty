@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('api', {
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
   maximizeWindow: () => ipcRenderer.send('window:maximize'),
   closeWindow: () => ipcRenderer.send('window:close'),
+  openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
 
   // App updates
   getUpdateConfigStatus: () => ipcRenderer.invoke('app:update:status'),

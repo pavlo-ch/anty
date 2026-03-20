@@ -97,7 +97,12 @@ function setupEventListeners() {
   // Sidebar navigation
   document.querySelectorAll('.nav-btn[data-page]').forEach(btn => {
     btn.addEventListener('click', () => {
+      if (btn.dataset.disabled === 'true') return;
       const page = btn.dataset.page;
+      if (page === 'feedback') {
+        void window.api.openExternal('https://t.me/nayborovskiy');
+        return;
+      }
       document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -741,10 +746,7 @@ function populateProxySelect(selectedId) {
 // ===== ACCOUNT =====
 async function refreshAccountPage() {
   try {
-    await Promise.all([
-      loadAccountStateUI(),
-      loadAccountEventsUI()
-    ]);
+    await loadAccountStateUI();
   } catch (err) {
     console.error('Failed to refresh account page:', err);
   }
@@ -769,53 +771,20 @@ async function loadAccountStateUI() {
   renderAccountState(accountState);
 }
 
-async function loadAccountEventsUI() {
-  const events = await window.api.getAccountEvents(40);
-  renderAccountEvents(events || []);
-}
-
 function renderAccountState(state) {
-  const statusBadge = document.getElementById('account-status-badge');
   const metaEl = document.getElementById('account-meta');
-  if (!statusBadge || !metaEl) return;
+  if (!metaEl) return;
 
   const isLoggedIn = Boolean(state?.isLoggedIn);
-  statusBadge.textContent = isLoggedIn ? 'Logged in' : 'Logged out';
-  statusBadge.classList.toggle('logged-in', isLoggedIn);
+  const name = state?.displayName ? escapeHtml(state.displayName) : '—';
+  const email = state?.email ? escapeHtml(state.email) : '—';
+  metaEl.innerHTML = `
+    <div><strong>Name:</strong> ${name}</div>
+    <div><strong>Email:</strong> ${email}</div>
+  `;
 
-  const metaLines = [];
-  if (state?.displayName) metaLines.push(`Name: ${escapeHtml(state.displayName)}`);
-  if (state?.email) metaLines.push(`Email: ${escapeHtml(state.email)}`);
-  if (state?.platformUserId) metaLines.push(`User ID: ${escapeHtml(state.platformUserId)}`);
-  if (state?.lastLoginAt) metaLines.push(`Last login: ${new Date(state.lastLoginAt).toLocaleString('uk-UA')}`);
-  if (state?.lastLogoutAt) metaLines.push(`Last logout: ${new Date(state.lastLogoutAt).toLocaleString('uk-UA')}`);
-  if (!metaLines.length) metaLines.push('No account activity yet.');
-  metaEl.innerHTML = metaLines.join('<br>');
-}
-
-function renderAccountEvents(events) {
-  const container = document.getElementById('account-events');
-  if (!container) return;
-
-  if (!events.length) {
-    container.innerHTML = '<div class="account-event-item"><div class="account-event-message">No login/logout events yet.</div></div>';
-    return;
-  }
-
-  container.innerHTML = events.map((event) => {
-    const time = new Date(`${event.created_at}Z`).toLocaleString('uk-UA');
-    const type = escapeHtml(event.event_type || 'event');
-    const message = escapeHtml(event.message || '');
-    return `
-      <div class="account-event-item">
-        <div class="account-event-top">
-          <span class="account-event-type">${type}</span>
-          <span class="account-event-time">${time}</span>
-        </div>
-        <div class="account-event-message">${message}</div>
-      </div>
-    `;
-  }).join('');
+  const logoutBtn = document.getElementById('btn-account-logout');
+  if (logoutBtn) logoutBtn.disabled = !isLoggedIn;
 }
 
 async function loginAccount() {
@@ -824,7 +793,6 @@ async function loginAccount() {
   try {
     accountState = await window.api.loginAccount({ mode: 'web' });
     renderAccountState(accountState);
-    await loadAccountEventsUI();
     await loadData();
     renderProfilesList();
     hideLoginModal();
@@ -833,7 +801,6 @@ async function loginAccount() {
     const msg = err.message || 'Login failed';
     setLoginModalError(msg);
     showToast(msg, 'error');
-    await loadAccountEventsUI();
   } finally {
     setAccountBusy(false);
   }
@@ -845,7 +812,6 @@ async function loginFromModal() {
   try {
     accountState = await window.api.loginAccount({ mode: 'web' });
     renderAccountState(accountState);
-    await loadAccountEventsUI();
     await loadData();
     renderProfilesList();
     hideLoginModal();
@@ -854,7 +820,6 @@ async function loginFromModal() {
     const msg = err.message || 'Login failed';
     setLoginModalError(msg);
     showToast(msg, 'error');
-    await loadAccountEventsUI();
   } finally {
     setAccountBusy(false);
   }
@@ -865,7 +830,6 @@ async function logoutAccount() {
   try {
     accountState = await window.api.logoutAccount({ clearSaved: false });
     renderAccountState(accountState);
-    await loadAccountEventsUI();
     profiles = [];
     proxies = [];
     folders = [];
