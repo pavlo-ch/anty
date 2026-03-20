@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('api', {
   downloadMandatoryUpdate: (options) => ipcRenderer.invoke('app:update:download-mandatory', options || {}),
   openUpdateInstaller: () => ipcRenderer.invoke('app:update:open-installer'),
   restartApp: () => ipcRenderer.invoke('app:restart'),
+  quitApp: () => ipcRenderer.invoke('app:quit'),
 
   // Events
   onProfileStatus: (callback) => {

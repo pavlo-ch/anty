@@ -224,7 +224,7 @@ function setupEventListeners() {
   document.getElementById('btn-update-lock-install')?.addEventListener('click', handleMandatoryUpdatePrimaryAction);
   document.getElementById('btn-update-lock-restart')?.addEventListener('click', handleMandatoryRestartAction);
   document.getElementById('btn-update-lock-exit')?.addEventListener('click', () => {
-    window.api.closeWindow();
+    void window.api.quitApp();
   });
 }
 
@@ -965,7 +965,7 @@ function showMandatoryUpdateModal(data = {}) {
   if (text) {
     const nextVersion = mandatoryUpdateFlow.version ? `v${mandatoryUpdateFlow.version}` : 'a newer version';
     const currentVersion = mandatoryUpdateFlow.currentVersion ? ` (current v${mandatoryUpdateFlow.currentVersion})` : '';
-    text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now", install the DMG, then restart Anty Browser.`;
+    text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now", open the DMG, quit Anty Browser, replace the app, then launch it again.`;
   }
   if (modal) modal.classList.remove('hidden');
   renderMandatoryUpdateUi();
@@ -1023,9 +1023,10 @@ function renderMandatoryUpdateUi() {
   if (mandatoryUpdateFlow.downloaded) {
     primaryBtn.textContent = mandatoryUpdateFlow.installerOpened ? 'Open Installer Again' : 'Install Update';
     if (mandatoryUpdateFlow.installerOpened) {
+      restartBtn.textContent = 'Quit for Install';
       restartBtn.classList.remove('hidden');
       statusEl.classList.remove('hidden');
-      statusEl.textContent = 'Installer opened. Install/replace Anty Browser, then click Restart App.';
+      statusEl.textContent = 'Installer opened. Quit Anty Browser, replace the app in Applications, then launch it again.';
     } else {
       restartBtn.classList.add('hidden');
       statusEl.classList.remove('hidden');
@@ -1105,9 +1106,9 @@ async function handleMandatoryUpdatePrimaryAction() {
 
 async function handleMandatoryRestartAction() {
   try {
-    await window.api.restartApp();
+    await window.api.quitApp();
   } catch (err) {
-    showToast('Failed to restart app: ' + err.message, 'error');
+    showToast('Failed to quit app: ' + err.message, 'error');
   }
 }
 

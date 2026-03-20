@@ -1324,7 +1324,24 @@ html, body {
 
 .update-lock-actions {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.update-lock-actions-left,
+.update-lock-actions-right {
+  display: flex;
+  align-items: center;
   gap: 10px;
+}
+
+.update-lock-actions-left {
+  justify-content: flex-start;
+}
+
+.update-lock-actions-right {
+  justify-content: flex-end;
 }
 
 .hidden {

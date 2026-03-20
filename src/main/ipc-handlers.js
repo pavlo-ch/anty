@@ -26,6 +26,10 @@ function registerIpcHandlers() {
     app.exit(0);
     return { ok: true };
   });
+  ipcMain.handle('app:quit', () => {
+    app.quit();
+    return { ok: true };
+  });
 
   // ---- PROFILES ----
   ipcMain.handle('profile:list', () => {
