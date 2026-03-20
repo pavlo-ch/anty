@@ -36,13 +36,19 @@ function registerIpcHandlers() {
     requireLoggedIn();
     return db.getProfile(id);
   });
-  ipcMain.handle('profile:create', (_, data) => {
+  ipcMain.handle('profile:create', async (_, data) => {
     requireLoggedIn();
-    return db.createProfile(data || {});
+    const created = db.createProfile(data || {});
+    const synced = await launcher.syncProfileLocaleFromProxy(created.id);
+    return synced?.success && synced?.profile ? synced.profile : created;
   });
-  ipcMain.handle('profile:update', (_, id, data) => {
+  ipcMain.handle('profile:update', async (_, id, data) => {
     requireLoggedIn();
-    return db.updateProfile(id, data);
+    const updated = db.updateProfile(id, data);
+    const hasProxyField = data && Object.prototype.hasOwnProperty.call(data, 'proxy_id');
+    if (!hasProxyField) return updated;
+    const synced = await launcher.syncProfileLocaleFromProxy(id);
+    return synced?.success && synced?.profile ? synced.profile : updated;
   });
   ipcMain.handle('profile:delete', (_, id) => {
     requireLoggedIn();

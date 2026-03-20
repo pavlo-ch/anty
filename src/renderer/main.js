@@ -257,9 +257,7 @@ async function saveProfile() {
 
     // Also link selected proxy
     const proxySelectVal = document.getElementById('editor-proxy-select').value;
-    if (proxySelectVal) {
-      data.proxy_id = parseInt(proxySelectVal);
-    }
+    data.proxy_id = proxySelectVal ? parseInt(proxySelectVal) : null;
 
     // Save cookies
     const cookiesText = document.getElementById('cookies-textarea').value;
@@ -273,12 +271,6 @@ async function saveProfile() {
     }
 
     await window.api.updateProfile(selectedProfileId, data);
-    if (proxySelectVal) {
-      const syncResult = await syncProfileLocaleFromProxy(selectedProfileId, { silentSuccess: true });
-      if (!syncResult?.success && syncResult?.error) {
-        showToast(`Proxy locale sync failed: ${syncResult.error}`, 'error');
-      }
-    }
     await loadData();
     renderProfilesList();
     loadProfileEditor(selectedProfileId);
@@ -385,10 +377,6 @@ async function saveProxy() {
     // Link to current profile
     if (selectedProfileId) {
       await window.api.updateProfile(selectedProfileId, { proxy_id: proxy.id });
-      const syncResult = await syncProfileLocaleFromProxy(selectedProfileId, { silentSuccess: false });
-      if (!syncResult?.success && syncResult?.error) {
-        showToast(`Proxy saved, but locale sync failed: ${syncResult.error}`, 'error');
-      }
     }
     await loadData();
     populateProxySelect(proxy.id);
@@ -468,7 +456,7 @@ function renderProfilesList(searchTerm = '') {
     const isActive = p.id === selectedProfileId;
     const isRunning = runningProfiles.has(p.id);
     const time = formatTime(p.modified_at);
-    const osEmoji = getOsEmoji(fp);
+    const osBadge = getOsBadgeMarkup(fp);
     const browserIcon = getBrowserIcon(fp.browserName);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';
@@ -496,7 +484,7 @@ function renderProfilesList(searchTerm = '') {
         </div>
         <div class="profile-item-meta">
           <div class="profile-item-badges">
-            <span class="badge badge-os" title="${fp.osName || 'Unknown'}">${osEmoji}</span>
+            <span class="badge badge-os" title="${fp.osName || 'Unknown'}">${osBadge}</span>
             <span class="badge badge-browser" title="${fp.browserName || 'Chrome'}">${browserIcon}</span>
             ${countryFlag ? `<span class="badge badge-country" title="${countryCode}">${countryFlag}</span>` : ''}
             ${hasProxy ? `<span class="badge badge-proxy" title="Proxy active">⇄</span>` : ''}
@@ -521,7 +509,6 @@ async function backfillProxyLocaleForExistingProfiles() {
   proxyLocaleBackfillRunning = true;
   try {
     const candidates = profiles.filter((p) => {
-      if (!p.proxy_host) return false;
       let fp = {};
       try {
         fp = JSON.parse(p.fingerprint || '{}');
@@ -530,7 +517,9 @@ async function backfillProxyLocaleForExistingProfiles() {
       }
       const hasCountry = Boolean(fp?.locale?.country);
       const hasFlag = Boolean(fp?.locale?.flag);
-      return !hasCountry || !hasFlag;
+      const language = String(fp?.locale?.language || '').toLowerCase();
+      const isEnglish = language.startsWith('en');
+      return !hasCountry || !hasFlag || !isEnglish;
     });
     if (!candidates.length) return;
 
@@ -1155,7 +1144,7 @@ function formatTime(dateStr) {
   return d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
 }
 
-function getOsEmoji(fp) {
+function getOsType(fp) {
   const source = [
     fp?.osShort,
     fp?.osName,
@@ -1163,11 +1152,24 @@ function getOsEmoji(fp) {
     fp?.userAgent,
   ].filter(Boolean).join(' ').toLowerCase();
 
-  if (!source) return '💻';
-  if (source.includes('win')) return '🪟';
-  if (source.includes('mac') || source.includes('darwin') || source.includes('os x') || source.includes('macintosh')) return '🍎';
-  if (source.includes('android')) return '📱';
-  if (source.includes('linux')) return '🐧';
+  if (!source) return 'unknown';
+  if (source.includes('win')) return 'windows';
+  if (source.includes('mac') || source.includes('darwin') || source.includes('os x') || source.includes('macintosh')) return 'apple';
+  if (source.includes('android')) return 'android';
+  if (source.includes('linux')) return 'linux';
+  return 'unknown';
+}
+
+function getOsBadgeMarkup(fp) {
+  const type = getOsType(fp);
+  if (type === 'windows') {
+    return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M0.6 2.7L6.9 1.8v5.7H0.6V2.7zm7.4-1l7-1v6.8h-7V1.7zM0.6 8.5h6.3v5.7l-6.3-.9V8.5zm7.4 0h7v6.8l-7-1V8.5z" fill="currentColor"/></svg>';
+  }
+  if (type === 'apple') {
+    return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.5 8.2c0-1.6 1.3-2.4 1.3-2.4-.7-1-1.8-1.1-2.2-1.1-.9-.1-1.7.5-2.2.5-.5 0-1.1-.5-1.9-.4-1 .1-1.9.6-2.4 1.5-1.1 1.8-.3 4.5.8 6 .5.7 1.1 1.5 1.9 1.5.8 0 1.1-.5 2-.5.9 0 1.2.5 2 .5.8 0 1.4-.7 1.9-1.4.6-.8.8-1.6.8-1.7 0 0-1.5-.6-1.5-2.5zM10 3.5c.4-.5.7-1.2.6-1.9-.6 0-1.3.4-1.7.9-.4.5-.8 1.2-.7 1.9.7.1 1.4-.3 1.8-.9z" fill="currentColor"/></svg>';
+  }
+  if (type === 'linux') return '🐧';
+  if (type === 'android') return '🤖';
   return '💻';
 }
 

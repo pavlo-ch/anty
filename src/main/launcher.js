@@ -2,7 +2,7 @@ const { chromium } = require('playwright-core');
 const path = require('path');
 const { app } = require('electron');
 const fs = require('fs');
-const { buildInjectionScript, getLocaleByCountry } = require('./fingerprint');
+const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag } = require('./fingerprint');
 const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('./database');
 const http = require('http');
 
@@ -49,6 +49,58 @@ function requestThroughHttpProxy(proxyData, targetUrl, timeoutMs = 8000) {
     });
     req.end();
   });
+}
+
+async function requestDirectGeo(timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(
+      'http://ip-api.com/json/?fields=status,message,query,countryCode,timezone,country',
+      { cache: 'no-store', signal: controller.signal }
+    );
+    if (!response.ok) {
+      return { success: false, error: `Geo request failed (${response.status})`, ip: null, country: null };
+    }
+
+    let geo = null;
+    try {
+      geo = await response.json();
+    } catch {
+      geo = null;
+    }
+    if (!geo || geo.status !== 'success') {
+      return { success: false, error: geo?.message || 'Failed to resolve direct geolocation.', ip: null, country: null };
+    }
+
+    return {
+      success: true,
+      ip: String(geo.query || ''),
+      country: String(geo.country || ''),
+      countryCode: String(geo.countryCode || '').toUpperCase(),
+      timezone: String(geo.timezone || ''),
+      latencyMs: null,
+    };
+  } catch (err) {
+    return { success: false, error: err.message, ip: null, country: null };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildEnglishLocale(countryCode, timezone) {
+  const code = String(countryCode || '').trim().toUpperCase();
+  const tz = String(timezone || '').trim();
+  const preset = getLocaleByCountry(code, tz);
+  const fallbackCountry = code || preset?.country || 'US';
+  const fallbackTimezone = tz || preset?.timezone || 'America/New_York';
+  return {
+    lang: 'en-US',
+    langs: ['en-US', 'en'],
+    timezone: fallbackTimezone,
+    country: fallbackCountry,
+    flag: preset?.flag || countryCodeToFlag(fallbackCountry),
+  };
 }
 
 // ===== PROXY CHECK =====
@@ -103,7 +155,7 @@ async function checkProxy(proxyData) {
 
     const countryCode = String(geo.countryCode || '').toUpperCase();
     const timezone = String(geo.timezone || '');
-    const locale = getLocaleByCountry(countryCode, timezone);
+    const locale = buildEnglishLocale(countryCode, timezone);
 
     return {
       success: true,
@@ -126,26 +178,19 @@ async function syncProfileLocaleFromProxy(profileId) {
   if (!profile) {
     return { success: false, error: 'Profile not found' };
   }
-  if (!profile.proxy_host || !profile.proxy_port) {
-    return { success: false, error: 'Profile has no proxy configured' };
-  }
+  const hasProxy = Boolean(profile.proxy_host && profile.proxy_port);
+  const geoResult = hasProxy
+    ? await checkProxy({
+      type: profile.proxy_type || 'http',
+      host: profile.proxy_host,
+      port: profile.proxy_port,
+      username: profile.proxy_username || '',
+      password: profile.proxy_password || '',
+    })
+    : await requestDirectGeo();
+  if (!geoResult.success) return geoResult;
 
-  const proxyData = {
-    type: profile.proxy_type || 'http',
-    host: profile.proxy_host,
-    port: profile.proxy_port,
-    username: profile.proxy_username || '',
-    password: profile.proxy_password || '',
-  };
-  const proxyCheck = await checkProxy(proxyData);
-  if (!proxyCheck.success) {
-    return proxyCheck;
-  }
-
-  const locale = getLocaleByCountry(proxyCheck.countryCode, proxyCheck.timezone);
-  if (!locale) {
-    return { success: false, error: `No locale preset for country ${proxyCheck.countryCode || 'unknown'}` };
-  }
+  const locale = buildEnglishLocale(geoResult.countryCode, geoResult.timezone);
 
   let fingerprint = {};
   try {
@@ -165,11 +210,12 @@ async function syncProfileLocaleFromProxy(profileId) {
   const updated = updateProfile(profileId, { fingerprint });
   return {
     success: true,
+    source: hasProxy ? 'proxy' : 'direct',
     profile: updated,
     proxy: {
-      ip: proxyCheck.ip,
-      countryCode: proxyCheck.countryCode,
-      timezone: proxyCheck.timezone,
+      ip: geoResult.ip,
+      countryCode: geoResult.countryCode,
+      timezone: geoResult.timezone,
       language: locale.lang,
       flag: locale.flag,
     },

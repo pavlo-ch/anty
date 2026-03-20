@@ -500,6 +500,12 @@ html, body {
   color: var(--text-secondary);
 }
 
+.badge-os svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
 .badge-proxy {
   background: var(--green-bg);
   color: var(--green);

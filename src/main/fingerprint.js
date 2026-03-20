@@ -233,7 +233,15 @@ function generateFingerprint(customUA) {
 
   const screen = randomItem(profile.screens);
   const fonts = randomItem(FONT_SETS);
-  const locale = randomItem(LANGUAGES);
+  // Locale is set to a deterministic English baseline.
+  // Country/timezone are later synced from proxy/direct IP in main process.
+  const locale = {
+    lang: 'en-US',
+    langs: ['en-US', 'en'],
+    timezone: 'America/New_York',
+    country: 'US',
+    flag: countryCodeToFlag('US'),
+  };
   const cpuCores = randomItem(profile.cpuCores);
   const memoryGb = randomItem(profile.memoryGb);
   const maxTouchPoints = profile.mobile ? randomItem([1, 5, 10]) : 0;
