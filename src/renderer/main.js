@@ -262,12 +262,12 @@ async function saveProfile() {
     // Save cookies
     const cookiesText = document.getElementById('cookies-textarea').value;
     if (cookiesText) {
-      try {
-        data.cookies = JSON.parse(cookiesText);
-      } catch {
-        showToast('Invalid cookies JSON', 'error');
+      const parsedCookies = parseCookiesInput(cookiesText);
+      if (!parsedCookies.ok) {
+        showToast(parsedCookies.error || 'Invalid cookies JSON', 'error');
         return;
       }
+      data.cookies = parsedCookies.cookies;
     }
 
     await window.api.updateProfile(selectedProfileId, data);
@@ -1148,6 +1148,143 @@ function formatTime(dateStr) {
   }
   
   return d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
+}
+
+function parseCookiesInput(rawText) {
+  const text = String(rawText || '').trim();
+  if (!text) return { ok: true, cookies: [] };
+
+  const direct = tryParseCookiesArray(text);
+  if (direct.ok) return direct;
+
+  const candidates = extractJsonArrays(text);
+  const collected = [];
+  for (const candidate of candidates) {
+    const parsed = tryParseCookiesArray(candidate);
+    if (parsed.ok && parsed.cookies.length > 0) {
+      collected.push(...parsed.cookies);
+    }
+  }
+
+  if (!collected.length) {
+    return { ok: false, error: 'Invalid cookies JSON. Paste JSON array of cookies.' };
+  }
+
+  return { ok: true, cookies: dedupeCookies(collected) };
+}
+
+function tryParseCookiesArray(input) {
+  try {
+    const value = JSON.parse(input);
+    if (!Array.isArray(value)) {
+      return { ok: false, error: 'Cookies value must be an array.' };
+    }
+    const cookies = value.map(normalizeCookie).filter(Boolean);
+    if (!cookies.length) {
+      return { ok: false, error: 'No valid cookies found in JSON.' };
+    }
+    return { ok: true, cookies: dedupeCookies(cookies) };
+  } catch {
+    return { ok: false, error: 'Invalid JSON.' };
+  }
+}
+
+function extractJsonArrays(text) {
+  const chunks = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '[') {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+
+    if (ch === ']' && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        chunks.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return chunks;
+}
+
+function normalizeSameSite(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v || v === 'unspecified' || v === 'no_restriction') return null;
+  if (v === 'lax') return 'Lax';
+  if (v === 'strict') return 'Strict';
+  if (v === 'none') return 'None';
+  return null;
+}
+
+function normalizeCookie(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const name = String(raw.name || '').trim();
+  const value = raw.value == null ? '' : String(raw.value);
+  if (!name) return null;
+
+  const url = String(raw.url || '').trim();
+  const domain = String(raw.domain || '').trim();
+  const path = String(raw.path || '/').trim() || '/';
+
+  const cookie = { name, value };
+  if (url) {
+    cookie.url = url;
+  } else if (domain) {
+    cookie.domain = domain;
+    cookie.path = path;
+  } else {
+    return null;
+  }
+
+  if (typeof raw.httpOnly === 'boolean') cookie.httpOnly = raw.httpOnly;
+  if (typeof raw.secure === 'boolean') cookie.secure = raw.secure;
+
+  const sameSite = normalizeSameSite(raw.sameSite);
+  if (sameSite) cookie.sameSite = sameSite;
+  if (cookie.sameSite === 'None' && cookie.secure !== true) cookie.secure = true;
+
+  const expiresNum = Number(raw.expires ?? raw.expirationDate);
+  if (Number.isFinite(expiresNum) && expiresNum > 0 && !raw.session) {
+    cookie.expires = expiresNum;
+  }
+
+  return cookie;
+}
+
+function dedupeCookies(cookies) {
+  const map = new Map();
+  for (const cookie of cookies) {
+    const scope = cookie.url || `${cookie.domain || ''}${cookie.path || ''}`;
+    const key = `${cookie.name}::${scope}`;
+    map.set(key, cookie);
+  }
+  return Array.from(map.values());
 }
 
 function getOsType(fp) {

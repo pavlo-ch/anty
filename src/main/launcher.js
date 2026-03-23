@@ -103,6 +103,51 @@ function buildEnglishLocale(countryCode, timezone) {
   };
 }
 
+function normalizeSameSite(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v || v === 'unspecified' || v === 'no_restriction') return undefined;
+  if (v === 'lax') return 'Lax';
+  if (v === 'strict') return 'Strict';
+  if (v === 'none') return 'None';
+  return undefined;
+}
+
+function normalizeCookieForPlaywright(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const name = String(raw.name || '').trim();
+  const value = raw.value == null ? '' : String(raw.value);
+  if (!name) return null;
+
+  const url = String(raw.url || '').trim();
+  const domain = String(raw.domain || '').trim();
+  const cookiePath = String(raw.path || '/').trim() || '/';
+
+  const cookie = { name, value };
+  if (url) {
+    cookie.url = url;
+  } else if (domain) {
+    cookie.domain = domain;
+    cookie.path = cookiePath;
+  } else {
+    return null;
+  }
+
+  if (typeof raw.httpOnly === 'boolean') cookie.httpOnly = raw.httpOnly;
+  if (typeof raw.secure === 'boolean') cookie.secure = raw.secure;
+
+  const sameSite = normalizeSameSite(raw.sameSite);
+  if (sameSite) cookie.sameSite = sameSite;
+  if (cookie.sameSite === 'None' && cookie.secure !== true) cookie.secure = true;
+
+  const expiresNum = Number(raw.expires ?? raw.expirationDate);
+  if (Number.isFinite(expiresNum) && expiresNum > 0 && !raw.session) {
+    cookie.expires = expiresNum;
+  }
+
+  return cookie;
+}
+
 // ===== PROXY CHECK =====
 async function checkProxy(proxyData) {
   const proxyType = String(proxyData.type || 'http').toLowerCase();
@@ -378,7 +423,9 @@ async function launchProfile(profileId, mainWindow) {
     // Import cookies if any
     if (profile.cookies && profile.cookies !== '[]') {
       try {
-        const cookies = JSON.parse(profile.cookies);
+        const cookies = JSON.parse(profile.cookies)
+          .map(normalizeCookieForPlaywright)
+          .filter(Boolean);
         if (cookies.length > 0) {
           await context.addCookies(cookies);
         }
