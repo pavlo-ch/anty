@@ -128,6 +128,9 @@ function registerIpcHandlers() {
     }
 
     const updated = db.updateProfile(id, data);
+    if (!updated) {
+      throw new Error('Profile not found');
+    }
     const hasProxyField = data && Object.prototype.hasOwnProperty.call(data, 'proxy_id');
     const finalProfile = hasProxyField
       ? ((await launcher.syncProfileLocaleFromProxy(id))?.profile || updated)

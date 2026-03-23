@@ -392,6 +392,15 @@ async function persistSelectedProfile(options = {}) {
       return;
     }
     const message = err?.message || String(err || 'Unknown error');
+    if (message.toLowerCase().includes('profile not found')) {
+      selectedProfileId = null;
+      clearAutoSaveTimer();
+      hideEditor();
+      await loadData();
+      renderProfilesList(document.getElementById('search-input')?.value || '');
+      showToast('Profile no longer exists. List refreshed.', 'error');
+      return;
+    }
     showToast(`Failed to save profile: ${message}`, 'error');
     if (!options.isAuto) throw err;
   } finally {

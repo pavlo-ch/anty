@@ -162,6 +162,11 @@ function getDb() {
   return db;
 }
 
+function profileExists(profileId) {
+  const row = getDb().prepare('SELECT id FROM profiles WHERE id = ?').get(profileId);
+  return Boolean(row?.id);
+}
+
 function normalizeTagNames(input) {
   if (!input) return [];
   const source = Array.isArray(input) ? input : String(input).split(',');
@@ -204,6 +209,7 @@ function getProfileTags(profileId) {
 }
 
 function setProfileTags(profileId, tagsInput) {
+  if (!profileExists(profileId)) return [];
   const tagNames = normalizeTagNames(tagsInput);
   const tx = getDb().transaction((pid, names) => {
     getDb().prepare('DELETE FROM profile_tags WHERE profile_id = ?').run(pid);
@@ -297,9 +303,11 @@ function createProfile(data) {
 
 function updateProfile(id, data) {
   const updateData = data || {};
+  if (!profileExists(id)) return null;
   const sets = [];
   const values = [];
   const hasTagsUpdate = Object.prototype.hasOwnProperty.call(updateData, 'tags');
+  const fkFields = new Set(['folder_id', 'group_id', 'proxy_id']);
   
   const allowedFields = [
     'name',
@@ -320,7 +328,12 @@ function updateProfile(id, data) {
   for (const field of allowedFields) {
     if (updateData[field] !== undefined) {
       sets.push(`${field} = ?`);
-      values.push(typeof updateData[field] === 'object' ? JSON.stringify(updateData[field]) : updateData[field]);
+      let value = updateData[field];
+      if (fkFields.has(field)) {
+        const numeric = Number(value);
+        value = Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+      }
+      values.push(value !== null && typeof value === 'object' ? JSON.stringify(value) : value);
     }
   }
   
