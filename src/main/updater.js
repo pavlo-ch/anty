@@ -253,6 +253,16 @@ function getMandatoryDownloadPath(version, downloadUrl) {
   return path.join(versionDir, fileName);
 }
 
+function isNoSpaceError(err) {
+  const code = String(err?.code || '').toUpperCase();
+  const message = String(err?.message || '').toLowerCase();
+  return code === 'ENOSPC' || message.includes('enospc') || message.includes('no space left on device');
+}
+
+function formatNoSpaceMessage() {
+  return 'Not enough disk space to download update. Free at least 2 GB and try again.';
+}
+
 async function downloadFileWithProgress(downloadUrl, targetPath, onProgress) {
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
   const tmpPath = `${targetPath}.part`;
@@ -266,9 +276,15 @@ async function downloadFileWithProgress(downloadUrl, targetPath, onProgress) {
   const reader = response.body.getReader();
   const writer = fs.createWriteStream(tmpPath);
   let downloaded = 0;
+  let streamError = null;
+
+  writer.on('error', (err) => {
+    streamError = err;
+  });
 
   try {
     while (true) {
+      if (streamError) throw streamError;
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
@@ -286,6 +302,7 @@ async function downloadFileWithProgress(downloadUrl, targetPath, onProgress) {
     }
 
     await new Promise((resolve, reject) => writer.end((err) => (err ? reject(err) : resolve())));
+    if (streamError) throw streamError;
     fs.renameSync(tmpPath, targetPath);
     onProgress({
       percent: 100,
@@ -294,8 +311,14 @@ async function downloadFileWithProgress(downloadUrl, targetPath, onProgress) {
     });
     return { filePath: targetPath, downloadedBytes: downloaded, totalBytes: total || downloaded };
   } catch (err) {
+    try { await reader.cancel(); } catch (_) {}
     writer.destroy();
     try { fs.unlinkSync(tmpPath); } catch (_) {}
+    if (isNoSpaceError(err)) {
+      const wrapped = new Error(formatNoSpaceMessage());
+      wrapped.code = 'ENOSPC';
+      throw wrapped;
+    }
     throw err;
   }
 }
@@ -389,23 +412,29 @@ async function downloadMandatoryUpdate(options = {}) {
       } catch (err) {
         mandatoryDownloadRequested = false;
         lastError = err;
+        const message = isNoSpaceError(err) ? formatNoSpaceMessage() : err.message;
         logEvent('warn', 'mandatory_download_attempt_failed', {
           version,
           attempt,
           maxAttempts,
-          message: err.message,
+          message,
         });
         updateMandatoryState({
           state: 'mandatory_download_retry',
           version,
           attempts: attempt,
           filePath: null,
-          message: `Download attempt ${attempt}/${maxAttempts} failed.`,
+          message: isNoSpaceError(err)
+            ? message
+            : `Download attempt ${attempt}/${maxAttempts} failed.`,
         });
+        if (isNoSpaceError(err)) break;
       }
     }
 
-    const failMessage = lastError?.message || 'Failed to download update.';
+    const failMessage = isNoSpaceError(lastError)
+      ? formatNoSpaceMessage()
+      : (lastError?.message || 'Failed to download update.');
     updateMandatoryState({
       state: 'mandatory_download_error',
       version,

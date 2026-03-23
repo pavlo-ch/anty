@@ -1,6 +1,6 @@
 {
   "name": "anty-browser",
-  "version": "1.0.35",
+  "version": "1.0.36",
   "description": "Anti-detect browser with fingerprint spoofing and profile isolation",
   "main": "src/main/main.js",
   "scripts": {
