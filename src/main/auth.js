@@ -32,6 +32,7 @@ function loadStaticPlatformConfig() {
         logoutUrl: String(parsed?.logoutUrl || '').trim(),
         profilesPushUrl: String(parsed?.profilesPushUrl || '').trim(),
         profilesPullUrl: String(parsed?.profilesPullUrl || '').trim(),
+        cloudProfilesRequired: parsed?.cloudProfilesRequired,
         logUrl: String(parsed?.logUrl || '').trim()
       };
       return staticPlatformConfigCache;
@@ -40,7 +41,7 @@ function loadStaticPlatformConfig() {
     }
   }
 
-  staticPlatformConfigCache = { authUrl: '', authStartUrl: '', authPollUrl: '', refreshUrl: '', logoutUrl: '', profilesPushUrl: '', profilesPullUrl: '', logUrl: '' };
+  staticPlatformConfigCache = { authUrl: '', authStartUrl: '', authPollUrl: '', refreshUrl: '', logoutUrl: '', profilesPushUrl: '', profilesPullUrl: '', cloudProfilesRequired: true, logUrl: '' };
   return staticPlatformConfigCache;
 }
 
@@ -135,6 +136,27 @@ function getPlatformProfilesPullUrl() {
   ).trim();
   if (configured) return configured;
   return deriveSiblingUrl(getPlatformAuthUrl(), 'profiles/pull');
+}
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function getCloudProfilesRequired() {
+  const staticConfig = loadStaticPlatformConfig();
+  const raw = (
+    db.getSetting('platform_profiles_cloud_required')
+    || process.env.ANTY_CLOUD_PROFILES_REQUIRED
+    || process.env.ANTY_PLATFORM_CLOUD_PROFILES_REQUIRED
+    || staticConfig.cloudProfilesRequired
+  );
+  return parseBoolean(raw, true);
 }
 
 function getOrCreateStableDeviceId() {
@@ -459,6 +481,7 @@ function getPlatformConfig() {
   const authPollUrl = getPlatformAuthPollUrl();
   const profilesPushUrl = getPlatformProfilesPushUrl();
   const profilesPullUrl = getPlatformProfilesPullUrl();
+  const cloudProfilesRequired = getCloudProfilesRequired();
   const logUrl = getPlatformLogUrl();
   return {
     authUrl,
@@ -466,12 +489,14 @@ function getPlatformConfig() {
     authPollUrl,
     profilesPushUrl,
     profilesPullUrl,
+    cloudProfilesRequired,
     logUrl,
     authUrlConfigured: Boolean(authUrl),
     authStartUrlConfigured: Boolean(authStartUrl),
     authPollUrlConfigured: Boolean(authPollUrl),
     profilesPushUrlConfigured: Boolean(profilesPushUrl),
     profilesPullUrlConfigured: Boolean(profilesPullUrl),
+    cloudProfilesRequiredConfigured: cloudProfilesRequired,
     logUrlConfigured: Boolean(logUrl)
   };
 }
@@ -494,6 +519,9 @@ function setPlatformConfig(config = {}) {
   }
   if (config.profilesPullUrl !== undefined) {
     db.setSetting('platform_profiles_pull_url', String(config.profilesPullUrl || '').trim());
+  }
+  if (config.cloudProfilesRequired !== undefined) {
+    db.setSetting('platform_profiles_cloud_required', config.cloudProfilesRequired ? '1' : '0');
   }
 
   insertAccountEvent('platform_config_updated', 'info', 'Platform config updated', {

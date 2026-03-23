@@ -7,9 +7,11 @@ const db = require('./database');
 
 const ENCRYPTED_PREFIX = 'enc:v1:';
 const ANTY_SOURCE = 'anty-browser';
+const DEFAULT_REFRESH_SEGMENT = 'refresh';
 const DEFAULT_PUSH_SEGMENT = 'profiles/push';
 const DEFAULT_PULL_SEGMENT = 'profiles/pull';
 const CURSOR_SETTING_KEY = 'profiles_sync_cursor';
+const CLOUD_BOOTSTRAP_SETTING_KEY = 'profiles_cloud_bootstrapped';
 
 let staticPlatformConfigCache = null;
 let syncInProgress = false;
@@ -31,8 +33,10 @@ function loadStaticPlatformConfig() {
       const parsed = JSON.parse(raw);
       staticPlatformConfigCache = {
         authUrl: String(parsed?.authUrl || '').trim(),
+        refreshUrl: String(parsed?.refreshUrl || '').trim(),
         profilesPushUrl: String(parsed?.profilesPushUrl || '').trim(),
-        profilesPullUrl: String(parsed?.profilesPullUrl || '').trim()
+        profilesPullUrl: String(parsed?.profilesPullUrl || '').trim(),
+        cloudProfilesRequired: parseBoolean(parsed?.cloudProfilesRequired, true)
       };
       return staticPlatformConfigCache;
     } catch (_) {
@@ -40,7 +44,13 @@ function loadStaticPlatformConfig() {
     }
   }
 
-  staticPlatformConfigCache = { authUrl: '', profilesPushUrl: '', profilesPullUrl: '' };
+  staticPlatformConfigCache = {
+    authUrl: '',
+    refreshUrl: '',
+    profilesPushUrl: '',
+    profilesPullUrl: '',
+    cloudProfilesRequired: true
+  };
   return staticPlatformConfigCache;
 }
 
@@ -71,6 +81,18 @@ function getAuthUrl() {
   ).trim();
 }
 
+function getRefreshUrl() {
+  const staticConfig = loadStaticPlatformConfig();
+  const configured = (
+    db.getSetting('platform_refresh_url')
+    || process.env.ANTY_PLATFORM_REFRESH_URL
+    || staticConfig.refreshUrl
+    || ''
+  ).trim();
+  if (configured) return configured;
+  return deriveSiblingUrl(getAuthUrl(), DEFAULT_REFRESH_SEGMENT);
+}
+
 function getProfilesPushUrl() {
   const staticConfig = loadStaticPlatformConfig();
   const configured = (
@@ -93,6 +115,27 @@ function getProfilesPullUrl() {
   ).trim();
   if (configured) return configured;
   return deriveSiblingUrl(getAuthUrl(), DEFAULT_PULL_SEGMENT);
+}
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function isCloudProfilesRequired() {
+  const staticConfig = loadStaticPlatformConfig();
+  const raw = (
+    db.getSetting('platform_profiles_cloud_required')
+    || process.env.ANTY_CLOUD_PROFILES_REQUIRED
+    || process.env.ANTY_PLATFORM_CLOUD_PROFILES_REQUIRED
+    || staticConfig.cloudProfilesRequired
+  );
+  return parseBoolean(raw, true);
 }
 
 function decryptSecret(value) {
@@ -119,6 +162,87 @@ function getStateRow() {
 function getAccessToken() {
   const row = getStateRow() || {};
   return decryptSecret(row.access_token || '');
+}
+
+function getRefreshToken() {
+  const row = getStateRow() || {};
+  return decryptSecret(row.refresh_token || '');
+}
+
+function encryptSecret(secret) {
+  if (!secret) return '';
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      return `${ENCRYPTED_PREFIX}${safeStorage.encryptString(secret).toString('base64')}`;
+    }
+  } catch (_) {}
+  return `${ENCRYPTED_PREFIX}${Buffer.from(secret, 'utf8').toString('base64')}`;
+}
+
+function saveSessionTokens({ accessToken, refreshToken, expiresAt }) {
+  const encryptedAccess = encryptSecret(accessToken || '');
+  const encryptedRefresh = encryptSecret(refreshToken || '');
+  db.getDb().prepare(`
+    UPDATE account_state
+    SET
+      access_token = ?,
+      refresh_token = ?,
+      token_expires_at = ?,
+      updated_at = datetime('now')
+    WHERE id = 1
+  `).run(encryptedAccess, encryptedRefresh, String(expiresAt || ''));
+}
+
+function normalizeLoginPayload(payload) {
+  const root = payload && typeof payload === 'object' ? payload : {};
+  const nested = root.data && typeof root.data === 'object' ? root.data : {};
+  return {
+    accessToken: String(root.access_token || root.accessToken || root.token || nested.access_token || nested.accessToken || nested.token || ''),
+    refreshToken: String(root.refresh_token || root.refreshToken || nested.refresh_token || nested.refreshToken || ''),
+    tokenExpiresAt: String(root.expires_at || root.expiresAt || nested.expires_at || nested.expiresAt || '')
+  };
+}
+
+async function refreshAccessToken() {
+  const refreshUrl = getRefreshUrl();
+  const refreshToken = getRefreshToken();
+  if (!refreshUrl) {
+    return { ok: false, reason: 'refresh_url_not_configured' };
+  }
+  if (!refreshToken) {
+    return { ok: false, reason: 'missing_refresh_token' };
+  }
+
+  try {
+    const response = await fetch(refreshUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        refresh_token: refreshToken,
+        source: ANTY_SOURCE,
+        appVersion: app.getVersion(),
+        device: getDeviceInfo()
+      })
+    });
+    const body = parseJsonSafe(await response.text());
+    if (!response.ok) {
+      return { ok: false, status: response.status, reason: body?.error || `refresh_failed_${response.status}` };
+    }
+
+    const normalized = normalizeLoginPayload(body);
+    if (!normalized.accessToken) {
+      return { ok: false, reason: 'missing_access_token_after_refresh' };
+    }
+
+    saveSessionTokens({
+      accessToken: normalized.accessToken,
+      refreshToken: normalized.refreshToken || refreshToken,
+      expiresAt: normalized.tokenExpiresAt
+    });
+    return { ok: true, accessToken: normalized.accessToken };
+  } catch (err) {
+    return { ok: false, reason: err.message || 'refresh_exception' };
+  }
 }
 
 function isLoggedIn() {
@@ -251,18 +375,138 @@ function onLocalProfileDelete(profile) {
   });
 }
 
-async function pushQueueToCloud(limit = 100) {
-  const token = getAccessToken();
+function markCloudBootstrapped(value) {
+  db.setSetting(CLOUD_BOOTSTRAP_SETTING_KEY, value ? '1' : '0');
+}
+
+function isCloudBootstrapped() {
+  return String(db.getSetting(CLOUD_BOOTSTRAP_SETTING_KEY) || '') === '1';
+}
+
+async function fetchWithAuthRetry(url, payload) {
+  let token = getAccessToken();
+  if (!token) {
+    return { ok: false, status: 401, body: {}, reason: 'missing_access_token' };
+  }
+
+  const send = async (accessToken) => {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const body = parseJsonSafe(await response.text());
+    return { ok: response.ok, status: response.status, body };
+  };
+
+  try {
+    let result = await send(token);
+    if (result.ok || result.status !== 401) return result;
+
+    const refreshed = await refreshAccessToken();
+    if (!refreshed.ok) {
+      return {
+        ok: false,
+        status: 401,
+        body: result.body || {},
+        reason: refreshed.reason || 'refresh_failed'
+      };
+    }
+
+    token = refreshed.accessToken || getAccessToken();
+    if (!token) {
+      return { ok: false, status: 401, body: result.body || {}, reason: 'missing_access_token_after_refresh' };
+    }
+    result = await send(token);
+    return result;
+  } catch (err) {
+    return { ok: false, status: 0, body: {}, reason: err.message || 'request_exception' };
+  }
+}
+
+async function pushActionToCloud(action, payload) {
   const pushUrl = getProfilesPushUrl();
+  if (!isLoggedIn()) {
+    return { ok: false, skipped: true, reason: 'not_logged_in' };
+  }
+  if (!pushUrl) {
+    return { ok: false, skipped: true, reason: 'push_url_not_configured' };
+  }
+
+  const requestPayload = {
+    source: ANTY_SOURCE,
+    appVersion: app.getVersion(),
+    device: getDeviceInfo(),
+    action,
+    payload
+  };
+  const result = await fetchWithAuthRetry(pushUrl, requestPayload);
+  if (!result.ok) {
+    return {
+      ok: false,
+      status: result.status,
+      reason: result.body?.error || result.reason || `push_failed_${result.status}`
+    };
+  }
+  return { ok: true, status: result.status, body: result.body };
+}
+
+function applyRemoteMetadata(localId, payload, body) {
+  const numericLocalId = Number(localId || payload?.profile?.localId || payload?.localId || 0);
+  if (!numericLocalId) return;
+  const remoteId = extractRemoteId(body);
+  if (!remoteId) return;
+  db.updateProfile(numericLocalId, {
+    remote_id: remoteId,
+    team_id: extractTeamId(body) || payload?.profile?.teamId || '',
+    cloud_updated_at: extractCloudUpdatedAt(body) || new Date().toISOString()
+  });
+}
+
+async function pushProfileUpsertNow(profile) {
+  const normalized = normalizeProfileForPayload(profile);
+  if (!normalized) {
+    return { ok: false, reason: 'invalid_profile_payload' };
+  }
+  const result = await pushActionToCloud('profile_upsert', { profile: normalized });
+  if (!result.ok) return result;
+  applyRemoteMetadata(normalized.localId, { profile: normalized }, result.body);
+  return {
+    ok: true,
+    remoteId: extractRemoteId(result.body),
+    teamId: extractTeamId(result.body),
+    cloudUpdatedAt: extractCloudUpdatedAt(result.body)
+  };
+}
+
+async function pushProfileDeleteNow(profile) {
+  const normalized = normalizeProfileForPayload(profile);
+  if (!normalized) {
+    return { ok: false, reason: 'invalid_profile_payload' };
+  }
+  const payload = {
+    localId: normalized.localId,
+    remoteId: normalized.remoteId || '',
+    teamId: normalized.teamId || '',
+    modifiedAt: normalized.modifiedAt || new Date().toISOString(),
+    profile: normalized
+  };
+  return pushActionToCloud('profile_delete', payload);
+}
+
+async function pushQueueToCloud(limit = 100) {
   const queue = db.listProfileSyncQueue(limit);
 
   if (!queue.length) {
     return { ok: true, pushed: 0, skipped: false };
   }
-  if (!isLoggedIn() || !token) {
+  if (!isLoggedIn()) {
     return { ok: false, pushed: 0, skipped: true, reason: 'not_logged_in' };
   }
-  if (!pushUrl) {
+  if (!getProfilesPushUrl()) {
     return { ok: false, pushed: 0, skipped: true, reason: 'push_url_not_configured' };
   }
 
@@ -270,41 +514,16 @@ async function pushQueueToCloud(limit = 100) {
   let failed = 0;
   for (const entry of queue) {
     const payload = parseJsonSafe(entry.payload || '{}');
+    const result = await pushActionToCloud(entry.action, payload);
+    if (!result.ok) {
+      failed += 1;
+      db.markProfileSyncFailed(entry.id, result.reason || 'push_failed');
+      continue;
+    }
+    if (entry.action === 'profile_upsert') {
+      applyRemoteMetadata(payload?.profile?.localId || payload?.localId, payload, result.body || {});
+    }
     try {
-      const response = await fetch(pushUrl, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          source: ANTY_SOURCE,
-          appVersion: app.getVersion(),
-          device: getDeviceInfo(),
-          action: entry.action,
-          payload
-        })
-      });
-
-      const body = parseJsonSafe(await response.text());
-      if (!response.ok) {
-        failed += 1;
-        db.markProfileSyncFailed(entry.id, body?.error || `push_failed_${response.status}`);
-        continue;
-      }
-
-      if (entry.action === 'profile_upsert') {
-        const localId = Number(payload?.profile?.localId || payload?.localId || 0);
-        const remoteId = extractRemoteId(body);
-        if (localId && remoteId) {
-          db.updateProfile(localId, {
-            remote_id: remoteId,
-            team_id: extractTeamId(body) || payload?.profile?.teamId || '',
-            cloud_updated_at: extractCloudUpdatedAt(body) || new Date().toISOString()
-          });
-        }
-      }
-
       db.markProfileSyncDone(entry.id);
       pushed += 1;
     } catch (err) {
@@ -317,73 +536,59 @@ async function pushQueueToCloud(limit = 100) {
 }
 
 async function pullProfilesFromCloud() {
-  const token = getAccessToken();
   const pullUrl = getProfilesPullUrl();
-  if (!isLoggedIn() || !token) {
+  if (!isLoggedIn()) {
     return { ok: false, pulled: 0, skipped: true, reason: 'not_logged_in' };
   }
   if (!pullUrl) {
     return { ok: false, pulled: 0, skipped: true, reason: 'pull_url_not_configured' };
   }
 
-  try {
-    const response = await fetch(pullUrl, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        source: ANTY_SOURCE,
-        appVersion: app.getVersion(),
-        device: getDeviceInfo(),
-        cursor: getSyncCursor()
-      })
-    });
-
-    const body = parseJsonSafe(await response.text());
-    if (!response.ok) {
-      return { ok: false, pulled: 0, reason: body?.error || `pull_failed_${response.status}` };
-    }
-
-    const items = extractProfilesList(body);
-    let pulled = 0;
-    for (const item of items) {
-      const cloud = normalizeCloudProfile(item);
-      if (!cloud.remoteId) continue;
-      const existing = db.getProfileByRemoteId(cloud.remoteId);
-
-      if (cloud.deleted) {
-        if (existing) {
-          db.deleteProfile(existing.id);
-          pulled += 1;
-        }
-        continue;
-      }
-
-      if (existing) {
-        db.updateProfile(existing.id, cloud.data);
-        pulled += 1;
-        continue;
-      }
-
-      const created = db.createProfile({
-        name: cloud.data.name,
-        start_page: cloud.data.start_page,
-        notes: cloud.data.notes
-      });
-      db.updateProfile(created.id, cloud.data);
-      pulled += 1;
-    }
-
-    const cursor = extractCursor(body);
-    if (cursor) setSyncCursor(cursor);
-    else if (items.length > 0) setSyncCursor(new Date().toISOString());
-
-    return { ok: true, pulled, cursor: getSyncCursor() };
-  } catch (err) {
-    return { ok: false, pulled: 0, reason: err.message || 'pull_exception' };
+  const result = await fetchWithAuthRetry(pullUrl, {
+    source: ANTY_SOURCE,
+    appVersion: app.getVersion(),
+    device: getDeviceInfo(),
+    cursor: getSyncCursor()
+  });
+  if (!result.ok) {
+    return { ok: false, pulled: 0, reason: result.body?.error || result.reason || `pull_failed_${result.status}` };
   }
+
+  const items = extractProfilesList(result.body);
+  let pulled = 0;
+  for (const item of items) {
+    const cloud = normalizeCloudProfile(item);
+    if (!cloud.remoteId) continue;
+    const existing = db.getProfileByRemoteId(cloud.remoteId);
+
+    if (cloud.deleted) {
+      if (existing) {
+        db.deleteProfile(existing.id);
+        pulled += 1;
+      }
+      continue;
+    }
+
+    if (existing) {
+      db.updateProfile(existing.id, cloud.data);
+      pulled += 1;
+      continue;
+    }
+
+    const created = db.createProfile({
+      name: cloud.data.name,
+      start_page: cloud.data.start_page,
+      notes: cloud.data.notes
+    });
+    db.updateProfile(created.id, cloud.data);
+    pulled += 1;
+  }
+
+  const cursor = extractCursor(result.body);
+  if (cursor) setSyncCursor(cursor);
+  else if (items.length > 0) setSyncCursor(new Date().toISOString());
+
+  return { ok: true, pulled, cursor: getSyncCursor() };
 }
 
 async function runFullSync(options = {}) {
@@ -402,11 +607,46 @@ async function runFullSync(options = {}) {
       pushAfterPull,
       at: new Date().toISOString()
     };
+    if (result.ok) {
+      markCloudBootstrapped(true);
+    } else if (isCloudProfilesRequired()) {
+      markCloudBootstrapped(false);
+    }
     lastSyncResult = result;
     return result;
   } finally {
     syncInProgress = false;
   }
+}
+
+async function ensureCloudReady(options = {}) {
+  const required = isCloudProfilesRequired();
+  if (!required) {
+    return { ok: true, required: false, skipped: true, reason: 'cloud_mode_optional' };
+  }
+  if (!isLoggedIn()) {
+    return { ok: false, required: true, reason: 'not_logged_in' };
+  }
+  if (!getProfilesPushUrl() || !getProfilesPullUrl()) {
+    return { ok: false, required: true, reason: 'profiles_endpoints_not_configured' };
+  }
+
+  const mustSyncNow = Boolean(options.force) || !isCloudBootstrapped() || db.listProfileSyncQueue(1).length > 0;
+  if (!mustSyncNow) {
+    return { ok: true, required: true, skipped: true, reason: 'already_bootstrapped' };
+  }
+
+  const result = await runFullSync({ limit: options.limit || 100 });
+  if (!result.ok) {
+    return {
+      ok: false,
+      required: true,
+      reason: result?.pull?.reason || result?.push?.reason || result?.pushAfterPull?.reason || result?.reason || 'cloud_sync_failed',
+      result
+    };
+  }
+
+  return { ok: true, required: true, result };
 }
 
 function scheduleSync(delayMs = 1200) {
@@ -420,6 +660,8 @@ function scheduleSync(delayMs = 1200) {
 function getSyncStatus() {
   return {
     inProgress: syncInProgress,
+    cloudRequired: isCloudProfilesRequired(),
+    cloudBootstrapped: isCloudBootstrapped(),
     pushUrlConfigured: Boolean(getProfilesPushUrl()),
     pullUrlConfigured: Boolean(getProfilesPullUrl()),
     cursor: getSyncCursor(),
@@ -429,8 +671,12 @@ function getSyncStatus() {
 }
 
 module.exports = {
+  isCloudProfilesRequired,
+  ensureCloudReady,
   onLocalProfileUpsert,
   onLocalProfileDelete,
+  pushProfileUpsertNow,
+  pushProfileDeleteNow,
   runFullSync,
   scheduleSync,
   getSyncStatus

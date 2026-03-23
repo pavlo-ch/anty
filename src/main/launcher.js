@@ -268,10 +268,15 @@ async function syncProfileLocaleFromProxy(profileId) {
   };
 }
 
-async function deleteProfile(profileId) {
+async function deleteProfile(profileId, options = {}) {
   const numericId = toNumber(profileId, 0);
   if (!numericId) {
     return { success: false, error: 'Invalid profile id' };
+  }
+
+  const profile = getProfile(numericId);
+  if (!profile) {
+    return { success: false, error: 'Profile not found' };
   }
 
   if (runningBrowsers.has(numericId)) {
@@ -281,11 +286,13 @@ async function deleteProfile(profileId) {
     }
   }
 
-  try {
-    profileSync.onLocalProfileDelete(profile);
-    profileSync.scheduleSync();
-  } catch (_) {
-    // Keep local delete robust even if sync queue fails.
+  if (options.enqueueCloudDelete !== false) {
+    try {
+      profileSync.onLocalProfileDelete(profile);
+      profileSync.scheduleSync();
+    } catch (_) {
+      // Keep local delete robust even if sync queue fails.
+    }
   }
 
   const result = deleteProfileRow(numericId);

@@ -10,6 +10,46 @@ function requireLoggedIn() {
   }
 }
 
+function toCloudSyncError(prefix, reason, status) {
+  const derivedStatus = Number(status) || Number(String(reason || '').match(/_(\d{3})$/)?.[1] || 0);
+  const effectiveStatus = derivedStatus || Number(status) || 0;
+  if (effectiveStatus === 401 || reason === 'not_logged_in' || reason === 'missing_access_token') {
+    return `${prefix}: session expired, login again.`;
+  }
+  if (effectiveStatus === 403) {
+    return `${prefix}: access denied or device limit reached.`;
+  }
+  if (effectiveStatus === 423) {
+    return `${prefix}: account is blocked/inactive.`;
+  }
+  if (reason === 'profiles_endpoints_not_configured') {
+    return `${prefix}: profiles cloud endpoints are not configured.`;
+  }
+  if (reason) {
+    return `${prefix}: ${reason}`;
+  }
+  return `${prefix}: unknown cloud sync error`;
+}
+
+function restoreProfilePatch(snapshot) {
+  if (!snapshot) return {};
+  return {
+    name: snapshot.name,
+    folder_id: snapshot.folder_id,
+    group_id: snapshot.group_id,
+    proxy_id: snapshot.proxy_id,
+    remote_id: snapshot.remote_id,
+    team_id: snapshot.team_id,
+    cloud_updated_at: snapshot.cloud_updated_at,
+    status: snapshot.status,
+    user_agent: snapshot.user_agent,
+    fingerprint: snapshot.fingerprint,
+    cookies: snapshot.cookies,
+    notes: snapshot.notes,
+    start_page: snapshot.start_page
+  };
+}
+
 function registerIpcHandlers() {
   ipcMain.handle('app:version', () => app.getVersion());
   ipcMain.handle('app:open-external', async (_, url) => {
@@ -43,27 +83,87 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('profile:create', async (_, data) => {
     requireLoggedIn();
+
+    const cloudRequired = profileSync.isCloudProfilesRequired();
+    if (cloudRequired) {
+      const ready = await profileSync.ensureCloudReady();
+      if (!ready.ok) {
+        throw new Error(toCloudSyncError('Cloud sync required', ready.reason, ready?.result?.pull?.status || ready?.result?.push?.status));
+      }
+    }
+
     const created = db.createProfile(data || {});
     const synced = await launcher.syncProfileLocaleFromProxy(created.id);
     const finalProfile = synced?.success && synced?.profile ? synced.profile : created;
+    if (cloudRequired) {
+      const pushed = await profileSync.pushProfileUpsertNow(finalProfile);
+      if (!pushed.ok) {
+        await launcher.deleteProfile(finalProfile.id, { enqueueCloudDelete: false });
+        throw new Error(toCloudSyncError('Create blocked', pushed.reason, pushed.status));
+      }
+      return db.getProfile(finalProfile.id) || finalProfile;
+    }
+
     profileSync.onLocalProfileUpsert(finalProfile);
     profileSync.scheduleSync();
     return finalProfile;
   });
   ipcMain.handle('profile:update', async (_, id, data) => {
     requireLoggedIn();
+    const cloudRequired = profileSync.isCloudProfilesRequired();
+    if (cloudRequired) {
+      const ready = await profileSync.ensureCloudReady();
+      if (!ready.ok) {
+        throw new Error(toCloudSyncError('Cloud sync required', ready.reason, ready?.result?.pull?.status || ready?.result?.push?.status));
+      }
+    }
+
+    const before = db.getProfile(id);
+    if (!before) {
+      throw new Error('Profile not found');
+    }
+
     const updated = db.updateProfile(id, data);
     const hasProxyField = data && Object.prototype.hasOwnProperty.call(data, 'proxy_id');
     const finalProfile = hasProxyField
       ? ((await launcher.syncProfileLocaleFromProxy(id))?.profile || updated)
       : updated;
+    if (cloudRequired) {
+      const pushed = await profileSync.pushProfileUpsertNow(finalProfile);
+      if (!pushed.ok) {
+        db.updateProfile(id, restoreProfilePatch(before));
+        throw new Error(toCloudSyncError('Save blocked', pushed.reason, pushed.status));
+      }
+      return db.getProfile(id) || finalProfile;
+    }
+
     profileSync.onLocalProfileUpsert(finalProfile);
     profileSync.scheduleSync();
     return finalProfile;
   });
-  ipcMain.handle('profile:delete', (_, id) => {
+  ipcMain.handle('profile:delete', async (_, id) => {
     requireLoggedIn();
-    return launcher.deleteProfile(id);
+    const cloudRequired = profileSync.isCloudProfilesRequired();
+    if (!cloudRequired) {
+      return launcher.deleteProfile(id);
+    }
+
+    const ready = await profileSync.ensureCloudReady();
+    if (!ready.ok) {
+      return { success: false, error: toCloudSyncError('Delete blocked', ready.reason, ready?.result?.pull?.status || ready?.result?.push?.status) };
+    }
+
+    const existing = db.getProfile(id);
+    if (!existing) {
+      return { success: false, error: 'Profile not found' };
+    }
+
+    const pushed = await profileSync.pushProfileDeleteNow(existing);
+    if (!pushed.ok) {
+      return { success: false, error: toCloudSyncError('Delete blocked', pushed.reason, pushed.status) };
+    }
+
+    return launcher.deleteProfile(id, { enqueueCloudDelete: false });
   });
   ipcMain.handle('profile:sync-locale-from-proxy', async (_, id) => {
     requireLoggedIn();

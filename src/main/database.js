@@ -210,7 +210,21 @@ function updateProfile(id, data) {
   const sets = [];
   const values = [];
   
-  const allowedFields = ['name', 'folder_id', 'group_id', 'proxy_id', 'user_agent', 'fingerprint', 'cookies', 'notes', 'start_page', 'status'];
+  const allowedFields = [
+    'name',
+    'folder_id',
+    'group_id',
+    'proxy_id',
+    'remote_id',
+    'team_id',
+    'cloud_updated_at',
+    'user_agent',
+    'fingerprint',
+    'cookies',
+    'notes',
+    'start_page',
+    'status'
+  ];
   
   for (const field of allowedFields) {
     if (data[field] !== undefined) {

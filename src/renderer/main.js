@@ -273,7 +273,8 @@ async function createNewProfile() {
     selectProfile(profile.id);
     showToast('Profile created', 'success');
   } catch (err) {
-    showToast('Failed to create profile', 'error');
+    const message = err?.message || 'Failed to create profile';
+    showToast(message, 'error');
   }
 }
 
@@ -339,7 +340,8 @@ async function deleteProfile(id) {
     renderProfilesList();
     showToast('Profile deleted', 'success');
   } catch (err) {
-    showToast('Failed to delete profile', 'error');
+    const message = err?.message || 'Failed to delete profile';
+    showToast(message, 'error');
   }
 }
 

@@ -6,5 +6,6 @@
   "logoutUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/logout",
   "profilesPushUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/profiles/push",
   "profilesPullUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/profiles/pull",
+  "cloudProfilesRequired": true,
   "logUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/logs"
 }
