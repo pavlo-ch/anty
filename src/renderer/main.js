@@ -965,7 +965,7 @@ function showMandatoryUpdateModal(data = {}) {
   if (text) {
     const nextVersion = mandatoryUpdateFlow.version ? `v${mandatoryUpdateFlow.version}` : 'a newer version';
     const currentVersion = mandatoryUpdateFlow.currentVersion ? ` (current v${mandatoryUpdateFlow.currentVersion})` : '';
-    text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now", open the DMG, quit Anty Browser, replace the app, then launch it again.`;
+    text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now" to download, then "Install Update" to restart into the new version.`;
   }
   if (modal) modal.classList.remove('hidden');
   renderMandatoryUpdateUi();
@@ -1026,11 +1026,11 @@ function renderMandatoryUpdateUi() {
       restartBtn.textContent = 'Quit for Install';
       restartBtn.classList.remove('hidden');
       statusEl.classList.remove('hidden');
-      statusEl.textContent = 'Installer opened. Anty Browser is closing so you can replace it in Applications.';
+      statusEl.textContent = 'Installer opened in manual mode. Quit Anty Browser and replace the app.';
     } else {
       restartBtn.classList.add('hidden');
       statusEl.classList.remove('hidden');
-      statusEl.textContent = 'Update downloaded. Click Install Update.';
+      statusEl.textContent = 'Update downloaded. Click Install Update (Anty will restart).';
     }
     return;
   }
@@ -1093,11 +1093,15 @@ async function handleMandatoryUpdatePrimaryAction() {
       return;
     }
 
+    if (opened?.action === 'quit_and_install') {
+      showToast('Installing update and restarting...', 'success');
+      return;
+    }
+
     mandatoryUpdateFlow.error = '';
     mandatoryUpdateFlow.installerOpened = true;
     renderMandatoryUpdateUi();
-    showToast('Installer opened. Quitting app for install...', 'success');
-    await window.api.quitApp();
+    showToast('Installer opened', 'success');
   } catch (err) {
     mandatoryUpdateFlow.error = err.message || 'Failed to open installer';
     renderMandatoryUpdateUi();

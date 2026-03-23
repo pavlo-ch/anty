@@ -1,16 +1,16 @@
-const { app, dialog, ipcMain, shell, safeStorage } = require('electron');
+const { app, dialog, ipcMain, safeStorage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { once } = require('events');
 const db = require('./database');
 
 let mainWindow = null;
 let initialized = false;
 let checkInProgress = false;
 let downloadTriggered = false;
+let mandatoryDownloadRequested = false;
 let activeUpdateSource = 'generic';
 let activeUpdateUrl = null;
 let mandatoryUpdateInfo = null;
@@ -205,32 +205,6 @@ async function fetchLatestManifest() {
   };
 }
 
-function getMandatoryDownloadDir() {
-  return path.join(app.getPath('userData'), 'updates');
-}
-
-function getMandatoryDownloadPath(version, downloadUrl) {
-  const safeVersion = String(version || 'latest').replace(/[^a-zA-Z0-9._-]/g, '_');
-  let ext = '.dmg';
-  try {
-    const fileName = decodeURIComponent(path.basename(new URL(downloadUrl).pathname || ''));
-    if (fileName.toLowerCase().endsWith('.dmg')) ext = '.dmg';
-  } catch (_) {
-    ext = '.dmg';
-  }
-  return path.join(getMandatoryDownloadDir(), `Anty-Browser-${safeVersion}${ext}`);
-}
-
-function fileExistsAndHasContent(filePath) {
-  if (!filePath) return false;
-  try {
-    const stat = fs.statSync(filePath);
-    return stat.isFile() && stat.size > 0;
-  } catch (_) {
-    return false;
-  }
-}
-
 function updateMandatoryState(patch = {}) {
   mandatoryDownloadState = { ...mandatoryDownloadState, ...patch };
   emitStatus({
@@ -244,94 +218,6 @@ function updateMandatoryState(patch = {}) {
     filePath: mandatoryDownloadState.filePath,
     message: mandatoryDownloadState.message,
   });
-}
-
-async function streamDownloadToFile(url, targetPath, attempt, version) {
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  const tempPath = `${targetPath}.part`;
-  try {
-    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-  } catch (_) {
-    // ignore stale part cleanup errors
-  }
-
-  const response = await fetch(url, { cache: 'no-store' });
-  if (!response.ok) {
-    throw new Error(`Failed to download update (${response.status})`);
-  }
-
-  const totalBytes = Number.parseInt(response.headers.get('content-length') || '0', 10) || 0;
-  let downloadedBytes = 0;
-  let lastEmitAt = 0;
-
-  const emitProgress = (force = false) => {
-    const now = Date.now();
-    if (!force && now - lastEmitAt < 140) return;
-    lastEmitAt = now;
-    const percent = totalBytes > 0 ? Number(((downloadedBytes / totalBytes) * 100).toFixed(2)) : 0;
-    updateMandatoryState({
-      state: 'mandatory_downloading',
-      version,
-      attempts: attempt,
-      percent,
-      downloadedBytes,
-      totalBytes,
-      message: null,
-      filePath: null,
-    });
-  };
-
-  const writable = fs.createWriteStream(tempPath);
-  try {
-    emitProgress(true);
-
-    if (!response.body) {
-      const ab = await response.arrayBuffer();
-      const buf = Buffer.from(ab);
-      writable.write(buf);
-      downloadedBytes = buf.length;
-    } else {
-      const reader = response.body.getReader();
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (!value || value.length === 0) continue;
-
-        const chunk = Buffer.from(value);
-        downloadedBytes += chunk.length;
-        if (!writable.write(chunk)) {
-          await once(writable, 'drain');
-        }
-        emitProgress(false);
-      }
-    }
-
-    writable.end();
-    await once(writable, 'finish');
-
-    if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
-    fs.renameSync(tempPath, targetPath);
-    emitProgress(true);
-    return {
-      ok: true,
-      filePath: targetPath,
-      downloadedBytes,
-      totalBytes,
-      percent: 100,
-    };
-  } catch (err) {
-    try {
-      writable.destroy();
-    } catch (_) {
-      // ignore
-    }
-    try {
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-    } catch (_) {
-      // ignore
-    }
-    throw err;
-  }
 }
 
 async function downloadMandatoryUpdate(options = {}) {
@@ -351,56 +237,57 @@ async function downloadMandatoryUpdate(options = {}) {
     }
 
     const version = mandatoryUpdateInfo?.version;
-    const downloadUrl = mandatoryUpdateInfo?.downloadUrl;
-    if (!version || !downloadUrl) {
+    if (!version) {
       return { ok: false, reason: 'missing_update_info', message: 'Update metadata is missing.' };
     }
-
-    const targetPath = getMandatoryDownloadPath(version, downloadUrl);
-    mandatoryUpdateInfo.localFilePath = targetPath;
-
-    if (fileExistsAndHasContent(targetPath)) {
-      updateMandatoryState({
-        state: 'mandatory_downloaded',
-        version,
-        percent: 100,
-        filePath: targetPath,
-        message: null,
-      });
-      return { ok: true, version, filePath: targetPath, alreadyDownloaded: true };
+    if (!configureUpdateSource()) {
+      return { ok: false, reason: 'provider_not_configured', message: 'Update source is not configured.' };
     }
 
     let lastError = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        const result = await streamDownloadToFile(downloadUrl, targetPath, attempt, version);
+        mandatoryDownloadRequested = true;
+        updateMandatoryState({
+          state: 'mandatory_downloading',
+          version,
+          percent: 0,
+          downloadedBytes: 0,
+          totalBytes: 0,
+          attempts: attempt,
+          filePath: null,
+          message: null,
+        });
+        await autoUpdater.checkForUpdates();
+        await autoUpdater.downloadUpdate();
         updateMandatoryState({
           state: 'mandatory_downloaded',
-          version,
+          version: mandatoryUpdateInfo?.version || version,
           percent: 100,
-          downloadedBytes: result.downloadedBytes,
-          totalBytes: result.totalBytes,
+          downloadedBytes: Number(mandatoryDownloadState.downloadedBytes || 0),
+          totalBytes: Number(mandatoryDownloadState.totalBytes || 0),
           attempts: attempt,
-          filePath: targetPath,
+          filePath: null,
           message: null,
         });
         logEvent('info', 'mandatory_download_completed', {
-          version,
-          filePath: targetPath,
+          version: mandatoryUpdateInfo?.version || version,
           attempts: attempt,
         });
-        return { ok: true, version, filePath: targetPath };
+        mandatoryDownloadRequested = false;
+        return { ok: true, version: mandatoryUpdateInfo?.version || version, filePath: null, mode: 'auto_updater' };
       } catch (err) {
+        mandatoryDownloadRequested = false;
         lastError = err;
         logEvent('warn', 'mandatory_download_attempt_failed', {
-          version,
+          version: mandatoryUpdateInfo?.version || version,
           attempt,
           maxAttempts,
           message: err.message,
         });
         updateMandatoryState({
           state: 'mandatory_download_retry',
-          version,
+          version: mandatoryUpdateInfo?.version || version,
           attempts: attempt,
           filePath: null,
           message: `Download attempt ${attempt}/${maxAttempts} failed.`,
@@ -411,38 +298,18 @@ async function downloadMandatoryUpdate(options = {}) {
     const failMessage = lastError?.message || 'Failed to download update.';
     updateMandatoryState({
       state: 'mandatory_download_error',
-      version,
+      version: mandatoryUpdateInfo?.version || version,
       filePath: null,
       message: failMessage,
     });
-    logEvent('error', 'mandatory_download_failed', { version, message: failMessage });
+    logEvent('error', 'mandatory_download_failed', { version: mandatoryUpdateInfo?.version || version, message: failMessage });
     return { ok: false, reason: 'download_failed', message: failMessage };
   })().finally(() => {
+    mandatoryDownloadRequested = false;
     mandatoryDownloadPromise = null;
   });
 
   return mandatoryDownloadPromise;
-}
-
-async function openLocalInstaller(filePath) {
-  if (!filePath || !fileExistsAndHasContent(filePath)) {
-    return { ok: false, reason: 'missing_file', message: 'Downloaded DMG not found. Download update first.' };
-  }
-
-  const errMsg = await shell.openPath(filePath);
-  if (errMsg) {
-    logEvent('error', 'mandatory_installer_open_failed', { message: errMsg, filePath });
-    return { ok: false, reason: 'open_failed', message: errMsg };
-  }
-
-  logEvent('info', 'mandatory_installer_opened', { filePath });
-  emitStatus({
-    state: 'mandatory_installer_opened',
-    mandatory: true,
-    version: mandatoryUpdateInfo?.version || null,
-    filePath,
-  });
-  return { ok: true, filePath };
 }
 
 function configureUpdateSource() {
@@ -497,30 +364,18 @@ async function checkMandatoryUpdate() {
       currentVersion,
       downloadUrl: latest.downloadUrl,
       manifestUrl: latest.manifestUrl,
-      localFilePath: getMandatoryDownloadPath(latest.version, latest.downloadUrl),
     };
 
-    const localAlready = fileExistsAndHasContent(mandatoryUpdateInfo.localFilePath);
-    if (localAlready) {
-      updateMandatoryState({
-        state: 'mandatory_downloaded',
-        version: latest.version,
-        percent: 100,
-        filePath: mandatoryUpdateInfo.localFilePath,
-        message: null,
-      });
-    } else {
-      updateMandatoryState({
-        state: 'required',
-        version: latest.version,
-        percent: 0,
-        downloadedBytes: 0,
-        totalBytes: 0,
-        attempts: 0,
-        filePath: null,
-        message: null,
-      });
-    }
+    updateMandatoryState({
+      state: 'required',
+      version: latest.version,
+      percent: 0,
+      downloadedBytes: 0,
+      totalBytes: 0,
+      attempts: 0,
+      filePath: null,
+      message: null,
+    });
 
     emitStatus({
       state: 'required',
@@ -528,8 +383,8 @@ async function checkMandatoryUpdate() {
       version: latest.version,
       currentVersion,
       downloadUrl: latest.downloadUrl,
-      downloaded: localAlready,
-      localFilePath: localAlready ? mandatoryUpdateInfo.localFilePath : null,
+      downloaded: false,
+      localFilePath: null,
     });
 
     logEvent('warn', 'mandatory_update_required', {
@@ -594,6 +449,14 @@ function registerUpdater(window) {
     logEvent('info', 'update_available', { version: info?.version });
     emitStatus({ state: 'available', version: info?.version || null });
 
+    const isMandatory = Boolean(mandatoryUpdateInfo && isNewerVersion(info?.version || '', app.getVersion()));
+    if (isMandatory) {
+      if (!mandatoryDownloadRequested) {
+        logEvent('info', 'mandatory_update_waiting_for_user_action', { version: info?.version || null });
+      }
+      return;
+    }
+
     if (!downloadTriggered) {
       downloadTriggered = true;
       void autoUpdater.downloadUpdate().catch((err) => {
@@ -610,6 +473,18 @@ function registerUpdater(window) {
 
   autoUpdater.on('download-progress', (progress) => {
     const percent = Number((progress?.percent || 0).toFixed(2));
+    if (mandatoryUpdateInfo) {
+      updateMandatoryState({
+        state: 'mandatory_downloading',
+        version: mandatoryUpdateInfo.version,
+        percent,
+        downloadedBytes: Number(progress?.transferred || 0),
+        totalBytes: Number(progress?.total || 0),
+        attempts: Number(mandatoryDownloadState.attempts || 1),
+        filePath: null,
+        message: null,
+      });
+    }
     emitStatus({ state: 'downloading', percent });
     logEvent('info', 'download_progress', { percent });
   });
@@ -617,6 +492,23 @@ function registerUpdater(window) {
   autoUpdater.on('update-downloaded', async (info) => {
     downloadTriggered = false;
     logEvent('info', 'update_downloaded', { version: info?.version });
+
+    const isMandatory = Boolean(mandatoryUpdateInfo && isNewerVersion(info?.version || '', app.getVersion()));
+    if (isMandatory) {
+      updateMandatoryState({
+        state: 'mandatory_downloaded',
+        version: info?.version || mandatoryUpdateInfo.version,
+        percent: 100,
+        downloadedBytes: Number(mandatoryDownloadState.downloadedBytes || 0),
+        totalBytes: Number(mandatoryDownloadState.totalBytes || 0),
+        attempts: Number(mandatoryDownloadState.attempts || 1),
+        filePath: null,
+        message: null,
+      });
+      emitStatus({ state: 'mandatory_downloaded', version: info?.version || mandatoryUpdateInfo.version, mandatory: true });
+      return;
+    }
+
     emitStatus({ state: 'downloaded', version: info?.version || null });
 
     const { response } = await dialog.showMessageBox(mainWindow, {
@@ -638,6 +530,16 @@ function registerUpdater(window) {
   autoUpdater.on('error', (err) => {
     downloadTriggered = false;
     const message = err?.message || String(err);
+    const mandatoryActive = mandatoryDownloadRequested
+      || mandatoryDownloadState.state === 'mandatory_downloading'
+      || mandatoryDownloadState.state === 'mandatory_download_retry';
+    if (mandatoryActive) {
+      updateMandatoryState({
+        state: 'mandatory_download_error',
+        version: mandatoryUpdateInfo?.version || mandatoryDownloadState.version,
+        message,
+      });
+    }
     logEvent('error', 'updater_error', { message });
     emitStatus({ state: 'error', message });
   });
@@ -672,12 +574,13 @@ function registerUpdater(window) {
       }
     }
 
-    const localFilePath = mandatoryUpdateInfo?.localFilePath;
-    if (fileExistsAndHasContent(localFilePath)) {
-      return openLocalInstaller(localFilePath);
+    if (mandatoryDownloadState.state !== 'mandatory_downloaded') {
+      return { ok: false, reason: 'not_downloaded', message: 'Download the update first.' };
     }
 
-    return { ok: false, reason: 'not_downloaded', message: 'Download the update first.' };
+    logEvent('info', 'mandatory_quit_and_install', { version: mandatoryUpdateInfo.version });
+    autoUpdater.quitAndInstall();
+    return { ok: true, action: 'quit_and_install' };
   });
 
   setTimeout(() => {
