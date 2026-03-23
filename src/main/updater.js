@@ -1,4 +1,4 @@
-const { app, dialog, ipcMain, safeStorage } = require('electron');
+const { app, dialog, ipcMain, safeStorage, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const fs = require('fs');
 const path = require('path');
@@ -179,10 +179,16 @@ function parseLatestMacYml(rawText) {
   if (!versionMatch) return null;
 
   const pathMatch = rawText.match(/^path:\s*(.+)$/m);
-  const fileUrlMatch = rawText.match(/^\s*-\s+url:\s*(.+)$/m);
+  const fileUrlMatches = [...rawText.matchAll(/^\s*-\s+url:\s*(.+)$/gm)]
+    .map((match) => stripQuotes(match[1]))
+    .filter(Boolean);
+  const preferredFile = fileUrlMatches.find((url) => url.toLowerCase().endsWith('.dmg'))
+    || fileUrlMatches.find((url) => url.toLowerCase().endsWith('.zip'))
+    || fileUrlMatches[0]
+    || '';
 
   const version = stripQuotes(versionMatch[1]);
-  const filePath = stripQuotes((fileUrlMatch && fileUrlMatch[1]) || (pathMatch && pathMatch[1]) || 'Anty-Browser.dmg');
+  const filePath = stripQuotes(preferredFile || (pathMatch && pathMatch[1]) || 'Anty-Browser.dmg');
   return { version, filePath };
 }
 
@@ -220,6 +226,70 @@ function updateMandatoryState(patch = {}) {
   });
 }
 
+function fileNameFromUrl(url, fallback = 'Anty-Browser.dmg') {
+  try {
+    const parsed = new URL(url);
+    const baseName = path.basename(parsed.pathname || '').trim();
+    return baseName || fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function getMandatoryDownloadPath(version, downloadUrl) {
+  const fileName = fileNameFromUrl(downloadUrl, 'Anty-Browser.dmg');
+  const updatesDir = path.join(app.getPath('userData'), 'updates');
+  const versionDir = path.join(updatesDir, String(version || 'unknown'));
+  return path.join(versionDir, fileName);
+}
+
+async function downloadFileWithProgress(downloadUrl, targetPath, onProgress) {
+  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+  const tmpPath = `${targetPath}.part`;
+
+  const response = await fetch(downloadUrl, { cache: 'no-store' });
+  if (!response.ok || !response.body) {
+    throw new Error(`Download failed (${response.status})`);
+  }
+
+  const total = Number(response.headers.get('content-length') || 0);
+  const reader = response.body.getReader();
+  const writer = fs.createWriteStream(tmpPath);
+  let downloaded = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        downloaded += value.length;
+        await new Promise((resolve, reject) => {
+          writer.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()));
+        });
+        const percent = total > 0 ? Math.min(100, (downloaded / total) * 100) : 0;
+        onProgress({
+          percent: Number(percent.toFixed(2)),
+          downloadedBytes: downloaded,
+          totalBytes: total
+        });
+      }
+    }
+
+    await new Promise((resolve, reject) => writer.end((err) => (err ? reject(err) : resolve())));
+    fs.renameSync(tmpPath, targetPath);
+    onProgress({
+      percent: 100,
+      downloadedBytes: downloaded,
+      totalBytes: total || downloaded
+    });
+    return { filePath: targetPath, downloadedBytes: downloaded, totalBytes: total || downloaded };
+  } catch (err) {
+    writer.destroy();
+    try { fs.unlinkSync(tmpPath); } catch (_) {}
+    throw err;
+  }
+}
+
 async function downloadMandatoryUpdate(options = {}) {
   if (mandatoryDownloadPromise) return mandatoryDownloadPromise;
 
@@ -237,11 +307,28 @@ async function downloadMandatoryUpdate(options = {}) {
     }
 
     const version = mandatoryUpdateInfo?.version;
-    if (!version) {
+    const downloadUrl = String(mandatoryUpdateInfo?.downloadUrl || '').trim();
+    if (!version || !downloadUrl) {
       return { ok: false, reason: 'missing_update_info', message: 'Update metadata is missing.' };
     }
-    if (!configureUpdateSource()) {
-      return { ok: false, reason: 'provider_not_configured', message: 'Update source is not configured.' };
+
+    const targetPath = getMandatoryDownloadPath(version, downloadUrl);
+    if (fs.existsSync(targetPath)) {
+      const stats = fs.statSync(targetPath);
+      if (stats.isFile() && stats.size > 0) {
+        updateMandatoryState({
+          state: 'mandatory_downloaded',
+          version,
+          percent: 100,
+          downloadedBytes: stats.size,
+          totalBytes: stats.size,
+          attempts: 1,
+          filePath: targetPath,
+          message: null,
+        });
+        logEvent('info', 'mandatory_download_reused', { version, filePath: targetPath, size: stats.size });
+        return { ok: true, version, filePath: targetPath, mode: 'direct_download_reuse' };
+      }
     }
 
     let lastError = null;
@@ -258,36 +345,49 @@ async function downloadMandatoryUpdate(options = {}) {
           filePath: null,
           message: null,
         });
-        await autoUpdater.checkForUpdates();
-        await autoUpdater.downloadUpdate();
+
+        const result = await downloadFileWithProgress(downloadUrl, targetPath, (progress) => {
+          updateMandatoryState({
+            state: 'mandatory_downloading',
+            version,
+            percent: progress.percent,
+            downloadedBytes: progress.downloadedBytes,
+            totalBytes: progress.totalBytes,
+            attempts: attempt,
+            filePath: null,
+            message: null,
+          });
+        });
+
         updateMandatoryState({
           state: 'mandatory_downloaded',
-          version: mandatoryUpdateInfo?.version || version,
+          version,
           percent: 100,
-          downloadedBytes: Number(mandatoryDownloadState.downloadedBytes || 0),
-          totalBytes: Number(mandatoryDownloadState.totalBytes || 0),
+          downloadedBytes: Number(result.downloadedBytes || 0),
+          totalBytes: Number(result.totalBytes || result.downloadedBytes || 0),
           attempts: attempt,
-          filePath: null,
+          filePath: result.filePath,
           message: null,
         });
         logEvent('info', 'mandatory_download_completed', {
-          version: mandatoryUpdateInfo?.version || version,
+          version,
           attempts: attempt,
+          filePath: result.filePath,
         });
         mandatoryDownloadRequested = false;
-        return { ok: true, version: mandatoryUpdateInfo?.version || version, filePath: null, mode: 'auto_updater' };
+        return { ok: true, version, filePath: result.filePath, mode: 'direct_download' };
       } catch (err) {
         mandatoryDownloadRequested = false;
         lastError = err;
         logEvent('warn', 'mandatory_download_attempt_failed', {
-          version: mandatoryUpdateInfo?.version || version,
+          version,
           attempt,
           maxAttempts,
           message: err.message,
         });
         updateMandatoryState({
           state: 'mandatory_download_retry',
-          version: mandatoryUpdateInfo?.version || version,
+          version,
           attempts: attempt,
           filePath: null,
           message: `Download attempt ${attempt}/${maxAttempts} failed.`,
@@ -298,11 +398,11 @@ async function downloadMandatoryUpdate(options = {}) {
     const failMessage = lastError?.message || 'Failed to download update.';
     updateMandatoryState({
       state: 'mandatory_download_error',
-      version: mandatoryUpdateInfo?.version || version,
+      version,
       filePath: null,
       message: failMessage,
     });
-    logEvent('error', 'mandatory_download_failed', { version: mandatoryUpdateInfo?.version || version, message: failMessage });
+    logEvent('error', 'mandatory_download_failed', { version, message: failMessage });
     return { ok: false, reason: 'download_failed', message: failMessage };
   })().finally(() => {
     mandatoryDownloadRequested = false;
@@ -578,22 +678,25 @@ function registerUpdater(window) {
       return { ok: false, reason: 'not_downloaded', message: 'Download the update first.' };
     }
 
-    logEvent('info', 'mandatory_quit_and_install', { version: mandatoryUpdateInfo.version });
-    try {
-      autoUpdater.quitAndInstall(false, true);
-    } catch (err) {
-      const message = err?.message || 'Failed to start install flow';
-      logEvent('error', 'mandatory_quit_and_install_failed', { version: mandatoryUpdateInfo.version, message });
-      return { ok: false, reason: 'quit_and_install_failed', message };
+    const localPath = String(mandatoryDownloadState.filePath || '').trim();
+    if (!localPath || !fs.existsSync(localPath)) {
+      return { ok: false, reason: 'missing_local_installer', message: 'Downloaded installer file is missing. Re-download update.' };
     }
 
-    // Fallback: some macOS setups may not quit immediately after quitAndInstall.
-    setTimeout(() => {
-      logEvent('warn', 'mandatory_quit_and_install_fallback_quit', { version: mandatoryUpdateInfo.version });
-      app.quit();
-    }, 3000);
+    logEvent('info', 'mandatory_open_installer', { version: mandatoryUpdateInfo.version, filePath: localPath });
+    const openError = await shell.openPath(localPath);
+    if (openError) {
+      logEvent('error', 'mandatory_open_installer_failed', { version: mandatoryUpdateInfo.version, filePath: localPath, message: openError });
+      return { ok: false, reason: 'open_installer_failed', message: openError };
+    }
 
-    return { ok: true, action: 'quit_and_install' };
+    emitStatus({
+      state: 'mandatory_installer_opened',
+      mandatory: true,
+      version: mandatoryUpdateInfo.version,
+      localFilePath: localPath
+    });
+    return { ok: true, action: 'opened_installer', localFilePath: localPath };
   });
 
   setTimeout(() => {

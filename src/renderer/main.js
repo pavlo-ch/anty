@@ -1148,7 +1148,7 @@ function showMandatoryUpdateModal(data = {}) {
   if (text) {
     const nextVersion = mandatoryUpdateFlow.version ? `v${mandatoryUpdateFlow.version}` : 'a newer version';
     const currentVersion = mandatoryUpdateFlow.currentVersion ? ` (current v${mandatoryUpdateFlow.currentVersion})` : '';
-    text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now" to download, then "Install Update" to restart into the new version.`;
+    text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now" to download, then "Install Update" to open installer.`;
   }
   if (modal) modal.classList.remove('hidden');
   renderMandatoryUpdateUi();
@@ -1213,7 +1213,7 @@ function renderMandatoryUpdateUi() {
     } else {
       restartBtn.classList.add('hidden');
       statusEl.classList.remove('hidden');
-      statusEl.textContent = 'Update downloaded. Click Install Update (Anty will restart).';
+      statusEl.textContent = 'Update downloaded. Click Install Update to open the installer.';
     }
     return;
   }
