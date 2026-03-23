@@ -579,7 +579,20 @@ function registerUpdater(window) {
     }
 
     logEvent('info', 'mandatory_quit_and_install', { version: mandatoryUpdateInfo.version });
-    autoUpdater.quitAndInstall();
+    try {
+      autoUpdater.quitAndInstall(false, true);
+    } catch (err) {
+      const message = err?.message || 'Failed to start install flow';
+      logEvent('error', 'mandatory_quit_and_install_failed', { version: mandatoryUpdateInfo.version, message });
+      return { ok: false, reason: 'quit_and_install_failed', message };
+    }
+
+    // Fallback: some macOS setups may not quit immediately after quitAndInstall.
+    setTimeout(() => {
+      logEvent('warn', 'mandatory_quit_and_install_fallback_quit', { version: mandatoryUpdateInfo.version });
+      app.quit();
+    }, 3000);
+
     return { ok: true, action: 'quit_and_install' };
   });
 

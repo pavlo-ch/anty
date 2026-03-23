@@ -1095,6 +1095,10 @@ async function handleMandatoryUpdatePrimaryAction() {
 
     if (opened?.action === 'quit_and_install') {
       showToast('Installing update and restarting...', 'success');
+      setMandatoryUpdateButtonsBusy(true);
+      setTimeout(() => {
+        void window.api.quitApp().catch(() => {});
+      }, 3500);
       return;
     }
 
