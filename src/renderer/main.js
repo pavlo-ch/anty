@@ -422,6 +422,11 @@ async function createNewProfile() {
     selectProfile(profile.id);
     showToast('Profile created', 'success');
   } catch (err) {
+    if (isLoginRequiredError(err)) {
+      showLoginModal();
+      showToast('Session expired. Login again and retry.', 'error');
+      return;
+    }
     const message = err?.message || 'Failed to create profile';
     showToast(message, 'error');
   }
@@ -459,6 +464,11 @@ async function deleteProfile(id) {
     renderProfilesList();
     showToast('Profile deleted', 'success');
   } catch (err) {
+    if (isLoginRequiredError(err)) {
+      showLoginModal();
+      showToast('Session expired. Login again and retry.', 'error');
+      return;
+    }
     const message = err?.message || 'Failed to delete profile';
     showToast(message, 'error');
   }
@@ -1315,7 +1325,7 @@ async function handleMandatoryRestartAction() {
 
 function isLoginRequiredError(err) {
   const message = err?.message || String(err || '');
-  return message.includes('LOGIN_REQUIRED');
+  return message.includes('LOGIN_REQUIRED') || message.toLowerCase().includes('session expired');
 }
 
 // ===== HELPERS =====

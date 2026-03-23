@@ -14,7 +14,7 @@ function toCloudSyncError(prefix, reason, status) {
   const derivedStatus = Number(status) || Number(String(reason || '').match(/_(\d{3})$/)?.[1] || 0);
   const effectiveStatus = derivedStatus || Number(status) || 0;
   if (effectiveStatus === 401 || reason === 'not_logged_in' || reason === 'missing_access_token') {
-    return `${prefix}: session expired, login again.`;
+    return 'LOGIN_REQUIRED: session expired, login again.';
   }
   if (effectiveStatus === 404) {
     return `${prefix}: cloud endpoint not found (404). Check profiles URL on platform.`;

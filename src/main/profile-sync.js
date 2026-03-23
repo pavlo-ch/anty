@@ -179,6 +179,20 @@ function getRefreshToken() {
   return decryptSecret(row.refresh_token || '');
 }
 
+function markSessionInvalid() {
+  try {
+    db.getDb().prepare(`
+      UPDATE account_state
+      SET
+        is_logged_in = 0,
+        updated_at = datetime('now')
+      WHERE id = 1
+    `).run();
+  } catch (_) {
+    // Keep sync flow robust even if DB write fails.
+  }
+}
+
 function encryptSecret(secret) {
   if (!secret) return '';
   if (USE_KEYCHAIN) {
@@ -222,6 +236,7 @@ async function refreshAccessToken() {
     return { ok: false, reason: 'refresh_url_not_configured' };
   }
   if (!refreshToken) {
+    markSessionInvalid();
     return { ok: false, reason: 'missing_refresh_token' };
   }
 
@@ -238,11 +253,15 @@ async function refreshAccessToken() {
     });
     const body = parseJsonSafe(await response.text());
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403 || response.status === 423) {
+        markSessionInvalid();
+      }
       return { ok: false, status: response.status, reason: body?.error || `refresh_failed_${response.status}` };
     }
 
     const normalized = normalizeLoginPayload(body);
     if (!normalized.accessToken) {
+      markSessionInvalid();
       return { ok: false, reason: 'missing_access_token_after_refresh' };
     }
 
@@ -259,7 +278,8 @@ async function refreshAccessToken() {
 
 function isLoggedIn() {
   const row = getStateRow() || {};
-  return Number(row.is_logged_in || 0) === 1;
+  if (Number(row.is_logged_in || 0) !== 1) return false;
+  return Boolean(getAccessToken() || getRefreshToken());
 }
 
 function getOrCreateStableDeviceId() {
@@ -412,7 +432,20 @@ function isCloudBootstrapped() {
 async function fetchWithAuthRetry(url, payload) {
   let token = getAccessToken();
   if (!token) {
-    return { ok: false, status: 401, body: {}, reason: 'missing_access_token' };
+    const refreshedWithoutToken = await refreshAccessToken();
+    if (!refreshedWithoutToken.ok) {
+      return {
+        ok: false,
+        status: Number(refreshedWithoutToken.status || 401),
+        body: {},
+        reason: refreshedWithoutToken.reason || 'missing_access_token'
+      };
+    }
+    token = refreshedWithoutToken.accessToken || getAccessToken();
+    if (!token) {
+      markSessionInvalid();
+      return { ok: false, status: 401, body: {}, reason: 'missing_access_token_after_refresh' };
+    }
   }
 
   const send = async (accessToken) => {
@@ -434,6 +467,9 @@ async function fetchWithAuthRetry(url, payload) {
 
     const refreshed = await refreshAccessToken();
     if (!refreshed.ok) {
+      if (result.status === 401 || result.status === 403 || result.status === 423) {
+        markSessionInvalid();
+      }
       return {
         ok: false,
         status: 401,
@@ -444,9 +480,13 @@ async function fetchWithAuthRetry(url, payload) {
 
     token = refreshed.accessToken || getAccessToken();
     if (!token) {
+      markSessionInvalid();
       return { ok: false, status: 401, body: result.body || {}, reason: 'missing_access_token_after_refresh' };
     }
     result = await send(token);
+    if (!result.ok && (result.status === 401 || result.status === 403 || result.status === 423)) {
+      markSessionInvalid();
+    }
     return result;
   } catch (err) {
     return { ok: false, status: 0, body: {}, reason: err.message || 'request_exception' };

@@ -458,7 +458,13 @@ function getAccountState() {
   const row = getStateRow() || {};
   const rememberMe = Number(row.remember_me || 0) === 1;
   const savedPassword = rememberMe ? decryptSecret(row.password_encrypted || '') : '';
-  const isLoggedIn = Number(row.is_logged_in || 0) === 1;
+  const rowLoggedIn = Number(row.is_logged_in || 0) === 1;
+  const hasUsableToken = Boolean(decryptSecret(row.access_token || '') || decryptSecret(row.refresh_token || ''));
+  const isLoggedIn = rowLoggedIn && hasUsableToken;
+
+  if (rowLoggedIn && !hasUsableToken) {
+    updateState({ is_logged_in: 0 });
+  }
 
   return {
     isLoggedIn,
