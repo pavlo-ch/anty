@@ -28,7 +28,9 @@ let mandatoryDownloadState = {
 const DEFAULT_GITHUB_UPDATE_URL = 'https://github.com/pavlo-ch/anty/releases/latest/download';
 const DEFAULT_PLATFORM_LOG_URL = '';
 const ENCRYPTED_PREFIX = 'enc:v1:';
+const PLAIN_PREFIX = 'plain:v1:';
 const ANTY_SOURCE = 'anty-browser';
+const USE_KEYCHAIN = String(process.env.ANTY_USE_KEYCHAIN || '').trim().toLowerCase() === 'true';
 
 function getPlatformLogUrl() {
   return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || DEFAULT_PLATFORM_LOG_URL || '').trim();
@@ -53,8 +55,16 @@ function getDeviceInfo() {
 
 function decryptSecret(value) {
   if (!value) return '';
+  if (String(value).startsWith(PLAIN_PREFIX)) {
+    try {
+      return Buffer.from(String(value).slice(PLAIN_PREFIX.length), 'base64').toString('utf8');
+    } catch (_) {
+      return '';
+    }
+  }
   try {
     if (String(value).startsWith(ENCRYPTED_PREFIX)) {
+      if (!USE_KEYCHAIN) return '';
       const encoded = String(value).slice(ENCRYPTED_PREFIX.length);
       const buffer = Buffer.from(encoded, 'base64');
       if (safeStorage.isEncryptionAvailable()) {

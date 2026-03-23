@@ -8,7 +8,9 @@ const crypto = require('crypto');
 const DEFAULT_PLATFORM_AUTH_URL = '';
 const DEFAULT_PLATFORM_LOG_URL = '';
 const ENCRYPTED_PREFIX = 'enc:v1:';
+const PLAIN_PREFIX = 'plain:v1:';
 const ANTY_SOURCE = 'anty-browser';
+const USE_KEYCHAIN = String(process.env.ANTY_USE_KEYCHAIN || '').trim().toLowerCase() === 'true';
 let staticPlatformConfigCache = null;
 
 function loadStaticPlatformConfig() {
@@ -179,18 +181,28 @@ function getDeviceInfo() {
 
 function encryptSecret(secret) {
   if (!secret) return '';
-  try {
-    if (safeStorage.isEncryptionAvailable()) {
-      return `${ENCRYPTED_PREFIX}${safeStorage.encryptString(secret).toString('base64')}`;
-    }
-  } catch (_) {}
-  return `${ENCRYPTED_PREFIX}${Buffer.from(secret, 'utf8').toString('base64')}`;
+  if (USE_KEYCHAIN) {
+    try {
+      if (safeStorage.isEncryptionAvailable()) {
+        return `${ENCRYPTED_PREFIX}${safeStorage.encryptString(secret).toString('base64')}`;
+      }
+    } catch (_) {}
+  }
+  return `${PLAIN_PREFIX}${Buffer.from(secret, 'utf8').toString('base64')}`;
 }
 
 function decryptSecret(value) {
   if (!value) return '';
+  if (value.startsWith(PLAIN_PREFIX)) {
+    try {
+      return Buffer.from(value.slice(PLAIN_PREFIX.length), 'base64').toString('utf8');
+    } catch (_) {
+      return '';
+    }
+  }
   if (value.startsWith(ENCRYPTED_PREFIX)) {
     const encoded = value.slice(ENCRYPTED_PREFIX.length);
+    if (!USE_KEYCHAIN) return '';
     try {
       const asBuffer = Buffer.from(encoded, 'base64');
       if (safeStorage.isEncryptionAvailable()) {
@@ -207,7 +219,7 @@ function decryptSecret(value) {
     const looksLikeBase64 = /^[A-Za-z0-9+/=]+$/.test(value) && value.length % 4 === 0;
     if (looksLikeBase64) {
       const asBuffer = Buffer.from(value, 'base64');
-      if (safeStorage.isEncryptionAvailable()) {
+      if (USE_KEYCHAIN && safeStorage.isEncryptionAvailable()) {
         return safeStorage.decryptString(asBuffer);
       }
       return asBuffer.toString('utf8');

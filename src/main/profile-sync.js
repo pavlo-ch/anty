@@ -6,12 +6,14 @@ const crypto = require('crypto');
 const db = require('./database');
 
 const ENCRYPTED_PREFIX = 'enc:v1:';
+const PLAIN_PREFIX = 'plain:v1:';
 const ANTY_SOURCE = 'anty-browser';
 const DEFAULT_REFRESH_SEGMENT = 'refresh';
 const DEFAULT_PUSH_SEGMENT = 'profiles/push';
 const DEFAULT_PULL_SEGMENT = 'profiles/pull';
 const CURSOR_SETTING_KEY = 'profiles_sync_cursor';
 const CLOUD_BOOTSTRAP_SETTING_KEY = 'profiles_cloud_bootstrapped';
+const USE_KEYCHAIN = String(process.env.ANTY_USE_KEYCHAIN || '').trim().toLowerCase() === 'true';
 
 let staticPlatformConfigCache = null;
 let syncInProgress = false;
@@ -140,8 +142,16 @@ function isCloudProfilesRequired() {
 
 function decryptSecret(value) {
   if (!value) return '';
+  if (String(value).startsWith(PLAIN_PREFIX)) {
+    try {
+      return Buffer.from(String(value).slice(PLAIN_PREFIX.length), 'base64').toString('utf8');
+    } catch (_) {
+      return '';
+    }
+  }
   try {
     if (String(value).startsWith(ENCRYPTED_PREFIX)) {
+      if (!USE_KEYCHAIN) return '';
       const encoded = String(value).slice(ENCRYPTED_PREFIX.length);
       const buffer = Buffer.from(encoded, 'base64');
       if (safeStorage.isEncryptionAvailable()) {
@@ -171,12 +181,14 @@ function getRefreshToken() {
 
 function encryptSecret(secret) {
   if (!secret) return '';
-  try {
-    if (safeStorage.isEncryptionAvailable()) {
-      return `${ENCRYPTED_PREFIX}${safeStorage.encryptString(secret).toString('base64')}`;
-    }
-  } catch (_) {}
-  return `${ENCRYPTED_PREFIX}${Buffer.from(secret, 'utf8').toString('base64')}`;
+  if (USE_KEYCHAIN) {
+    try {
+      if (safeStorage.isEncryptionAvailable()) {
+        return `${ENCRYPTED_PREFIX}${safeStorage.encryptString(secret).toString('base64')}`;
+      }
+    } catch (_) {}
+  }
+  return `${PLAIN_PREFIX}${Buffer.from(secret, 'utf8').toString('base64')}`;
 }
 
 function saveSessionTokens({ accessToken, refreshToken, expiresAt }) {
