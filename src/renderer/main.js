@@ -765,6 +765,15 @@ function setAccountBusy(isBusy) {
   if (updateRestartBtn) updateRestartBtn.disabled = isBusy;
 }
 
+function setMandatoryUpdateButtonsBusy(isBusy) {
+  const updateInstallBtn = document.getElementById('btn-update-lock-install');
+  if (updateInstallBtn) updateInstallBtn.disabled = isBusy;
+  const updateRestartBtn = document.getElementById('btn-update-lock-restart');
+  if (updateRestartBtn) updateRestartBtn.disabled = isBusy;
+  const updateExitBtn = document.getElementById('btn-update-lock-exit');
+  if (updateExitBtn) updateExitBtn.disabled = isBusy;
+}
+
 async function loadAccountStateUI() {
   accountState = await window.api.getAccountState();
   renderAccountState(accountState);
