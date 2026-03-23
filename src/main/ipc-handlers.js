@@ -2,6 +2,7 @@ const { app, ipcMain, BrowserWindow, shell } = require('electron');
 const db = require('./database');
 const launcher = require('./launcher');
 const auth = require('./auth');
+const profileSync = require('./profile-sync');
 
 function requireLoggedIn() {
   if (!auth.isLoggedIn()) {
@@ -44,15 +45,21 @@ function registerIpcHandlers() {
     requireLoggedIn();
     const created = db.createProfile(data || {});
     const synced = await launcher.syncProfileLocaleFromProxy(created.id);
-    return synced?.success && synced?.profile ? synced.profile : created;
+    const finalProfile = synced?.success && synced?.profile ? synced.profile : created;
+    profileSync.onLocalProfileUpsert(finalProfile);
+    profileSync.scheduleSync();
+    return finalProfile;
   });
   ipcMain.handle('profile:update', async (_, id, data) => {
     requireLoggedIn();
     const updated = db.updateProfile(id, data);
     const hasProxyField = data && Object.prototype.hasOwnProperty.call(data, 'proxy_id');
-    if (!hasProxyField) return updated;
-    const synced = await launcher.syncProfileLocaleFromProxy(id);
-    return synced?.success && synced?.profile ? synced.profile : updated;
+    const finalProfile = hasProxyField
+      ? ((await launcher.syncProfileLocaleFromProxy(id))?.profile || updated)
+      : updated;
+    profileSync.onLocalProfileUpsert(finalProfile);
+    profileSync.scheduleSync();
+    return finalProfile;
   });
   ipcMain.handle('profile:delete', (_, id) => {
     requireLoggedIn();
@@ -61,6 +68,14 @@ function registerIpcHandlers() {
   ipcMain.handle('profile:sync-locale-from-proxy', async (_, id) => {
     requireLoggedIn();
     return launcher.syncProfileLocaleFromProxy(id);
+  });
+  ipcMain.handle('profile:sync:run', async () => {
+    requireLoggedIn();
+    return profileSync.runFullSync();
+  });
+  ipcMain.handle('profile:sync:status', () => {
+    requireLoggedIn();
+    return profileSync.getSyncStatus();
   });
 
   // ---- PROXIES ----

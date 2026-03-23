@@ -4,6 +4,16 @@ const { app } = require('electron');
 
 let db;
 
+function hasColumn(tableName, columnName) {
+  const rows = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  return rows.some((row) => row.name === columnName);
+}
+
+function ensureColumn(tableName, columnName, definitionSql) {
+  if (hasColumn(tableName, columnName)) return;
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definitionSql}`);
+}
+
 function getDbPath() {
   const userDataPath = app.getPath('userData');
   return path.join(userDataPath, 'anty_browser.db');
@@ -48,6 +58,9 @@ function initDatabase() {
       folder_id INTEGER DEFAULT NULL,
       group_id INTEGER DEFAULT NULL,
       proxy_id INTEGER DEFAULT NULL,
+      remote_id TEXT DEFAULT '',
+      team_id TEXT DEFAULT '',
+      cloud_updated_at TEXT DEFAULT '',
       status TEXT DEFAULT 'ready',
       user_agent TEXT DEFAULT '',
       fingerprint TEXT DEFAULT '{}',
@@ -108,7 +121,23 @@ function initDatabase() {
       meta TEXT DEFAULT '{}',
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS profile_sync_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
+
+  // Forward-compatible columns for existing DB files.
+  ensureColumn('profiles', 'remote_id', "TEXT DEFAULT ''");
+  ensureColumn('profiles', 'team_id', "TEXT DEFAULT ''");
+  ensureColumn('profiles', 'cloud_updated_at', "TEXT DEFAULT ''");
 
   // Seed defaults if empty
   const folderCount = db.prepare('SELECT COUNT(*) as cnt FROM folders').get();
@@ -203,6 +232,57 @@ function deleteProfile(id) {
   return getDb().prepare('DELETE FROM profiles WHERE id = ?').run(id);
 }
 
+function getProfileByRemoteId(remoteId) {
+  if (!remoteId) return null;
+  return getDb().prepare(`
+    SELECT p.*, f.name as folder_name, g.name as group_name, pr.name as proxy_name, pr.type as proxy_type, pr.host as proxy_host, pr.port as proxy_port, pr.username as proxy_username, pr.password as proxy_password
+    FROM profiles p
+    LEFT JOIN folders f ON p.folder_id = f.id
+    LEFT JOIN groups g ON p.group_id = g.id
+    LEFT JOIN proxies pr ON p.proxy_id = pr.id
+    WHERE p.remote_id = ?
+  `).get(String(remoteId));
+}
+
+// ---- CLOUD SYNC QUEUE ----
+function enqueueProfileSync(action, payload = {}) {
+  const result = getDb().prepare(`
+    INSERT INTO profile_sync_queue (action, payload, status, retry_count, last_error, created_at, updated_at)
+    VALUES (?, ?, 'pending', 0, '', datetime('now'), datetime('now'))
+  `).run(String(action || ''), JSON.stringify(payload || {}));
+  return getDb().prepare('SELECT * FROM profile_sync_queue WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function listProfileSyncQueue(limit = 50) {
+  const normalized = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 50;
+  return getDb().prepare(`
+    SELECT *
+    FROM profile_sync_queue
+    WHERE status IN ('pending', 'failed')
+    ORDER BY id ASC
+    LIMIT ?
+  `).all(normalized);
+}
+
+function markProfileSyncDone(id) {
+  return getDb().prepare(`
+    DELETE FROM profile_sync_queue
+    WHERE id = ?
+  `).run(id);
+}
+
+function markProfileSyncFailed(id, errorMessage) {
+  return getDb().prepare(`
+    UPDATE profile_sync_queue
+    SET
+      status = 'failed',
+      retry_count = retry_count + 1,
+      last_error = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).run(String(errorMessage || ''), id);
+}
+
 // ---- PROXIES ----
 function listProxies() {
   return getDb().prepare('SELECT * FROM proxies ORDER BY id DESC').all();
@@ -274,9 +354,10 @@ function setSetting(key, value) {
 
 module.exports = {
   initDatabase, getDb,
-  listProfiles, getProfile, createProfile, updateProfile, deleteProfile,
+  listProfiles, getProfile, createProfile, updateProfile, deleteProfile, getProfileByRemoteId,
   listProxies, createProxy, updateProxy, deleteProxy,
   listFolders, createFolder,
   listGroups, createGroup,
-  getSetting, setSetting
+  getSetting, setSetting,
+  enqueueProfileSync, listProfileSyncQueue, markProfileSyncDone, markProfileSyncFailed
 };

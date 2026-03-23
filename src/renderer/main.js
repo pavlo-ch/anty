@@ -10,6 +10,7 @@ let accountState = null;
 let mandatoryUpdateRequired = false;
 let mandatoryUpdateOpenInProgress = false;
 let proxyLocaleBackfillRunning = false;
+let profileCloudSyncRunning = false;
 let mandatoryUpdateFlow = {
   version: null,
   currentVersion: null,
@@ -56,6 +57,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadData();
   renderProfilesList();
   void backfillProxyLocaleForExistingProfiles();
+  void runProfileCloudSync({ silent: true });
   await refreshAccountPage();
 });
 
@@ -89,6 +91,38 @@ async function loadData() {
       return;
     }
     console.error('Failed to load data:', err);
+  }
+}
+
+async function runProfileCloudSync(options = {}) {
+  if (!window.api.runProfileCloudSync || profileCloudSyncRunning) return;
+  profileCloudSyncRunning = true;
+  try {
+    const result = await window.api.runProfileCloudSync();
+    const pulled = Number(result?.pull?.pulled || 0);
+    if (pulled > 0) {
+      await loadData();
+      renderProfilesList(document.getElementById('search-input')?.value || '');
+      if (selectedProfileId) {
+        await loadProfileEditor(selectedProfileId);
+      }
+    }
+
+    if (options.silent) return;
+    if (result?.ok) {
+      showToast(`Cloud sync completed${pulled > 0 ? ` (${pulled} profiles updated)` : ''}`, 'success');
+      return;
+    }
+    if (!result?.skipped) {
+      const reason = result?.pull?.reason || result?.push?.reason || result?.reason || 'sync_failed';
+      showToast(`Cloud sync failed: ${reason}`, 'error');
+    }
+  } catch (err) {
+    if (!options.silent) {
+      showToast(`Cloud sync failed: ${err.message || 'unknown_error'}`, 'error');
+    }
+  } finally {
+    profileCloudSyncRunning = false;
   }
 }
 
@@ -803,6 +837,7 @@ async function loginAccount() {
     renderAccountState(accountState);
     await loadData();
     renderProfilesList();
+    void runProfileCloudSync({ silent: true });
     hideLoginModal();
     showToast('Login successful', 'success');
   } catch (err) {
@@ -822,6 +857,7 @@ async function loginFromModal() {
     renderAccountState(accountState);
     await loadData();
     renderProfilesList();
+    void runProfileCloudSync({ silent: true });
     hideLoginModal();
     showToast('Login successful', 'success');
   } catch (err) {

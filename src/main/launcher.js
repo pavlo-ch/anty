@@ -4,6 +4,7 @@ const { app } = require('electron');
 const fs = require('fs');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag } = require('./fingerprint');
 const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('./database');
+const profileSync = require('./profile-sync');
 const http = require('http');
 
 // Track running browser instances
@@ -278,6 +279,13 @@ async function deleteProfile(profileId) {
     if (!stopped.success) {
       return { success: false, error: `Failed to stop running profile: ${stopped.error}` };
     }
+  }
+
+  try {
+    profileSync.onLocalProfileDelete(profile);
+    profileSync.scheduleSync();
+  } catch (_) {
+    // Keep local delete robust even if sync queue fails.
   }
 
   const result = deleteProfileRow(numericId);

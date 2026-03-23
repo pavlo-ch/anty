@@ -30,6 +30,8 @@ function loadStaticPlatformConfig() {
         authPollUrl: String(parsed?.authPollUrl || '').trim(),
         refreshUrl: String(parsed?.refreshUrl || '').trim(),
         logoutUrl: String(parsed?.logoutUrl || '').trim(),
+        profilesPushUrl: String(parsed?.profilesPushUrl || '').trim(),
+        profilesPullUrl: String(parsed?.profilesPullUrl || '').trim(),
         logUrl: String(parsed?.logUrl || '').trim()
       };
       return staticPlatformConfigCache;
@@ -38,7 +40,7 @@ function loadStaticPlatformConfig() {
     }
   }
 
-  staticPlatformConfigCache = { authUrl: '', authStartUrl: '', authPollUrl: '', refreshUrl: '', logoutUrl: '', logUrl: '' };
+  staticPlatformConfigCache = { authUrl: '', authStartUrl: '', authPollUrl: '', refreshUrl: '', logoutUrl: '', profilesPushUrl: '', profilesPullUrl: '', logUrl: '' };
   return staticPlatformConfigCache;
 }
 
@@ -111,6 +113,28 @@ function getPlatformLogoutUrl() {
   ).trim();
   if (configured) return configured;
   return deriveSiblingUrl(getPlatformAuthUrl(), 'logout');
+}
+
+function getPlatformProfilesPushUrl() {
+  const staticConfig = loadStaticPlatformConfig();
+  const configured = (
+    db.getSetting('platform_profiles_push_url')
+    || process.env.ANTY_PLATFORM_PROFILES_PUSH_URL
+    || staticConfig.profilesPushUrl
+  ).trim();
+  if (configured) return configured;
+  return deriveSiblingUrl(getPlatformAuthUrl(), 'profiles/push');
+}
+
+function getPlatformProfilesPullUrl() {
+  const staticConfig = loadStaticPlatformConfig();
+  const configured = (
+    db.getSetting('platform_profiles_pull_url')
+    || process.env.ANTY_PLATFORM_PROFILES_PULL_URL
+    || staticConfig.profilesPullUrl
+  ).trim();
+  if (configured) return configured;
+  return deriveSiblingUrl(getPlatformAuthUrl(), 'profiles/pull');
 }
 
 function getOrCreateStableDeviceId() {
@@ -433,15 +457,21 @@ function getPlatformConfig() {
   const authUrl = getPlatformAuthUrl();
   const authStartUrl = getPlatformAuthStartUrl();
   const authPollUrl = getPlatformAuthPollUrl();
+  const profilesPushUrl = getPlatformProfilesPushUrl();
+  const profilesPullUrl = getPlatformProfilesPullUrl();
   const logUrl = getPlatformLogUrl();
   return {
     authUrl,
     authStartUrl,
     authPollUrl,
+    profilesPushUrl,
+    profilesPullUrl,
     logUrl,
     authUrlConfigured: Boolean(authUrl),
     authStartUrlConfigured: Boolean(authStartUrl),
     authPollUrlConfigured: Boolean(authPollUrl),
+    profilesPushUrlConfigured: Boolean(profilesPushUrl),
+    profilesPullUrlConfigured: Boolean(profilesPullUrl),
     logUrlConfigured: Boolean(logUrl)
   };
 }
@@ -458,6 +488,12 @@ function setPlatformConfig(config = {}) {
   }
   if (config.logUrl !== undefined) {
     db.setSetting('platform_log_url', String(config.logUrl || '').trim());
+  }
+  if (config.profilesPushUrl !== undefined) {
+    db.setSetting('platform_profiles_push_url', String(config.profilesPushUrl || '').trim());
+  }
+  if (config.profilesPullUrl !== undefined) {
+    db.setSetting('platform_profiles_pull_url', String(config.profilesPullUrl || '').trim());
   }
 
   insertAccountEvent('platform_config_updated', 'info', 'Platform config updated', {
