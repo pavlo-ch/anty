@@ -247,17 +247,21 @@ async function saveProfile() {
   if (!selectedProfileId) return;
   
   try {
+    const folderVal = document.getElementById('editor-folder').value;
+    const groupVal = document.getElementById('editor-group').value;
+    const proxySelectVal = document.getElementById('editor-proxy-select').value;
+    const parsedFolderId = Number.parseInt(folderVal, 10);
+    const parsedGroupId = Number.parseInt(groupVal, 10);
+    const parsedProxyId = Number.parseInt(proxySelectVal, 10);
+
     const data = {
       name: document.getElementById('editor-profile-name').value,
-      folder_id: document.getElementById('editor-folder').value || null,
-      group_id: document.getElementById('editor-group').value || null,
+      folder_id: Number.isFinite(parsedFolderId) ? parsedFolderId : null,
+      group_id: Number.isFinite(parsedGroupId) ? parsedGroupId : null,
       start_page: document.getElementById('editor-start-page').value,
       notes: document.getElementById('profile-notes').value,
+      proxy_id: Number.isFinite(parsedProxyId) ? parsedProxyId : null,
     };
-
-    // Also link selected proxy
-    const proxySelectVal = document.getElementById('editor-proxy-select').value;
-    data.proxy_id = proxySelectVal ? parseInt(proxySelectVal) : null;
 
     // Save cookies
     const cookiesText = document.getElementById('cookies-textarea').value;
@@ -276,7 +280,13 @@ async function saveProfile() {
     loadProfileEditor(selectedProfileId);
     showToast('Profile saved', 'success');
   } catch (err) {
-    showToast('Failed to save profile', 'error');
+    if (isLoginRequiredError(err)) {
+      showLoginModal();
+      showToast('Session expired. Login again and retry.', 'error');
+      return;
+    }
+    const message = err?.message || String(err || 'Unknown error');
+    showToast(`Failed to save profile: ${message}`, 'error');
   }
 }
 
