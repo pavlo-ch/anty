@@ -1026,7 +1026,7 @@ function renderMandatoryUpdateUi() {
       restartBtn.textContent = 'Quit for Install';
       restartBtn.classList.remove('hidden');
       statusEl.classList.remove('hidden');
-      statusEl.textContent = 'Installer opened. Quit Anty Browser, replace the app in Applications, then launch it again.';
+      statusEl.textContent = 'Installer opened. Anty Browser is closing so you can replace it in Applications.';
     } else {
       restartBtn.classList.add('hidden');
       statusEl.classList.remove('hidden');
@@ -1096,7 +1096,8 @@ async function handleMandatoryUpdatePrimaryAction() {
     mandatoryUpdateFlow.error = '';
     mandatoryUpdateFlow.installerOpened = true;
     renderMandatoryUpdateUi();
-    showToast('Installer opened', 'success');
+    showToast('Installer opened. Quitting app for install...', 'success');
+    await window.api.quitApp();
   } catch (err) {
     mandatoryUpdateFlow.error = err.message || 'Failed to open installer';
     renderMandatoryUpdateUi();
