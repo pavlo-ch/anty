@@ -162,9 +162,91 @@ function getDb() {
   return db;
 }
 
+function normalizeTagNames(input) {
+  if (!input) return [];
+  const source = Array.isArray(input) ? input : String(input).split(',');
+  const normalized = source
+    .map((entry) => {
+      if (entry && typeof entry === 'object') return String(entry.name || '').trim();
+      return String(entry || '').trim();
+    })
+    .filter(Boolean);
+  return Array.from(new Set(normalized.map((name) => name.slice(0, 64))));
+}
+
+function ensureTagByName(name) {
+  const normalized = String(name || '').trim();
+  if (!normalized) return null;
+  const existing = getDb().prepare('SELECT * FROM tags WHERE lower(name) = lower(?) LIMIT 1').get(normalized);
+  if (existing) return existing;
+  const result = getDb().prepare('INSERT INTO tags (name, color) VALUES (?, ?)').run(normalized, '#6c63ff');
+  return getDb().prepare('SELECT * FROM tags WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function listTags() {
+  return getDb().prepare(`
+    SELECT t.*, COUNT(pt.profile_id) AS profiles_count
+    FROM tags t
+    LEFT JOIN profile_tags pt ON pt.tag_id = t.id
+    GROUP BY t.id
+    ORDER BY lower(t.name) ASC
+  `).all();
+}
+
+function getProfileTags(profileId) {
+  return getDb().prepare(`
+    SELECT t.id, t.name, t.color
+    FROM profile_tags pt
+    JOIN tags t ON t.id = pt.tag_id
+    WHERE pt.profile_id = ?
+    ORDER BY lower(t.name) ASC
+  `).all(profileId);
+}
+
+function setProfileTags(profileId, tagsInput) {
+  const tagNames = normalizeTagNames(tagsInput);
+  const tx = getDb().transaction((pid, names) => {
+    getDb().prepare('DELETE FROM profile_tags WHERE profile_id = ?').run(pid);
+    for (const tagName of names) {
+      const tag = ensureTagByName(tagName);
+      if (!tag?.id) continue;
+      getDb().prepare('INSERT OR IGNORE INTO profile_tags (profile_id, tag_id) VALUES (?, ?)').run(pid, tag.id);
+    }
+  });
+  tx(profileId, tagNames);
+  return getProfileTags(profileId);
+}
+
+function attachTagsToProfiles(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows || [];
+  const ids = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+  if (!ids.length) return rows;
+  const placeholders = ids.map(() => '?').join(', ');
+  const tagsRows = getDb().prepare(`
+    SELECT pt.profile_id, t.id, t.name, t.color
+    FROM profile_tags pt
+    JOIN tags t ON t.id = pt.tag_id
+    WHERE pt.profile_id IN (${placeholders})
+    ORDER BY lower(t.name) ASC
+  `).all(...ids);
+  const byProfile = new Map();
+  for (const row of tagsRows) {
+    if (!byProfile.has(row.profile_id)) byProfile.set(row.profile_id, []);
+    byProfile.get(row.profile_id).push({
+      id: row.id,
+      name: row.name,
+      color: row.color
+    });
+  }
+  return rows.map((row) => ({
+    ...row,
+    tags: byProfile.get(row.id) || []
+  }));
+}
+
 // ---- PROFILES ----
 function listProfiles() {
-  return getDb().prepare(`
+  const rows = getDb().prepare(`
     SELECT p.*, f.name as folder_name, g.name as group_name, pr.name as proxy_name, pr.type as proxy_type, pr.host as proxy_host
     FROM profiles p
     LEFT JOIN folders f ON p.folder_id = f.id
@@ -172,10 +254,11 @@ function listProfiles() {
     LEFT JOIN proxies pr ON p.proxy_id = pr.id
     ORDER BY p.modified_at DESC
   `).all();
+  return attachTagsToProfiles(rows);
 }
 
 function getProfile(id) {
-  return getDb().prepare(`
+  const row = getDb().prepare(`
     SELECT p.*, f.name as folder_name, g.name as group_name, pr.name as proxy_name, pr.type as proxy_type, pr.host as proxy_host, pr.port as proxy_port, pr.username as proxy_username, pr.password as proxy_password
     FROM profiles p
     LEFT JOIN folders f ON p.folder_id = f.id
@@ -183,6 +266,8 @@ function getProfile(id) {
     LEFT JOIN proxies pr ON p.proxy_id = pr.id
     WHERE p.id = ?
   `).get(id);
+  if (!row) return null;
+  return attachTagsToProfiles([row])[0] || row;
 }
 
 function createProfile(data) {
@@ -202,13 +287,19 @@ function createProfile(data) {
     data.start_page || 'chrome://new-tab-page',
     data.notes || ''
   );
-  
+
+  if (data.tags !== undefined) {
+    setProfileTags(result.lastInsertRowid, data.tags);
+  }
+
   return getProfile(result.lastInsertRowid);
 }
 
 function updateProfile(id, data) {
+  const updateData = data || {};
   const sets = [];
   const values = [];
+  const hasTagsUpdate = Object.prototype.hasOwnProperty.call(updateData, 'tags');
   
   const allowedFields = [
     'name',
@@ -227,18 +318,24 @@ function updateProfile(id, data) {
   ];
   
   for (const field of allowedFields) {
-    if (data[field] !== undefined) {
+    if (updateData[field] !== undefined) {
       sets.push(`${field} = ?`);
-      values.push(typeof data[field] === 'object' ? JSON.stringify(data[field]) : data[field]);
+      values.push(typeof updateData[field] === 'object' ? JSON.stringify(updateData[field]) : updateData[field]);
     }
   }
   
-  if (sets.length === 0) return getProfile(id);
+  if (sets.length > 0) {
+    sets.push("modified_at = datetime('now')");
+    values.push(id);
+    getDb().prepare(`UPDATE profiles SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  }
   
-  sets.push("modified_at = datetime('now')");
-  values.push(id);
-  
-  getDb().prepare(`UPDATE profiles SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  if (hasTagsUpdate) {
+    setProfileTags(id, updateData.tags);
+    getDb().prepare("UPDATE profiles SET modified_at = datetime('now') WHERE id = ?").run(id);
+  }
+
+  if (sets.length === 0 && !hasTagsUpdate) return getProfile(id);
   return getProfile(id);
 }
 
@@ -248,7 +345,7 @@ function deleteProfile(id) {
 
 function getProfileByRemoteId(remoteId) {
   if (!remoteId) return null;
-  return getDb().prepare(`
+  const row = getDb().prepare(`
     SELECT p.*, f.name as folder_name, g.name as group_name, pr.name as proxy_name, pr.type as proxy_type, pr.host as proxy_host, pr.port as proxy_port, pr.username as proxy_username, pr.password as proxy_password
     FROM profiles p
     LEFT JOIN folders f ON p.folder_id = f.id
@@ -256,6 +353,8 @@ function getProfileByRemoteId(remoteId) {
     LEFT JOIN proxies pr ON p.proxy_id = pr.id
     WHERE p.remote_id = ?
   `).get(String(remoteId));
+  if (!row) return null;
+  return attachTagsToProfiles([row])[0] || row;
 }
 
 // ---- CLOUD SYNC QUEUE ----
@@ -369,6 +468,7 @@ function setSetting(key, value) {
 module.exports = {
   initDatabase, getDb,
   listProfiles, getProfile, createProfile, updateProfile, deleteProfile, getProfileByRemoteId,
+  listTags, getProfileTags, setProfileTags,
   listProxies, createProxy, updateProxy, deleteProxy,
   listFolders, createFolder,
   listGroups, createGroup,

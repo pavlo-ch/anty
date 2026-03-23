@@ -4,6 +4,7 @@ let profiles = [];
 let proxies = [];
 let folders = [];
 let groups = [];
+let tags = [];
 let selectedProfileId = null;
 let runningProfiles = new Set();
 let accountState = null;
@@ -11,6 +12,10 @@ let mandatoryUpdateRequired = false;
 let mandatoryUpdateOpenInProgress = false;
 let proxyLocaleBackfillRunning = false;
 let profileCloudSyncRunning = false;
+let autoSaveTimer = null;
+let autoSaveInFlight = false;
+let autoSaveQueued = false;
+let suppressAutoSave = false;
 let mandatoryUpdateFlow = {
   version: null,
   currentVersion: null,
@@ -77,11 +82,12 @@ async function renderAppVersion() {
 
 async function loadData() {
   try {
-    [profiles, proxies, folders, groups] = await Promise.all([
+    [profiles, proxies, folders, groups, tags] = await Promise.all([
       window.api.getProfiles(),
       window.api.getProxies(),
       window.api.getFolders(),
-      window.api.getGroups()
+      window.api.getGroups(),
+      window.api.getTags ? window.api.getTags() : Promise.resolve([])
     ]);
     const running = await window.api.getRunningProfiles();
     runningProfiles = new Set(running);
@@ -182,8 +188,7 @@ function setupEventListeners() {
     });
   });
 
-  // Save & Open profile
-  document.getElementById('btn-save-profile').addEventListener('click', saveProfile);
+  // Profile actions
   document.getElementById('btn-delete-profile')?.addEventListener('click', () => {
     if (selectedProfileId) confirmDeleteProfile(selectedProfileId);
   });
@@ -239,15 +244,30 @@ function setupEventListeners() {
       document.getElementById('editor-proxy-name').value = '';
       document.getElementById('editor-proxy-change-link').value = '';
     }
+    scheduleAutoSave(350);
   });
 
-  // Notes auto-save
-  document.getElementById('profile-notes').addEventListener('change', async () => {
-    if (!selectedProfileId) return;
-    await window.api.updateProfile(selectedProfileId, {
-      notes: document.getElementById('profile-notes').value
-    });
+  const autoSaveOnInputIds = [
+    'editor-profile-name',
+    'editor-start-page',
+    'editor-tags',
+    'profile-notes'
+  ];
+  autoSaveOnInputIds.forEach((id) => {
+    document.getElementById(id)?.addEventListener('input', () => scheduleAutoSave(500));
+    document.getElementById(id)?.addEventListener('change', () => scheduleAutoSave(120));
   });
+
+  const autoSaveOnChangeIds = [
+    'editor-folder',
+    'editor-group',
+    'editor-import-expired'
+  ];
+  autoSaveOnChangeIds.forEach((id) => {
+    document.getElementById(id)?.addEventListener('change', () => scheduleAutoSave(120));
+  });
+
+  document.getElementById('cookies-textarea')?.addEventListener('change', () => scheduleAutoSave(120));
 
   // Account
   document.getElementById('btn-account-login')?.addEventListener('click', loginAccount);
@@ -263,6 +283,126 @@ function setupEventListeners() {
 }
 
 // ===== PROFILE CRUD =====
+function clearAutoSaveTimer() {
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+  }
+}
+
+function scheduleAutoSave(delayMs = 400) {
+  if (suppressAutoSave || !selectedProfileId) return;
+  clearAutoSaveTimer();
+  autoSaveTimer = setTimeout(() => {
+    autoSaveTimer = null;
+    void persistSelectedProfile({ isAuto: true, silentSuccess: true });
+  }, Math.max(80, Number(delayMs) || 400));
+}
+
+function parseTagsInput(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return [];
+  const names = text.split(',').map((part) => part.trim()).filter(Boolean);
+  return Array.from(new Set(names.map((name) => name.slice(0, 64))));
+}
+
+function formatTagsInput(tagsValue) {
+  if (!Array.isArray(tagsValue) || !tagsValue.length) return '';
+  const names = tagsValue.map((entry) => {
+    if (entry && typeof entry === 'object') return String(entry.name || '').trim();
+    return String(entry || '').trim();
+  }).filter(Boolean);
+  return Array.from(new Set(names)).join(', ');
+}
+
+function populateTagSuggestions() {
+  const list = document.getElementById('tags-suggestions');
+  if (!list) return;
+  list.innerHTML = (Array.isArray(tags) ? tags : [])
+    .map((tag) => `<option value="${escapeHtml(tag?.name || '')}"></option>`)
+    .join('');
+}
+
+function collectProfileEditorData() {
+  const folderVal = document.getElementById('editor-folder').value;
+  const groupVal = document.getElementById('editor-group').value;
+  const proxySelectVal = document.getElementById('editor-proxy-select').value;
+  const parsedFolderId = Number.parseInt(folderVal, 10);
+  const parsedGroupId = Number.parseInt(groupVal, 10);
+  const parsedProxyId = Number.parseInt(proxySelectVal, 10);
+  const data = {
+    name: document.getElementById('editor-profile-name').value,
+    folder_id: Number.isFinite(parsedFolderId) ? parsedFolderId : null,
+    group_id: Number.isFinite(parsedGroupId) ? parsedGroupId : null,
+    start_page: document.getElementById('editor-start-page').value,
+    notes: document.getElementById('profile-notes').value,
+    proxy_id: Number.isFinite(parsedProxyId) ? parsedProxyId : null,
+    tags: parseTagsInput(document.getElementById('editor-tags')?.value || '')
+  };
+
+  const cookiesText = document.getElementById('cookies-textarea').value;
+  if (cookiesText) {
+    const parsedCookies = parseCookiesInput(cookiesText);
+    if (!parsedCookies.ok) {
+      throw new Error(parsedCookies.error || 'Invalid cookies JSON');
+    }
+    data.cookies = parsedCookies.cookies;
+  } else {
+    data.cookies = [];
+  }
+
+  return data;
+}
+
+function applyUpdatedProfileInMemory(updatedProfile) {
+  if (!updatedProfile?.id) return;
+  profiles = profiles.map((profile) => (profile.id === updatedProfile.id ? updatedProfile : profile));
+  const currentSearch = document.getElementById('search-input')?.value || '';
+  renderProfilesList(currentSearch);
+  if (selectedProfileId === updatedProfile.id) {
+    let fp = {};
+    try {
+      fp = JSON.parse(updatedProfile.fingerprint || '{}');
+    } catch {
+      fp = {};
+    }
+    renderProfileInfo(updatedProfile, fp);
+  }
+}
+
+async function persistSelectedProfile(options = {}) {
+  if (!selectedProfileId) return;
+  if (autoSaveInFlight) {
+    autoSaveQueued = true;
+    return;
+  }
+
+  autoSaveInFlight = true;
+  try {
+    const data = collectProfileEditorData();
+    const updated = await window.api.updateProfile(selectedProfileId, data);
+    applyUpdatedProfileInMemory(updated);
+    if (!options.silentSuccess && !options.isAuto) {
+      showToast('Profile saved', 'success');
+    }
+  } catch (err) {
+    if (isLoginRequiredError(err)) {
+      showLoginModal();
+      showToast('Session expired. Login again and retry.', 'error');
+      return;
+    }
+    const message = err?.message || String(err || 'Unknown error');
+    showToast(`Failed to save profile: ${message}`, 'error');
+    if (!options.isAuto) throw err;
+  } finally {
+    autoSaveInFlight = false;
+    if (autoSaveQueued) {
+      autoSaveQueued = false;
+      scheduleAutoSave(150);
+    }
+  }
+}
+
 async function createNewProfile() {
   try {
     const profile = await window.api.createProfile({
@@ -282,38 +422,7 @@ async function saveProfile() {
   if (!selectedProfileId) return;
   
   try {
-    const folderVal = document.getElementById('editor-folder').value;
-    const groupVal = document.getElementById('editor-group').value;
-    const proxySelectVal = document.getElementById('editor-proxy-select').value;
-    const parsedFolderId = Number.parseInt(folderVal, 10);
-    const parsedGroupId = Number.parseInt(groupVal, 10);
-    const parsedProxyId = Number.parseInt(proxySelectVal, 10);
-
-    const data = {
-      name: document.getElementById('editor-profile-name').value,
-      folder_id: Number.isFinite(parsedFolderId) ? parsedFolderId : null,
-      group_id: Number.isFinite(parsedGroupId) ? parsedGroupId : null,
-      start_page: document.getElementById('editor-start-page').value,
-      notes: document.getElementById('profile-notes').value,
-      proxy_id: Number.isFinite(parsedProxyId) ? parsedProxyId : null,
-    };
-
-    // Save cookies
-    const cookiesText = document.getElementById('cookies-textarea').value;
-    if (cookiesText) {
-      const parsedCookies = parseCookiesInput(cookiesText);
-      if (!parsedCookies.ok) {
-        showToast(parsedCookies.error || 'Invalid cookies JSON', 'error');
-        return;
-      }
-      data.cookies = parsedCookies.cookies;
-    }
-
-    await window.api.updateProfile(selectedProfileId, data);
-    await loadData();
-    renderProfilesList();
-    loadProfileEditor(selectedProfileId);
-    showToast('Profile saved', 'success');
+    await persistSelectedProfile({ silentSuccess: false });
   } catch (err) {
     if (isLoginRequiredError(err)) {
       showLoginModal();
@@ -327,6 +436,7 @@ async function saveProfile() {
 
 async function deleteProfile(id) {
   try {
+    if (selectedProfileId === id) clearAutoSaveTimer();
     const result = await window.api.deleteProfile(id);
     if (!result?.success) {
       showToast(result?.error || 'Failed to delete profile', 'error');
@@ -546,6 +656,7 @@ function renderProfilesList(searchTerm = '') {
 
 function selectProfile(id) {
   selectedProfileId = id;
+  clearAutoSaveTimer();
   renderProfilesList();
   loadProfileEditor(id);
 }
@@ -595,52 +706,64 @@ async function loadProfileEditor(id) {
   const profile = await window.api.getProfile(id);
   if (!profile) return;
 
-  const fp = JSON.parse(profile.fingerprint || '{}');
+  let fp = {};
+  try {
+    fp = JSON.parse(profile.fingerprint || '{}');
+  } catch {
+    fp = {};
+  }
   
   document.getElementById('profile-editor').style.display = '';
   document.getElementById('profile-info').style.display = '';
 
-  // Populate fields
-  document.getElementById('editor-profile-name').value = profile.name;
-  document.getElementById('editor-start-page').value = profile.start_page || 'chrome://new-tab-page';
-  
-  populateFolderSelect(profile.folder_id);
-  populateGroupSelect(profile.group_id);
-  populateProxySelect(profile.proxy_id);
+  suppressAutoSave = true;
+  try {
+    // Populate fields
+    document.getElementById('editor-profile-name').value = profile.name;
+    document.getElementById('editor-start-page').value = profile.start_page || 'chrome://new-tab-page';
+    document.getElementById('editor-tags').value = formatTagsInput(profile.tags);
+    populateTagSuggestions();
+    
+    populateFolderSelect(profile.folder_id);
+    populateGroupSelect(profile.group_id);
+    populateProxySelect(profile.proxy_id);
 
-  // Proxy fields
-  if (profile.proxy_host) {
-    document.getElementById('editor-proxy-type').value = profile.proxy_type || 'http';
-    let proxyStr = profile.proxy_host;
-    if (profile.proxy_port) proxyStr += ':' + profile.proxy_port;
-    if (profile.proxy_username) proxyStr += ':' + profile.proxy_username;
-    if (profile.proxy_password) proxyStr += ':' + profile.proxy_password;
-    document.getElementById('editor-proxy-value').value = proxyStr;
-    document.getElementById('editor-proxy-name').value = profile.proxy_name || '';
-  } else {
-    document.getElementById('editor-proxy-value').value = '';
-    document.getElementById('editor-proxy-name').value = '';
+    // Proxy fields
+    if (profile.proxy_host) {
+      document.getElementById('editor-proxy-type').value = profile.proxy_type || 'http';
+      let proxyStr = profile.proxy_host;
+      if (profile.proxy_port) proxyStr += ':' + profile.proxy_port;
+      if (profile.proxy_username) proxyStr += ':' + profile.proxy_username;
+      if (profile.proxy_password) proxyStr += ':' + profile.proxy_password;
+      document.getElementById('editor-proxy-value').value = proxyStr;
+      document.getElementById('editor-proxy-name').value = profile.proxy_name || '';
+    } else {
+      document.getElementById('editor-proxy-value').value = '';
+      document.getElementById('editor-proxy-name').value = '';
+    }
+
+    // Cookies
+    const cookies = profile.cookies || '[]';
+    document.getElementById('cookies-textarea').value = cookies !== '[]' ? cookies : '';
+
+    // Advanced tab
+    document.getElementById('editor-useragent').value = fp.userAgent || '';
+    document.getElementById('editor-webgl-vendor').value = fp.webgl?.vendor || '';
+    document.getElementById('editor-webgl-renderer').value = fp.webgl?.renderer || '';
+
+    // Hardware tab
+    document.getElementById('editor-cpu-cores').value = fp.hardware?.cpuCores || 4;
+    document.getElementById('editor-memory-gb').value = fp.hardware?.memoryGb || 8;
+    document.getElementById('editor-screen-w').value = fp.screen?.width || 1920;
+    document.getElementById('editor-screen-h').value = fp.screen?.height || 1080;
+    document.getElementById('editor-language').value = fp.locale?.language || 'en-US';
+    document.getElementById('editor-timezone').value = fp.locale?.timezone || 'America/New_York';
+
+    // Notes
+    document.getElementById('profile-notes').value = profile.notes || '';
+  } finally {
+    suppressAutoSave = false;
   }
-
-  // Cookies
-  const cookies = profile.cookies || '[]';
-  document.getElementById('cookies-textarea').value = cookies !== '[]' ? cookies : '';
-
-  // Advanced tab
-  document.getElementById('editor-useragent').value = fp.userAgent || '';
-  document.getElementById('editor-webgl-vendor').value = fp.webgl?.vendor || '';
-  document.getElementById('editor-webgl-renderer').value = fp.webgl?.renderer || '';
-
-  // Hardware tab
-  document.getElementById('editor-cpu-cores').value = fp.hardware?.cpuCores || 4;
-  document.getElementById('editor-memory-gb').value = fp.hardware?.memoryGb || 8;
-  document.getElementById('editor-screen-w').value = fp.screen?.width || 1920;
-  document.getElementById('editor-screen-h').value = fp.screen?.height || 1080;
-  document.getElementById('editor-language').value = fp.locale?.language || 'en-US';
-  document.getElementById('editor-timezone').value = fp.locale?.timezone || 'America/New_York';
-
-  // Notes
-  document.getElementById('profile-notes').value = profile.notes || '';
 
   // Update open button
   const openBtn = document.getElementById('btn-open-profile');
@@ -659,6 +782,7 @@ async function loadProfileEditor(id) {
 
 function renderProfileInfo(profile, fp) {
   const grid = document.getElementById('info-grid');
+  const tagsText = formatTagsInput(profile.tags);
   const created = new Date(profile.created_at + 'Z').toLocaleString('uk-UA', { 
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' 
   });
@@ -674,7 +798,7 @@ function renderProfileInfo(profile, fp) {
     <span class="info-value">${modified}</span>
     
     <span class="info-label">Tags:</span>
-    <span class="info-value text-muted">—</span>
+    <span class="info-value">${tagsText ? escapeHtml(tagsText) : '<span class="text-muted">—</span>'}</span>
     
     <span class="info-label">OS:</span>
     <span class="info-value">${fp.osName || '—'}</span>
@@ -751,6 +875,7 @@ function renderProfileInfo(profile, fp) {
 }
 
 function hideEditor() {
+  clearAutoSaveTimer();
   document.getElementById('profile-editor').style.display = 'none';
   document.getElementById('profile-info').style.display = 'none';
 }
@@ -881,6 +1006,7 @@ async function logoutAccount() {
     folders = [];
     groups = [];
     selectedProfileId = null;
+    clearAutoSaveTimer();
     runningProfiles = new Set();
     hideEditor();
     renderProfilesList();

@@ -276,6 +276,18 @@ function parseJsonSafe(text) {
   }
 }
 
+function normalizeTagNames(input) {
+  if (!input) return [];
+  const source = Array.isArray(input) ? input : String(input).split(',');
+  return Array.from(new Set(source
+    .map((entry) => {
+      if (entry && typeof entry === 'object') return String(entry.name || '').trim();
+      return String(entry || '').trim();
+    })
+    .filter(Boolean)
+    .map((name) => name.slice(0, 64))));
+}
+
 function normalizeProfileForPayload(profile) {
   if (!profile) return null;
   return {
@@ -288,6 +300,7 @@ function normalizeProfileForPayload(profile) {
     fingerprint: parseJsonSafe(profile.fingerprint || '{}'),
     cookies: parseJsonSafe(profile.cookies || '[]'),
     notes: profile.notes || '',
+    tags: normalizeTagNames(profile.tags),
     startPage: profile.start_page || 'chrome://new-tab-page',
     createdAt: profile.created_at || '',
     modifiedAt: profile.modified_at || '',
@@ -308,6 +321,7 @@ function normalizeCloudProfile(item) {
       fingerprint: root.fingerprint && typeof root.fingerprint === 'object' ? root.fingerprint : {},
       cookies: Array.isArray(root.cookies) ? root.cookies : [],
       notes: String(root.notes || ''),
+      tags: normalizeTagNames(root.tags || root.data?.tags || []),
       start_page: String(root.startPage || root.start_page || 'chrome://new-tab-page'),
       remote_id: String(root.remoteId || root.id || '').trim(),
       team_id: String(root.teamId || '').trim(),
@@ -474,6 +488,7 @@ async function pushProfileUpsertNow(profile) {
   const result = await pushActionToCloud('profile_upsert', { profile: normalized });
   if (!result.ok) return result;
   applyRemoteMetadata(normalized.localId, { profile: normalized }, result.body);
+  markCloudBootstrapped(true);
   return {
     ok: true,
     remoteId: extractRemoteId(result.body),
@@ -494,7 +509,9 @@ async function pushProfileDeleteNow(profile) {
     modifiedAt: normalized.modifiedAt || new Date().toISOString(),
     profile: normalized
   };
-  return pushActionToCloud('profile_delete', payload);
+  const result = await pushActionToCloud('profile_delete', payload);
+  if (result.ok) markCloudBootstrapped(true);
+  return result;
 }
 
 async function pushQueueToCloud(limit = 100) {
@@ -578,7 +595,8 @@ async function pullProfilesFromCloud() {
     const created = db.createProfile({
       name: cloud.data.name,
       start_page: cloud.data.start_page,
-      notes: cloud.data.notes
+      notes: cloud.data.notes,
+      tags: cloud.data.tags
     });
     db.updateProfile(created.id, cloud.data);
     pulled += 1;
@@ -627,26 +645,24 @@ async function ensureCloudReady(options = {}) {
   if (!isLoggedIn()) {
     return { ok: false, required: true, reason: 'not_logged_in' };
   }
-  if (!getProfilesPushUrl() || !getProfilesPullUrl()) {
+  if (!getProfilesPushUrl()) {
     return { ok: false, required: true, reason: 'profiles_endpoints_not_configured' };
   }
 
-  const mustSyncNow = Boolean(options.force) || !isCloudBootstrapped() || db.listProfileSyncQueue(1).length > 0;
-  if (!mustSyncNow) {
-    return { ok: true, required: true, skipped: true, reason: 'already_bootstrapped' };
+  if (options.forceBootstrap) {
+    const result = await runFullSync({ limit: options.limit || 100 });
+    if (!result.ok) {
+      return {
+        ok: false,
+        required: true,
+        reason: result?.pull?.reason || result?.push?.reason || result?.pushAfterPull?.reason || result?.reason || 'cloud_sync_failed',
+        result
+      };
+    }
+    return { ok: true, required: true, result };
   }
 
-  const result = await runFullSync({ limit: options.limit || 100 });
-  if (!result.ok) {
-    return {
-      ok: false,
-      required: true,
-      reason: result?.pull?.reason || result?.push?.reason || result?.pushAfterPull?.reason || result?.reason || 'cloud_sync_failed',
-      result
-    };
-  }
-
-  return { ok: true, required: true, result };
+  return { ok: true, required: true, skipped: true, reason: 'cloud_push_ready' };
 }
 
 function scheduleSync(delayMs = 1200) {

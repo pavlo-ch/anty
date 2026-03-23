@@ -16,6 +16,9 @@ function toCloudSyncError(prefix, reason, status) {
   if (effectiveStatus === 401 || reason === 'not_logged_in' || reason === 'missing_access_token') {
     return `${prefix}: session expired, login again.`;
   }
+  if (effectiveStatus === 404) {
+    return `${prefix}: cloud endpoint not found (404). Check profiles URL on platform.`;
+  }
   if (effectiveStatus === 403) {
     return `${prefix}: access denied or device limit reached.`;
   }
@@ -45,6 +48,7 @@ function restoreProfilePatch(snapshot) {
     user_agent: snapshot.user_agent,
     fingerprint: snapshot.fingerprint,
     cookies: snapshot.cookies,
+    tags: snapshot.tags,
     notes: snapshot.notes,
     start_page: snapshot.start_page
   };
@@ -198,6 +202,12 @@ function registerIpcHandlers() {
   ipcMain.handle('proxy:check', (_, data) => {
     requireLoggedIn();
     return launcher.checkProxy(data);
+  });
+
+  // ---- TAGS ----
+  ipcMain.handle('tag:list', () => {
+    requireLoggedIn();
+    return db.listTags();
   });
 
   // ---- FOLDERS ----

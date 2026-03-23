@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('api', {
   deleteProxy: (id) => ipcRenderer.invoke('proxy:delete', id),
   checkProxy: (data) => ipcRenderer.invoke('proxy:check', data),
 
+  // Tags
+  getTags: () => ipcRenderer.invoke('tag:list'),
+
   // Folders
   getFolders: () => ipcRenderer.invoke('folder:list'),
   createFolder: (name) => ipcRenderer.invoke('folder:create', name),
