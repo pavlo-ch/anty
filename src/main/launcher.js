@@ -461,6 +461,13 @@ async function launchProfile(profileId, mainWindow) {
       page = await context.newPage();
     }
 
+    // Warm-up navigation (helps avoid CAPTCHA on fresh profiles)
+    const warmupUrl = profile.warmup_url;
+    if (warmupUrl && !warmupUrl.startsWith('chrome://')) {
+      await page.goto(warmupUrl).catch(() => {});
+      await page.waitForTimeout(2500).catch(() => {});
+    }
+
     // Navigate to start page
     const startPage = profile.start_page || 'https://whoer.net';
     if (!startPage.startsWith('chrome://')) {
@@ -477,8 +484,17 @@ async function launchProfile(profileId, mainWindow) {
       mainWindow.webContents.send('browser:status', { profileId, status: 'running' });
     }
 
-    // Handle close
-    context.on('close', () => {
+    // Handle close — save cookies back to profile
+    context.on('close', async () => {
+      try {
+        const allCookies = await context.cookies();
+        if (allCookies.length > 0) {
+          updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+          console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
+        }
+      } catch (e) {
+        console.log(`[Launcher] Could not save cookies: ${e.message}`);
+      }
       runningBrowsers.delete(profileId);
       updateProfile(profileId, { status: 'ready' });
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -503,6 +519,13 @@ async function stopProfile(profileId) {
   }
 
   try {
+    try {
+      const allCookies = await instance.context.cookies();
+      if (allCookies.length > 0) {
+        updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+        console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
+      }
+    } catch {}
     await instance.context.close();
     runningBrowsers.delete(profileId);
     updateProfile(profileId, { status: 'ready' });

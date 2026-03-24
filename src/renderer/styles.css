@@ -478,25 +478,6 @@ html, body {
   margin-top: 6px;
 }
 
-.profile-item-context {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.profile-chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 500;
-}
 
 .profile-item-badges {
   display: flex;
@@ -544,10 +525,16 @@ html, body {
 }
 
 .profile-item-country {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   margin-left: auto;
+  max-width: 100px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
 }
+
 
 .profile-item-engine {
   font-size: 10px;
@@ -563,15 +550,14 @@ html, body {
   display: flex;
   gap: 4px;
   margin-left: auto;
+}
+
+.profile-delete-btn {
   opacity: 0;
-  transition: opacity var(--transition);
 }
 
-.profile-item:hover .profile-item-actions {
-  opacity: 1;
-}
-
-.profile-item.active .profile-item-actions {
+.profile-item:hover .profile-delete-btn,
+.profile-item.active .profile-delete-btn {
   opacity: 1;
 }
 
@@ -588,6 +574,7 @@ html, body {
   justify-content: center;
   transition: all var(--transition);
   flex-shrink: 0;
+  opacity: 0;
 }
 
 .profile-delete-btn:hover {

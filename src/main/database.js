@@ -67,6 +67,7 @@ function initDatabase() {
       cookies TEXT DEFAULT '[]',
       notes TEXT DEFAULT '',
       start_page TEXT DEFAULT 'https://whoer.net',
+      warmup_url TEXT DEFAULT '',
       created_at TEXT DEFAULT (datetime('now')),
       modified_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL,
@@ -147,6 +148,8 @@ function initDatabase() {
   ensureColumn('profiles', 'remote_id', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'team_id', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'cloud_updated_at', "TEXT DEFAULT ''");
+  ensureColumn('profiles', 'created_by', "TEXT DEFAULT ''");
+  ensureColumn('profiles', 'warmup_url', "TEXT DEFAULT ''");
 
   // Seed defaults if empty
   const folderCount = db.prepare('SELECT COUNT(*) as cnt FROM folders').get();
@@ -287,11 +290,20 @@ function getProfile(id) {
 
 function createProfile(data) {
   const { generateFingerprint } = require('./fingerprint');
+  const { getAccountState } = require('./auth');
   const fingerprint = generateFingerprint(data.user_agent);
-  
+
+  let createdBy = data.created_by || '';
+  if (!createdBy) {
+    try {
+      const acc = getAccountState();
+      createdBy = acc.displayName || acc.email || '';
+    } catch {}
+  }
+
   const result = getDb().prepare(`
-    INSERT INTO profiles (name, folder_id, group_id, proxy_id, user_agent, fingerprint, start_page, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO profiles (name, folder_id, group_id, proxy_id, user_agent, fingerprint, start_page, notes, created_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     data.name || 'New Profile',
     data.folder_id || null,
@@ -300,7 +312,8 @@ function createProfile(data) {
     fingerprint.userAgent,
     JSON.stringify(fingerprint),
     data.start_page || 'https://whoer.net',
-    data.notes || ''
+    data.notes || '',
+    createdBy
   );
 
   if (data.tags !== undefined) {
@@ -331,6 +344,7 @@ function updateProfile(id, data) {
     'cookies',
     'notes',
     'start_page',
+    'warmup_url',
     'status'
   ];
   
