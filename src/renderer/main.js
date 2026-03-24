@@ -1008,8 +1008,6 @@ function renderProfilesList(searchTerm = '') {
     const isActive = p.id === selectedProfileId;
     const isRunning = runningProfiles.has(p.id);
     const time = formatTime(p.modified_at);
-    const osBadge = getOsBadgeMarkup(fp);
-    const browserIcon = getBrowserIcon(fp.browserName);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';
     const hasProxy = !!(p.proxy_host);
@@ -1036,8 +1034,6 @@ function renderProfilesList(searchTerm = '') {
         </div>
         <div class="profile-item-meta">
           <div class="profile-item-badges">
-            <span class="badge badge-os" title="${fp.osName || 'Unknown'}">${osBadge}</span>
-            <span class="badge badge-browser" title="${fp.browserName || 'Chrome'}">${browserIcon}</span>
             ${countryFlag ? `<span class="badge badge-country" title="${countryCode}">${countryFlag}</span>` : ''}
             ${hasProxy ? `<span class="badge badge-proxy" title="Proxy active">⇄</span>` : ''}
           </div>
@@ -1942,45 +1938,6 @@ function dedupeCookies(cookies) {
     map.set(key, cookie);
   }
   return Array.from(map.values());
-}
-
-function getOsType(fp) {
-  const source = [
-    fp?.osShort,
-    fp?.osName,
-    fp?.platform,
-    fp?.userAgent,
-  ].filter(Boolean).join(' ').toLowerCase();
-
-  if (!source) return 'unknown';
-  if (source.includes('win')) return 'windows';
-  if (source.includes('mac') || source.includes('darwin') || source.includes('os x') || source.includes('macintosh')) return 'apple';
-  if (source.includes('android')) return 'android';
-  if (source.includes('linux')) return 'linux';
-  return 'unknown';
-}
-
-function getOsBadgeMarkup(fp) {
-  const type = getOsType(fp);
-  if (type === 'windows') {
-    return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M0.6 2.7L6.9 1.8v5.7H0.6V2.7zm7.4-1l7-1v6.8h-7V1.7zM0.6 8.5h6.3v5.7l-6.3-.9V8.5zm7.4 0h7v6.8l-7-1V8.5z" fill="currentColor"/></svg>';
-  }
-  if (type === 'apple') {
-    return '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.5 8.2c0-1.6 1.3-2.4 1.3-2.4-.7-1-1.8-1.1-2.2-1.1-.9-.1-1.7.5-2.2.5-.5 0-1.1-.5-1.9-.4-1 .1-1.9.6-2.4 1.5-1.1 1.8-.3 4.5.8 6 .5.7 1.1 1.5 1.9 1.5.8 0 1.1-.5 2-.5.9 0 1.2.5 2 .5.8 0 1.4-.7 1.9-1.4.6-.8.8-1.6.8-1.7 0 0-1.5-.6-1.5-2.5zM10 3.5c.4-.5.7-1.2.6-1.9-.6 0-1.3.4-1.7.9-.4.5-.8 1.2-.7 1.9.7.1 1.4-.3 1.8-.9z" fill="currentColor"/></svg>';
-  }
-  if (type === 'linux') return '🐧';
-  if (type === 'android') return '🤖';
-  return '💻';
-}
-
-function getBrowserIcon(browser) {
-  if (!browser) return '🌐';
-  const l = browser.toLowerCase();
-  if (l.includes('chrome')) return '🟢';
-  if (l.includes('firefox')) return '🟠';
-  if (l.includes('edge')) return '🔵';
-  if (l.includes('safari')) return '🧭';
-  return '🌐';
 }
 
 const _toastQueue = [];
