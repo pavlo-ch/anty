@@ -462,7 +462,7 @@ async function launchProfile(profileId, mainWindow) {
     }
 
     // Navigate to start page
-    const startPage = profile.start_page || 'chrome://new-tab-page';
+    const startPage = profile.start_page || 'https://whoer.net';
     if (!startPage.startsWith('chrome://')) {
       await page.goto(startPage).catch(() => {});
     }
@@ -512,6 +512,28 @@ async function stopProfile(profileId) {
   }
 }
 
+async function stopAllProfiles() {
+  const ids = Array.from(runningBrowsers.keys());
+  const failed = [];
+
+  for (const id of ids) {
+    try {
+      const result = await stopProfile(id);
+      if (!result?.success) {
+        failed.push({ profileId: id, error: result?.error || 'unknown_error' });
+      }
+    } catch (error) {
+      failed.push({ profileId: id, error: error.message || 'unknown_error' });
+    }
+  }
+
+  return {
+    success: failed.length === 0,
+    stopped: ids.length - failed.length,
+    failed,
+  };
+}
+
 function getRunningProfiles() {
   return Array.from(runningBrowsers.keys());
 }
@@ -519,6 +541,7 @@ function getRunningProfiles() {
 module.exports = {
   launchProfile,
   stopProfile,
+  stopAllProfiles,
   getRunningProfiles,
   checkProxy,
   syncProfileLocaleFromProxy,

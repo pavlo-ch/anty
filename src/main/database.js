@@ -66,7 +66,7 @@ function initDatabase() {
       fingerprint TEXT DEFAULT '{}',
       cookies TEXT DEFAULT '[]',
       notes TEXT DEFAULT '',
-      start_page TEXT DEFAULT 'chrome://new-tab-page',
+      start_page TEXT DEFAULT 'https://whoer.net',
       created_at TEXT DEFAULT (datetime('now')),
       modified_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL,
@@ -299,7 +299,7 @@ function createProfile(data) {
     data.proxy_id || null,
     fingerprint.userAgent,
     JSON.stringify(fingerprint),
-    data.start_page || 'chrome://new-tab-page',
+    data.start_page || 'https://whoer.net',
     data.notes || ''
   );
 

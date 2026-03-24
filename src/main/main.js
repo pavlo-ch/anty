@@ -3,8 +3,10 @@ const path = require('path');
 const { initDatabase } = require('./database');
 const { registerIpcHandlers } = require('./ipc-handlers');
 const { registerUpdater } = require('./updater');
+const launcher = require('./launcher');
 
 let mainWindow;
+let isGracefulQuitInProgress = false;
 const appIconPath = path.join(__dirname, '..', 'renderer', 'assets', 'desktop-icon-mac.png');
 
 function createWindow() {
@@ -54,6 +56,20 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', async (event) => {
+  if (isGracefulQuitInProgress) return;
+  isGracefulQuitInProgress = true;
+  event.preventDefault();
+
+  try {
+    await launcher.stopAllProfiles();
+  } catch (error) {
+    console.error('[Main] Failed to stop running profiles before quit:', error.message);
+  }
+
+  app.quit();
 });
 
 app.on('window-all-closed', () => {

@@ -333,7 +333,7 @@ function normalizeProfileForPayload(profile) {
     cookies: parseJsonSafe(profile.cookies || '[]'),
     notes: profile.notes || '',
     tags: normalizeTagNames(profile.tags),
-    startPage: profile.start_page || 'chrome://new-tab-page',
+    startPage: profile.start_page || 'https://whoer.net',
     createdAt: profile.created_at || '',
     modifiedAt: profile.modified_at || '',
     cloudUpdatedAt: profile.cloud_updated_at || ''
@@ -354,7 +354,7 @@ function normalizeCloudProfile(item) {
       cookies: Array.isArray(root.cookies) ? root.cookies : [],
       notes: String(root.notes || ''),
       tags: normalizeTagNames(root.tags || root.data?.tags || []),
-      start_page: String(root.startPage || root.start_page || 'chrome://new-tab-page'),
+      start_page: String(root.startPage || root.start_page || 'https://whoer.net'),
       remote_id: String(root.remoteId || root.id || '').trim(),
       team_id: String(root.teamId || '').trim(),
       cloud_updated_at: String(root.updatedAt || root.cloudUpdatedAt || '').trim()

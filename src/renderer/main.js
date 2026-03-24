@@ -1130,7 +1130,7 @@ async function loadProfileEditor(id) {
   try {
     // Populate fields
     document.getElementById('editor-profile-name').value = profile.name;
-    document.getElementById('editor-start-page').value = profile.start_page || 'chrome://new-tab-page';
+    document.getElementById('editor-start-page').value = profile.start_page || 'https://whoer.net';
     document.getElementById('editor-tags').value = formatTagsInput(profile.tags);
     populateTagSuggestions();
     
@@ -1300,7 +1300,7 @@ function renderProfileInfo(profile, fp) {
     <span class="info-value info-value-small">${truncate(fp.userAgent || '—', 60)}</span>
     
     <span class="info-label">Start page:</span>
-    <span class="info-value accent">${profile.start_page || 'chrome://new-tab-page'}</span>
+    <span class="info-value accent">${profile.start_page || 'https://whoer.net'}</span>
     
     <span class="info-label">At profile start:</span>
     <span class="info-value">${{ 'open-page': 'Open start page', 'continue-session': 'Continue session', 'new-tab': 'New tab' }[fp.startAction] || 'Open start page'}</span>
