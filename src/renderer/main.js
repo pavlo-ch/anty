@@ -16,6 +16,7 @@ let autoSaveTimer = null;
 let autoSaveInFlight = false;
 let autoSaveQueued = false;
 let suppressAutoSave = false;
+let activePlatformTab = 'all';
 let mandatoryUpdateFlow = {
   version: null,
   currentVersion: null,
@@ -162,6 +163,8 @@ function setupEventListeners() {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
+      activePlatformTab = tab.dataset.tab || 'all';
+      renderProfilesList(document.getElementById('search-input')?.value || '');
     });
   });
 
@@ -424,6 +427,30 @@ function parseTagsInput(raw) {
   return Array.from(new Set(names.map((name) => name.slice(0, 64))));
 }
 
+function extractTagNames(tagsValue) {
+  if (!Array.isArray(tagsValue) || !tagsValue.length) return [];
+  return tagsValue.map((entry) => {
+    if (entry && typeof entry === 'object') return String(entry.name || '').trim().toLowerCase();
+    return String(entry || '').trim().toLowerCase();
+  }).filter(Boolean);
+}
+
+function getProfilePlatform(profile) {
+  const startPage = String(profile?.start_page || '').toLowerCase();
+  const tagNames = extractTagNames(profile?.tags || []);
+
+  if (startPage.includes('instagram.com') || tagNames.some((tag) => tag.includes('instagram') || tag === 'ig')) {
+    return 'instagram';
+  }
+  if (startPage.includes('linkedin.com') || tagNames.some((tag) => tag.includes('linkedin') || tag === 'li')) {
+    return 'linkedin';
+  }
+  if (startPage.includes('facebook.com') || tagNames.some((tag) => tag.includes('facebook') || tag === 'fb')) {
+    return 'facebook';
+  }
+  return 'other';
+}
+
 function formatTagsInput(tagsValue) {
   if (!Array.isArray(tagsValue) || !tagsValue.length) return '';
   const names = tagsValue.map((entry) => {
@@ -580,8 +607,17 @@ async function persistSelectedProfile(options = {}) {
 
 async function createNewProfile() {
   try {
+    const platformDefaults = {
+      instagram: { start_page: 'https://www.instagram.com', tags: ['instagram'] },
+      linkedin: { start_page: 'https://www.linkedin.com', tags: ['linkedin'] },
+      facebook: { start_page: 'https://www.facebook.com', tags: ['facebook'] },
+    };
+    const defaults = platformDefaults[activePlatformTab] || {};
+
     const profile = await window.api.createProfile({
-      name: `Profile ${profiles.length + 1}`
+      name: `Profile ${profiles.length + 1}`,
+      start_page: defaults.start_page,
+      tags: defaults.tags || []
     });
     await loadData();
     renderProfilesList();
@@ -975,6 +1011,10 @@ function renderProfilesList(searchTerm = '') {
     filtered = filtered.filter((p) => Boolean(p.proxy_host));
   } else if (activeFilter === 'no_proxy') {
     filtered = filtered.filter((p) => !p.proxy_host);
+  }
+
+  if (activePlatformTab !== 'all') {
+    filtered = filtered.filter((p) => getProfilePlatform(p) === activePlatformTab);
   }
 
   // Apply sort
