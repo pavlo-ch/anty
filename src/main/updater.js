@@ -735,7 +735,19 @@ function registerUpdater(window) {
       version: mandatoryUpdateInfo.version,
       localFilePath: localPath
     });
-    return { ok: true, action: 'opened_installer', localFilePath: localPath };
+
+    setTimeout(() => {
+      try {
+        app.quit();
+        setTimeout(() => {
+          app.exit(0);
+        }, 1200);
+      } catch (_) {
+        app.exit(0);
+      }
+    }, 250);
+
+    return { ok: true, action: 'quit_and_install', localFilePath: localPath };
   });
 
   setTimeout(() => {

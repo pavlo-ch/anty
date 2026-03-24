@@ -1734,12 +1734,12 @@ async function handleMandatoryUpdatePrimaryAction() {
       return;
     }
 
-    if (opened?.action === 'quit_and_install') {
-      showToast('Installing update and restarting...', 'success');
+    if (opened?.action === 'quit_and_install' || opened?.action === 'opened_installer_and_quit') {
+      showToast('Installer opened. Closing app for install...', 'success');
       setMandatoryUpdateButtonsBusy(true);
       setTimeout(() => {
         void window.api.quitApp().catch(() => {});
-      }, 3500);
+      }, 900);
       return;
     }
 
