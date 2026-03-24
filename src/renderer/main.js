@@ -17,6 +17,8 @@ let autoSaveInFlight = false;
 let autoSaveQueued = false;
 let suppressAutoSave = false;
 let activePlatformTab = 'all';
+const DEFAULT_PLATFORM_STORAGE_KEY = 'anty.defaultPlatformTab';
+const SUPPORTED_PLATFORM_TABS = new Set(['all', 'instagram', 'linkedin', 'facebook']);
 let mandatoryUpdateFlow = {
   version: null,
   currentVersion: null,
@@ -32,6 +34,7 @@ let mandatoryUpdateFlow = {
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
+  setActivePlatformTab(loadStoredPlatformTab(), { save: false, render: false });
   window.api.onUpdateStatus(handleUpdateStatus);
   await renderAppVersion();
   
@@ -161,10 +164,7 @@ function setupEventListeners() {
   // Tab bar tabs
   document.querySelectorAll('.tab[data-tab]').forEach(tab => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      activePlatformTab = tab.dataset.tab || 'all';
-      renderProfilesList(document.getElementById('search-input')?.value || '');
+      setActivePlatformTab(tab.dataset.tab || 'all');
     });
   });
 
@@ -390,6 +390,9 @@ function setupEventListeners() {
     if (result && !result.ok) showToast('Could not open folder: ' + result.message, 'error');
   });
   document.getElementById('btn-settings-logout')?.addEventListener('click', logoutAccount);
+  document.getElementById('settings-default-platform')?.addEventListener('change', (e) => {
+    setActivePlatformTab(e.target.value, { save: true, render: true });
+  });
 
   // Account
   document.getElementById('btn-account-logout')?.addEventListener('click', logoutAccount);
@@ -449,6 +452,47 @@ function getProfilePlatform(profile) {
     return 'facebook';
   }
   return 'other';
+}
+
+function normalizePlatformTab(value) {
+  const tab = String(value || '').trim().toLowerCase();
+  return SUPPORTED_PLATFORM_TABS.has(tab) ? tab : 'all';
+}
+
+function loadStoredPlatformTab() {
+  try {
+    return normalizePlatformTab(localStorage.getItem(DEFAULT_PLATFORM_STORAGE_KEY));
+  } catch {
+    return 'all';
+  }
+}
+
+function saveStoredPlatformTab(value) {
+  try {
+    localStorage.setItem(DEFAULT_PLATFORM_STORAGE_KEY, normalizePlatformTab(value));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function syncPlatformControls() {
+  document.querySelectorAll('.tab[data-tab]').forEach((tab) => {
+    tab.classList.toggle('active', (tab.dataset.tab || 'all') === activePlatformTab);
+  });
+
+  const settingsSelect = document.getElementById('settings-default-platform');
+  if (settingsSelect && settingsSelect.value !== activePlatformTab) {
+    settingsSelect.value = activePlatformTab;
+  }
+}
+
+function setActivePlatformTab(value, { save = true, render = true } = {}) {
+  activePlatformTab = normalizePlatformTab(value);
+  syncPlatformControls();
+  if (save) saveStoredPlatformTab(activePlatformTab);
+  if (render) {
+    renderProfilesList(document.getElementById('search-input')?.value || '');
+  }
 }
 
 function formatTagsInput(tagsValue) {
@@ -1048,6 +1092,8 @@ function renderProfilesList(searchTerm = '') {
     const isActive = p.id === selectedProfileId;
     const isRunning = runningProfiles.has(p.id);
     const time = formatTime(p.modified_at);
+    const creatorLabel = getProfileCreatorLabel(p);
+    const systemLabel = getProfileSystemLabel(fp);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';
     const hasProxy = !!(p.proxy_host);
@@ -1071,6 +1117,10 @@ function renderProfilesList(searchTerm = '') {
                 : '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>'}
             </button>
           </div>
+        </div>
+        <div class="profile-item-context">
+          <span class="profile-chip" title="Created by">${escapeHtml(creatorLabel)}</span>
+          <span class="profile-chip" title="System">${escapeHtml(systemLabel)}</span>
         </div>
         <div class="profile-item-meta">
           <div class="profile-item-badges">
@@ -1386,6 +1436,7 @@ async function refreshSettingsPage() {
     const version = await window.api.getAppVersion();
     const versionEl = document.getElementById('settings-version');
     if (versionEl && version) versionEl.textContent = String(version).startsWith('v') ? version : `v${version}`;
+    syncPlatformControls();
     const state = accountState || await window.api.getAccountState();
     const emailEl = document.getElementById('settings-account-email');
     if (emailEl) emailEl.textContent = state?.email || state?.displayName || 'Not logged in';
@@ -1829,6 +1880,30 @@ function formatTime(dateStr) {
   }
   
   return d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
+}
+
+function getProfileCreatorLabel(profile) {
+  if (profile?.team_id) return 'Team';
+  if (profile?.remote_id) return 'Platform';
+  return 'Local';
+}
+
+function getProfileSystemLabel(fp) {
+  const source = [
+    fp?.osName,
+    fp?.osShort,
+    fp?.platform,
+    fp?.userAgent
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  if (source.includes('win')) return 'Windows';
+  if (source.includes('mac') || source.includes('darwin') || source.includes('os x') || source.includes('macintosh')) return 'macOS';
+  if (source.includes('iphone') || source.includes('ios')) return 'iOS';
+  if (source.includes('android')) return 'Android';
+  if (source.includes('linux')) return 'Linux';
+
+  const fallback = String(fp?.osName || fp?.platform || '').trim();
+  return fallback || 'Unknown';
 }
 
 function parseCookiesInput(rawText, { importExpired = true } = {}) {
