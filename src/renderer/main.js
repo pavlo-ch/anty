@@ -151,6 +151,9 @@ function setupEventListeners() {
       if (page === 'account') {
         refreshAccountPage();
       }
+      if (page === 'settings') {
+        refreshSettingsPage();
+      }
     });
   });
 
@@ -202,7 +205,43 @@ function setupEventListeners() {
     }
   });
 
-  // Cookies toggle
+  // Cookies — browse files click
+  document.getElementById('cookies-browse-btn')?.addEventListener('click', () => {
+    document.getElementById('cookies-file-input')?.click();
+  });
+
+  // Cookies — file input change (selected via browser dialog)
+  document.getElementById('cookies-file-input')?.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    readCookiesFile(file);
+    e.target.value = '';
+  });
+
+  // Cookies — drag & drop on dropzone
+  const dropzone = document.getElementById('cookies-dropzone');
+  dropzone?.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dropzone.classList.add('drag-over');
+  });
+  dropzone?.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  dropzone?.addEventListener('dragleave', (e) => {
+    if (!dropzone.contains(e.relatedTarget)) {
+      dropzone.classList.remove('drag-over');
+    }
+  });
+  dropzone?.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('drag-over');
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+    readCookiesFile(file);
+  });
+
+  // Cookies toggle text/dropzone view
   document.getElementById('cookies-text-toggle').addEventListener('click', () => {
     const textarea = document.getElementById('cookies-textarea');
     const content = document.querySelector('.cookies-dropzone-content');
@@ -267,10 +306,89 @@ function setupEventListeners() {
     document.getElementById(id)?.addEventListener('change', () => scheduleAutoSave(120));
   });
 
+  // Fingerprint mode selects — were missing, changes were silently lost
+  const fpSelectIds = [
+    'editor-canvas-mode',
+    'editor-audio-mode',
+    'editor-fonts-mode',
+    'editor-webrtc-mode',
+    'editor-media-mode',
+    'editor-geo-mode',
+    'editor-start-action',
+  ];
+  fpSelectIds.forEach((id) => {
+    document.getElementById(id)?.addEventListener('change', () => scheduleAutoSave(120));
+  });
+
+  // Hardware / locale inputs — were missing too
+  const fpInputIds = [
+    'editor-cpu-cores',
+    'editor-memory-gb',
+    'editor-screen-w',
+    'editor-screen-h',
+    'editor-language',
+    'editor-timezone',
+  ];
+  fpInputIds.forEach((id) => {
+    document.getElementById(id)?.addEventListener('input', () => scheduleAutoSave(600));
+    document.getElementById(id)?.addEventListener('change', () => scheduleAutoSave(150));
+  });
+
+  document.getElementById('cookies-textarea')?.addEventListener('input', () => scheduleAutoSave(800));
   document.getElementById('cookies-textarea')?.addEventListener('change', () => scheduleAutoSave(120));
 
+  // Import proxy from clipboard
+  document.getElementById('btn-import-proxy')?.addEventListener('click', importProxyFromClipboard);
+
+  // Copy profile name to clipboard
+  document.getElementById('btn-copy-profile')?.addEventListener('click', copyProfileName);
+
+  // Copy profile info to clipboard
+  document.getElementById('btn-copy-info')?.addEventListener('click', copyProfileInfo);
+
+  // Sort / Filter
+  document.getElementById('btn-sort')?.addEventListener('click', toggleSortMenu);
+  document.getElementById('btn-filter')?.addEventListener('click', toggleFilterMenu);
+
+  // IP Change Link — open in browser
+  document.getElementById('btn-open-change-link')?.addEventListener('click', () => {
+    const url = document.getElementById('editor-proxy-change-link')?.value?.trim();
+    if (!url) { showToast('Enter an IP change link first', 'error'); return; }
+    void window.api.openExternal(url.startsWith('http') ? url : 'http://' + url);
+  });
+
+  // Geo mode — show/hide manual coordinate fields
+  document.getElementById('editor-geo-mode')?.addEventListener('change', (e) => {
+    toggleGeoManualFields(e.target.value);
+    scheduleAutoSave(120);
+  });
+
+  // Geo manual coordinate inputs auto-save
+  document.getElementById('editor-geo-lat')?.addEventListener('input', () => scheduleAutoSave(600));
+  document.getElementById('editor-geo-lon')?.addEventListener('input', () => scheduleAutoSave(600));
+
+  // Settings page buttons
+  document.getElementById('btn-settings-check-update')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-settings-check-update');
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    try {
+      await window.api.checkAppUpdates();
+      showToast('Update check started', 'success');
+    } catch (err) {
+      showToast('Update check failed: ' + err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Check for updates';
+    }
+  });
+  document.getElementById('btn-settings-open-data')?.addEventListener('click', async () => {
+    const result = await window.api.openUserData?.();
+    if (result && !result.ok) showToast('Could not open folder: ' + result.message, 'error');
+  });
+  document.getElementById('btn-settings-logout')?.addEventListener('click', logoutAccount);
+
   // Account
-  document.getElementById('btn-account-login')?.addEventListener('click', loginAccount);
   document.getElementById('btn-account-logout')?.addEventListener('click', logoutAccount);
 
   document.getElementById('btn-modal-login')?.addEventListener('click', loginFromModal);
@@ -341,8 +459,9 @@ function collectProfileEditorData() {
   };
 
   const cookiesText = document.getElementById('cookies-textarea').value;
+  const importExpired = Boolean(document.getElementById('editor-import-expired')?.checked);
   if (cookiesText) {
-    const parsedCookies = parseCookiesInput(cookiesText);
+    const parsedCookies = parseCookiesInput(cookiesText, { importExpired });
     if (!parsedCookies.ok) {
       throw new Error(parsedCookies.error || 'Invalid cookies JSON');
     }
@@ -351,6 +470,53 @@ function collectProfileEditorData() {
     data.cookies = [];
   }
 
+  // Merge fingerprint fields from UI into current fingerprint
+  const currentProfile = profiles.find((p) => p.id === selectedProfileId);
+  let fp = {};
+  try { fp = JSON.parse(currentProfile?.fingerprint || '{}'); } catch { fp = {}; }
+
+  const canvasMode = document.getElementById('editor-canvas-mode')?.value;
+  const audioMode = document.getElementById('editor-audio-mode')?.value;
+  const fontsMode = document.getElementById('editor-fonts-mode')?.value;
+  const webrtcMode = document.getElementById('editor-webrtc-mode')?.value;
+  const mediaMode = document.getElementById('editor-media-mode')?.value;
+  const geoMode = document.getElementById('editor-geo-mode')?.value;
+  const startAction = document.getElementById('editor-start-action')?.value;
+  const cpuCores = Number(document.getElementById('editor-cpu-cores')?.value);
+  const memoryGb = Number(document.getElementById('editor-memory-gb')?.value);
+  const screenW = Number(document.getElementById('editor-screen-w')?.value);
+  const screenH = Number(document.getElementById('editor-screen-h')?.value);
+  const language = document.getElementById('editor-language')?.value;
+  const timezone = document.getElementById('editor-timezone')?.value;
+
+  if (canvasMode) fp = { ...fp, canvas: { ...fp.canvas, mode: canvasMode } };
+  if (audioMode) fp = { ...fp, audio: { ...fp.audio, mode: audioMode } };
+  if (fontsMode) fp = { ...fp, fonts: { ...fp.fonts, mode: fontsMode } };
+  if (webrtcMode) fp = { ...fp, webrtc: { ...fp.webrtc, mode: webrtcMode } };
+  if (mediaMode) fp = { ...fp, mediaDevices: { ...fp.mediaDevices, mode: mediaMode } };
+  if (geoMode) {
+    const geoLat = parseFloat(document.getElementById('editor-geo-lat')?.value);
+    const geoLon = parseFloat(document.getElementById('editor-geo-lon')?.value);
+    fp = {
+      ...fp,
+      geo: {
+        ...fp.geo,
+        mode: geoMode,
+        ...(geoMode === 'manual' && Number.isFinite(geoLat) && Number.isFinite(geoLon)
+          ? { latitude: geoLat, longitude: geoLon }
+          : {}),
+      },
+    };
+  }
+  if (startAction) fp = { ...fp, startAction };
+  if (Number.isFinite(cpuCores) && cpuCores > 0) fp = { ...fp, hardware: { ...fp.hardware, cpuCores } };
+  if (Number.isFinite(memoryGb) && memoryGb > 0) fp = { ...fp, hardware: { ...fp.hardware, memoryGb } };
+  if (Number.isFinite(screenW) && screenW > 0) fp = { ...fp, screen: { ...fp.screen, width: screenW } };
+  if (Number.isFinite(screenH) && screenH > 0) fp = { ...fp, screen: { ...fp.screen, height: screenH } };
+  if (language) fp = { ...fp, locale: { ...fp.locale, language } };
+  if (timezone) fp = { ...fp, locale: { ...fp.locale, timezone } };
+
+  data.fingerprint = JSON.stringify(fp);
   return data;
 }
 
@@ -528,6 +694,192 @@ async function stopProfile(id) {
   }
 }
 
+// ===== GEO HELPERS =====
+function toggleGeoManualFields(mode) {
+  const fields = document.getElementById('geo-manual-fields');
+  if (!fields) return;
+  if (mode === 'manual') {
+    fields.classList.remove('hidden');
+  } else {
+    fields.classList.add('hidden');
+  }
+}
+
+// ===== COOKIES FILE READER =====
+function readCookiesFile(file) {
+  if (!file) return;
+  const isJson = file.name.endsWith('.json') || file.name.endsWith('.txt') || file.type === 'application/json' || file.type === 'text/plain';
+  if (!isJson && file.size > 5 * 1024 * 1024) {
+    showToast('File too large or unsupported format', 'error');
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = e.target.result;
+    const textarea = document.getElementById('cookies-textarea');
+    const content = document.querySelector('.cookies-dropzone-content');
+    if (!textarea) return;
+    textarea.value = text;
+    textarea.style.display = 'block';
+    if (content) content.style.display = 'none';
+    // Validate immediately
+    const importExpired = Boolean(document.getElementById('editor-import-expired')?.checked);
+    const result = parseCookiesInput(text, { importExpired });
+    if (!result.ok) {
+      showToast('Invalid cookies file: ' + result.error, 'error');
+    } else {
+      showToast(`${result.cookies.length} cookie${result.cookies.length !== 1 ? 's' : ''} loaded from file`, 'success');
+      scheduleAutoSave(300);
+    }
+  };
+  reader.onerror = () => showToast('Failed to read file', 'error');
+  reader.readAsText(file);
+}
+
+// ===== CLIPBOARD HELPERS =====
+async function importProxyFromClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    const trimmed = (text || '').trim();
+    if (!trimmed) {
+      showToast('Clipboard is empty', 'error');
+      return;
+    }
+    document.getElementById('editor-proxy-value').value = trimmed;
+    showToast('Proxy pasted from clipboard', 'success');
+  } catch (err) {
+    showToast('Could not read clipboard: ' + (err.message || 'permission denied'), 'error');
+  }
+}
+
+async function copyProfileName() {
+  const name = document.getElementById('editor-profile-name')?.value;
+  if (!name) return;
+  try {
+    await navigator.clipboard.writeText(name);
+    showToast('Profile name copied', 'success');
+  } catch (err) {
+    showToast('Could not copy: ' + err.message, 'error');
+  }
+}
+
+async function copyProfileInfo() {
+  if (!selectedProfileId) return;
+  const profile = profiles.find((p) => p.id === selectedProfileId);
+  if (!profile) return;
+  let fp = {};
+  try { fp = JSON.parse(profile.fingerprint || '{}'); } catch { fp = {}; }
+
+  const lines = [
+    `Profile: ${profile.name}`,
+    `OS: ${fp.osName || '—'}`,
+    `Browser: ${fp.browserName || '—'} ${fp.browserVersion || ''}`.trim(),
+    `Language: ${fp.locale?.language || '—'}`,
+    `Timezone: ${fp.locale?.timezone || '—'}`,
+    `Screen: ${fp.screen?.width || '?'}×${fp.screen?.height || '?'}`,
+    `CPU: ${fp.hardware?.cpuCores || '—'} cores`,
+    `Memory: ${fp.hardware?.memoryGb || '—'} GB`,
+    `WebRTC: ${fp.webrtc?.mode || 'disabled'}`,
+    `Canvas: ${fp.canvas?.mode || 'noise'}`,
+    `Audio: ${fp.audio?.mode || 'noise'}`,
+    `Geolocation: ${fp.geo?.mode || 'auto'}`,
+    `User-Agent: ${fp.userAgent || '—'}`,
+  ].join('\n');
+
+  try {
+    await navigator.clipboard.writeText(lines);
+    showToast('Profile info copied', 'success');
+  } catch (err) {
+    showToast('Could not copy: ' + err.message, 'error');
+  }
+}
+
+// ===== SORT & FILTER =====
+let currentSortKey = 'modified_at';
+let currentSortDir = 'desc';
+let activeFilter = null;
+
+const SORT_OPTIONS = [
+  { key: 'modified_at', dir: 'desc', label: 'Last modified' },
+  { key: 'created_at', dir: 'desc', label: 'Date created' },
+  { key: 'name', dir: 'asc', label: 'Name A–Z' },
+  { key: 'name', dir: 'desc', label: 'Name Z–A' },
+];
+
+const FILTER_OPTIONS = [
+  { key: null, label: 'All profiles' },
+  { key: 'running', label: 'Running' },
+  { key: 'has_proxy', label: 'With proxy' },
+  { key: 'no_proxy', label: 'Without proxy' },
+];
+
+function closeAllMenus() {
+  document.getElementById('sort-menu')?.remove();
+  document.getElementById('filter-menu')?.remove();
+}
+
+function toggleSortMenu() {
+  if (document.getElementById('sort-menu')) { closeAllMenus(); return; }
+  closeAllMenus();
+  const btn = document.getElementById('btn-sort');
+  const menu = document.createElement('div');
+  menu.id = 'sort-menu';
+  menu.className = 'dropdown-menu';
+  menu.innerHTML = SORT_OPTIONS.map((opt, i) => {
+    const isActive = opt.key === currentSortKey && opt.dir === currentSortDir;
+    return `<button class="dropdown-item${isActive ? ' active' : ''}" data-sort-idx="${i}">${isActive ? '✓ ' : ''}${opt.label}</button>`;
+  }).join('');
+  menu.querySelectorAll('.dropdown-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const opt = SORT_OPTIONS[Number(item.dataset.sortIdx)];
+      currentSortKey = opt.key;
+      currentSortDir = opt.dir;
+      closeAllMenus();
+      renderProfilesList(document.getElementById('search-input')?.value || '');
+    });
+  });
+  positionMenuUnderBtn(menu, btn);
+  document.addEventListener('click', closeAllMenus, { once: true, capture: true });
+}
+
+function toggleFilterMenu() {
+  if (document.getElementById('filter-menu')) { closeAllMenus(); return; }
+  closeAllMenus();
+  const btn = document.getElementById('btn-filter');
+  const menu = document.createElement('div');
+  menu.id = 'filter-menu';
+  menu.className = 'dropdown-menu';
+  menu.innerHTML = FILTER_OPTIONS.map((opt, i) => {
+    const isActive = opt.key === activeFilter;
+    return `<button class="dropdown-item${isActive ? ' active' : ''}" data-filter-idx="${i}">${isActive ? '✓ ' : ''}${opt.label}</button>`;
+  }).join('');
+  menu.querySelectorAll('.dropdown-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const opt = FILTER_OPTIONS[Number(item.dataset.filterIdx)];
+      activeFilter = opt.key;
+      closeAllMenus();
+      updateFilterBtnState();
+      renderProfilesList(document.getElementById('search-input')?.value || '');
+    });
+  });
+  positionMenuUnderBtn(menu, btn);
+  document.addEventListener('click', closeAllMenus, { once: true, capture: true });
+}
+
+function updateFilterBtnState() {
+  const btn = document.getElementById('btn-filter');
+  if (!btn) return;
+  btn.classList.toggle('active', activeFilter !== null);
+}
+
+function positionMenuUnderBtn(menu, btn) {
+  const rect = btn.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.top = `${rect.bottom + 6}px`;
+  menu.style.left = `${rect.left}px`;
+  document.body.appendChild(menu);
+}
+
 // ===== PROXY =====
 async function saveProxy() {
   const proxyValue = document.getElementById('editor-proxy-value').value;
@@ -609,10 +961,34 @@ function renderProfilesList(searchTerm = '') {
   const countEl = document.getElementById('search-count');
   
   let filtered = profiles;
+
+  // Apply search
   if (searchTerm) {
     const term = searchTerm.toLowerCase();
-    filtered = profiles.filter(p => p.name.toLowerCase().includes(term));
+    filtered = filtered.filter((p) => p.name.toLowerCase().includes(term));
   }
+
+  // Apply filter
+  if (activeFilter === 'running') {
+    filtered = filtered.filter((p) => runningProfiles.has(p.id));
+  } else if (activeFilter === 'has_proxy') {
+    filtered = filtered.filter((p) => Boolean(p.proxy_host));
+  } else if (activeFilter === 'no_proxy') {
+    filtered = filtered.filter((p) => !p.proxy_host);
+  }
+
+  // Apply sort
+  filtered = [...filtered].sort((a, b) => {
+    let aVal = a[currentSortKey] || '';
+    let bVal = b[currentSortKey] || '';
+    if (currentSortKey === 'name') {
+      aVal = aVal.toLowerCase();
+      bVal = bVal.toLowerCase();
+    }
+    if (aVal < bVal) return currentSortDir === 'asc' ? -1 : 1;
+    if (aVal > bVal) return currentSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
 
   countEl.textContent = filtered.length;
 
@@ -627,7 +1003,8 @@ function renderProfilesList(searchTerm = '') {
   document.querySelector('.profiles-layout').style.display = 'flex';
 
   list.innerHTML = filtered.map(p => {
-    const fp = JSON.parse(p.fingerprint || '{}');
+    let fp = {};
+    try { fp = JSON.parse(p.fingerprint || '{}'); } catch { fp = {}; }
     const isActive = p.id === selectedProfileId;
     const isRunning = runningProfiles.has(p.id);
     const time = formatTime(p.modified_at);
@@ -722,8 +1099,22 @@ async function backfillProxyLocaleForExistingProfiles() {
 }
 
 async function loadProfileEditor(id) {
-  const profile = await window.api.getProfile(id);
-  if (!profile) return;
+  let profile;
+  try {
+    profile = await window.api.getProfile(id);
+  } catch (err) {
+    if (isLoginRequiredError(err)) { showLoginModal(); return; }
+    showToast('Failed to load profile: ' + (err.message || 'unknown error'), 'error');
+    return;
+  }
+  if (!profile) {
+    showToast('Profile not found', 'error');
+    selectedProfileId = null;
+    hideEditor();
+    await loadData();
+    renderProfilesList(document.getElementById('search-input')?.value || '');
+    return;
+  }
 
   let fp = {};
   try {
@@ -761,9 +1152,19 @@ async function loadProfileEditor(id) {
       document.getElementById('editor-proxy-name').value = '';
     }
 
-    // Cookies
+    // Cookies — reset dropzone state and populate
     const cookies = profile.cookies || '[]';
-    document.getElementById('cookies-textarea').value = cookies !== '[]' ? cookies : '';
+    const cookiesJson = cookies !== '[]' ? cookies : '';
+    const cookiesTextarea = document.getElementById('cookies-textarea');
+    const cookiesDropzoneContent = document.querySelector('.cookies-dropzone-content');
+    if (cookiesTextarea) cookiesTextarea.value = cookiesJson;
+    if (cookiesJson) {
+      if (cookiesTextarea) cookiesTextarea.style.display = 'block';
+      if (cookiesDropzoneContent) cookiesDropzoneContent.style.display = 'none';
+    } else {
+      if (cookiesTextarea) cookiesTextarea.style.display = 'none';
+      if (cookiesDropzoneContent) cookiesDropzoneContent.style.display = '';
+    }
 
     // Advanced tab
     document.getElementById('editor-useragent').value = fp.userAgent || '';
@@ -777,6 +1178,19 @@ async function loadProfileEditor(id) {
     document.getElementById('editor-screen-h').value = fp.screen?.height || 1080;
     document.getElementById('editor-language').value = fp.locale?.language || 'en-US';
     document.getElementById('editor-timezone').value = fp.locale?.timezone || 'America/New_York';
+
+    // Fingerprint mode selects (were never populated — changes appeared to work but reset on reopen)
+    document.getElementById('editor-canvas-mode').value = fp.canvas?.mode || 'noise';
+    document.getElementById('editor-audio-mode').value = fp.audio?.mode || 'noise';
+    document.getElementById('editor-fonts-mode').value = fp.fonts?.mode || 'emulate';
+    document.getElementById('editor-webrtc-mode').value = fp.webrtc?.mode || 'disabled';
+    document.getElementById('editor-media-mode').value = fp.mediaDevices?.mode || 'emulate';
+    const geoMode = fp.geo?.mode || 'auto';
+    document.getElementById('editor-geo-mode').value = geoMode;
+    document.getElementById('editor-geo-lat').value = fp.geo?.latitude ?? '';
+    document.getElementById('editor-geo-lon').value = fp.geo?.longitude ?? '';
+    toggleGeoManualFields(geoMode);
+    document.getElementById('editor-start-action').value = fp.startAction || 'open-page';
 
     // Notes
     document.getElementById('profile-notes').value = profile.notes || '';
@@ -835,8 +1249,8 @@ function renderProfileInfo(profile, fp) {
     <span class="info-value">${fp.webrtc?.mode === 'disabled' ? 'Disabled' : fp.webrtc?.mode === 'fake' ? 'Fake' : 'Auto'}</span>
     
     <span class="info-label">Geolocation:</span>
-    <span class="info-value">Auto</span>
-    
+    <span class="info-value">${fp.geo?.mode === 'block' ? 'Block' : fp.geo?.mode === 'manual' ? 'Manual' : 'Auto'}</span>
+
     <span class="info-label">TimeZone:</span>
     <span class="info-value">${fp.locale?.timezone || 'Auto'}</span>
     
@@ -889,7 +1303,7 @@ function renderProfileInfo(profile, fp) {
     <span class="info-value accent">${profile.start_page || 'chrome://new-tab-page'}</span>
     
     <span class="info-label">At profile start:</span>
-    <span class="info-value">Open a start page or set of pages</span>
+    <span class="info-value">${{ 'open-page': 'Open start page', 'continue-session': 'Continue session', 'new-tab': 'New tab' }[fp.startAction] || 'Open start page'}</span>
   `;
 }
 
@@ -902,23 +1316,23 @@ function hideEditor() {
 // ===== SELECT POPULATORS =====
 function populateFolderSelect(selectedId) {
   const select = document.getElementById('editor-folder');
-  select.innerHTML = folders.map(f => 
-    `<option value="${f.id}" ${f.id == selectedId ? 'selected' : ''}>${escapeHtml(f.name)}</option>`
+  select.innerHTML = folders.map(f =>
+    `<option value="${f.id}" ${Number(f.id) === Number(selectedId) ? 'selected' : ''}>${escapeHtml(f.name)}</option>`
   ).join('');
 }
 
 function populateGroupSelect(selectedId) {
   const select = document.getElementById('editor-group');
-  select.innerHTML = groups.map(g => 
-    `<option value="${g.id}" ${g.id == selectedId ? 'selected' : ''}>${escapeHtml(g.name)}</option>`
+  select.innerHTML = groups.map(g =>
+    `<option value="${g.id}" ${Number(g.id) === Number(selectedId) ? 'selected' : ''}>${escapeHtml(g.name)}</option>`
   ).join('');
 }
 
 function populateProxySelect(selectedId) {
   const select = document.getElementById('editor-proxy-select');
-  select.innerHTML = '<option value="">New Proxy</option>' + 
-    proxies.map(p => 
-      `<option value="${p.id}" ${p.id == selectedId ? 'selected' : ''}>${escapeHtml(p.name || p.host || 'Proxy ' + p.id)}</option>`
+  select.innerHTML = '<option value="">New Proxy</option>' +
+    proxies.map(p =>
+      `<option value="${p.id}" ${Number(p.id) === Number(selectedId) ? 'selected' : ''}>${escapeHtml(p.name || p.host || 'Proxy ' + p.id)}</option>`
     ).join('');
 }
 
@@ -928,6 +1342,21 @@ async function refreshAccountPage() {
     await loadAccountStateUI();
   } catch (err) {
     console.error('Failed to refresh account page:', err);
+  }
+}
+
+async function refreshSettingsPage() {
+  try {
+    const version = await window.api.getAppVersion();
+    const versionEl = document.getElementById('settings-version');
+    if (versionEl && version) versionEl.textContent = String(version).startsWith('v') ? version : `v${version}`;
+    const state = accountState || await window.api.getAccountState();
+    const emailEl = document.getElementById('settings-account-email');
+    if (emailEl) emailEl.textContent = state?.email || state?.displayName || 'Not logged in';
+    const logoutBtn = document.getElementById('btn-settings-logout');
+    if (logoutBtn) logoutBtn.disabled = !state?.isLoggedIn;
+  } catch (err) {
+    console.error('Failed to refresh settings page:', err);
   }
 }
 
@@ -1164,10 +1593,19 @@ function showMandatoryUpdateModal(data = {}) {
 
   const modal = document.getElementById('update-lock-modal');
   const text = document.getElementById('update-lock-text');
+  const versionEl = document.getElementById('update-lock-version');
   if (text) {
-    const nextVersion = mandatoryUpdateFlow.version ? `v${mandatoryUpdateFlow.version}` : 'a newer version';
-    const currentVersion = mandatoryUpdateFlow.currentVersion ? ` (current v${mandatoryUpdateFlow.currentVersion})` : '';
-    text.textContent = `Access is blocked until you install ${nextVersion}${currentVersion}. Click "Update Now" to download, then "Install Update" to open installer.`;
+    text.textContent = 'A new version is available. Update to continue using Anty Browser.';
+  }
+  if (versionEl) {
+    const nextVersion = mandatoryUpdateFlow.version ? `v${mandatoryUpdateFlow.version}` : '';
+    const currentVersion = mandatoryUpdateFlow.currentVersion ? `v${mandatoryUpdateFlow.currentVersion}` : '';
+    if (nextVersion) {
+      versionEl.textContent = currentVersion ? `${currentVersion} → ${nextVersion}` : nextVersion;
+      versionEl.classList.remove('hidden');
+    } else {
+      versionEl.classList.add('hidden');
+    }
   }
   if (modal) modal.classList.remove('hidden');
   renderMandatoryUpdateUi();
@@ -1192,21 +1630,26 @@ function renderMandatoryUpdateUi() {
   const statusEl = document.getElementById('update-lock-substatus');
   const progressEl = document.getElementById('update-lock-progress');
   const progressFillEl = document.getElementById('update-lock-progress-fill');
+  const progressPctEl = document.getElementById('update-lock-progress-pct');
   if (!primaryBtn || !restartBtn || !statusEl || !progressEl || !progressFillEl) return;
 
   if (mandatoryUpdateFlow.downloading) {
     const pct = Math.min(100, Math.max(0, Number(mandatoryUpdateFlow.progress || 0)));
-    primaryBtn.textContent = `Downloading... ${pct.toFixed(0)}%`;
+    primaryBtn.textContent = 'Downloading...';
     primaryBtn.disabled = true;
     restartBtn.classList.add('hidden');
-    statusEl.classList.remove('hidden');
     if (mandatoryUpdateFlow.error) {
       statusEl.textContent = `${mandatoryUpdateFlow.error} Retrying...`;
     } else {
-      statusEl.textContent = `Downloading ${formatBytes(mandatoryUpdateFlow.downloadedBytes)} / ${formatBytes(mandatoryUpdateFlow.totalBytes)}.`;
+      const dl = formatBytes(mandatoryUpdateFlow.downloadedBytes);
+      const total = formatBytes(mandatoryUpdateFlow.totalBytes);
+      statusEl.textContent = mandatoryUpdateFlow.totalBytes > 0
+        ? `${dl} of ${total}`
+        : dl;
     }
     progressEl.classList.remove('hidden');
     progressFillEl.style.width = `${pct}%`;
+    if (progressPctEl) progressPctEl.textContent = `${pct.toFixed(0)}%`;
     return;
   }
 
@@ -1217,7 +1660,6 @@ function renderMandatoryUpdateUi() {
   if (mandatoryUpdateFlow.error) {
     primaryBtn.textContent = 'Retry Download';
     restartBtn.classList.add('hidden');
-    statusEl.classList.remove('hidden');
     statusEl.textContent = mandatoryUpdateFlow.error;
     return;
   }
@@ -1227,19 +1669,16 @@ function renderMandatoryUpdateUi() {
     if (mandatoryUpdateFlow.installerOpened) {
       restartBtn.textContent = 'Quit for Install';
       restartBtn.classList.remove('hidden');
-      statusEl.classList.remove('hidden');
-      statusEl.textContent = 'Installer opened in manual mode. Quit Anty Browser and replace the app.';
+      statusEl.textContent = 'DMG opened. Drag Anty Browser to Applications, then quit and reopen.';
     } else {
       restartBtn.classList.add('hidden');
-      statusEl.classList.remove('hidden');
-      statusEl.textContent = 'Update downloaded. Click Install Update to open the installer.';
+      statusEl.textContent = 'Download complete. Click Install Update to open the DMG.';
     }
     return;
   }
 
   primaryBtn.textContent = 'Update Now';
   restartBtn.classList.add('hidden');
-  statusEl.classList.add('hidden');
   statusEl.textContent = '';
 }
 
@@ -1356,12 +1795,15 @@ function formatTime(dateStr) {
   return d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
 }
 
-function parseCookiesInput(rawText) {
+function parseCookiesInput(rawText, { importExpired = true } = {}) {
   const text = String(rawText || '').trim();
   if (!text) return { ok: true, cookies: [] };
 
   const direct = tryParseCookiesArray(text);
-  if (direct.ok) return direct;
+  if (direct.ok) {
+    const cookies = importExpired ? direct.cookies : filterExpiredCookies(direct.cookies);
+    return { ok: true, cookies };
+  }
 
   const candidates = extractJsonArrays(text);
   const collected = [];
@@ -1376,7 +1818,16 @@ function parseCookiesInput(rawText) {
     return { ok: false, error: 'Invalid cookies JSON. Paste JSON array of cookies.' };
   }
 
-  return { ok: true, cookies: dedupeCookies(collected) };
+  const cookies = importExpired ? collected : filterExpiredCookies(collected);
+  return { ok: true, cookies: dedupeCookies(cookies) };
+}
+
+function filterExpiredCookies(cookies) {
+  const nowSec = Date.now() / 1000;
+  return cookies.filter((c) => {
+    if (c.expires == null) return true;
+    return c.expires > nowSec;
+  });
 }
 
 function tryParseCookiesArray(input) {
@@ -1532,23 +1983,41 @@ function getBrowserIcon(browser) {
   return '🌐';
 }
 
+const _toastQueue = [];
+let _toastVisible = 0;
+const TOAST_MAX = 3;
+const TOAST_DURATION = 3000;
+
 function showToast(message, type = 'success') {
-  const existing = document.querySelector('.toast');
-  if (existing) existing.remove();
+  if (_toastVisible >= TOAST_MAX) {
+    // Replace oldest if queue is full
+    const oldest = document.querySelector('.toast');
+    if (oldest) { oldest.style.opacity = '0'; setTimeout(() => oldest.remove(), 200); _toastVisible--; }
+  }
 
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
-  toast.innerHTML = `
-    ${type === 'success' ? '✅' : '❌'}
-    <span>${escapeHtml(message)}</span>
-  `;
+  toast.innerHTML = `${type === 'success' ? '✅' : '❌'}<span>${escapeHtml(message)}</span>`;
+
+  // Stack toasts vertically
+  const offset = _toastVisible * 52;
+  toast.style.setProperty('--toast-offset', `${offset}px`);
+
   document.body.appendChild(toast);
+  _toastVisible++;
 
   setTimeout(() => {
     toast.style.opacity = '0';
     toast.style.transform = 'translateY(20px)';
-    setTimeout(() => toast.remove(), 300);
-  }, 3000);
+    setTimeout(() => {
+      toast.remove();
+      _toastVisible = Math.max(0, _toastVisible - 1);
+      // Re-stack remaining toasts
+      document.querySelectorAll('.toast').forEach((t, i) => {
+        t.style.setProperty('--toast-offset', `${i * 52}px`);
+      });
+    }, 300);
+  }, TOAST_DURATION);
 }
 
 // Make functions globally accessible for onclick handlers

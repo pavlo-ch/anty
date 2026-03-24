@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('api', {
   openUpdateInstaller: () => ipcRenderer.invoke('app:update:open-installer'),
   restartApp: () => ipcRenderer.invoke('app:restart'),
   quitApp: () => ipcRenderer.invoke('app:quit'),
+  openUserData: () => ipcRenderer.invoke('app:open-user-data'),
 
   // Events
   onProfileStatus: (callback) => {

@@ -364,6 +364,12 @@ async function launchProfile(profileId, mainWindow) {
 
     if (executablePath) {
       launchOptions.executablePath = executablePath;
+    } else {
+      throw new Error(
+        'Google Chrome or Chromium not found.\n' +
+        'Install Google Chrome and try again.\n' +
+        'Expected paths:\n' + chromiumPaths.join('\n')
+      );
     }
 
     // Context options — use capped viewport for actual window, but spoof full resolution in fingerprint

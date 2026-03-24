@@ -134,6 +134,15 @@ function initDatabase() {
     );
   `);
 
+  // Indexes for JOIN-heavy queries
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_profiles_folder   ON profiles(folder_id);
+    CREATE INDEX IF NOT EXISTS idx_profiles_group    ON profiles(group_id);
+    CREATE INDEX IF NOT EXISTS idx_profiles_proxy    ON profiles(proxy_id);
+    CREATE INDEX IF NOT EXISTS idx_profiles_modified ON profiles(modified_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON profile_sync_queue(status);
+  `);
+
   // Forward-compatible columns for existing DB files.
   ensureColumn('profiles', 'remote_id', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'team_id', "TEXT DEFAULT ''");

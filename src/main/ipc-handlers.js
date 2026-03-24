@@ -56,6 +56,11 @@ function restoreProfilePatch(snapshot) {
 
 function registerIpcHandlers() {
   ipcMain.handle('app:version', () => app.getVersion());
+  ipcMain.handle('app:open-user-data', async () => {
+    const dir = app.getPath('userData');
+    const err = await shell.openPath(dir);
+    return err ? { ok: false, message: err } : { ok: true, path: dir };
+  });
   ipcMain.handle('app:open-external', async (_, url) => {
     const target = String(url || '').trim();
     if (!target) return { ok: false, reason: 'missing_url' };
