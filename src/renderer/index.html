@@ -123,26 +123,26 @@
               </div>
             </div>
 
-            <!-- Folder & Group -->
+            <!-- Platform & Tags -->
             <div class="editor-row">
               <div class="editor-field">
-                <label class="editor-label">Folder</label>
-                <select id="editor-folder" class="editor-select">
-                  <option value="">Unassigned</option>
+                <label class="editor-label">Platform</label>
+                <select id="editor-platform" class="editor-select">
+                  <option value="other">Other</option>
+                  <option value="instagram">Instagram</option>
+                  <option value="facebook">Facebook</option>
+                  <option value="linkedin">LinkedIn</option>
                 </select>
               </div>
               <div class="editor-field">
-                <label class="editor-label">Group</label>
-                <select id="editor-group" class="editor-select">
-                  <option value="">Default Group</option>
-                </select>
-              </div>
-              <div class="editor-field small">
                 <label class="editor-label">Tags</label>
                 <input type="text" id="editor-tags" class="editor-input tags-input" list="tags-suggestions" placeholder="work, fb, warm" />
                 <datalist id="tags-suggestions"></datalist>
               </div>
             </div>
+            <!-- Hidden legacy fields -->
+            <select id="editor-folder" style="display:none"></select>
+            <select id="editor-group" style="display:none"></select>
 
             <!-- Config Tabs -->
             <div class="editor-tabs">
@@ -219,6 +219,12 @@
               <div class="editor-section">
                 <label class="editor-label">Start page <span class="info-icon" title="URL to open when profile starts">ⓘ</span></label>
                 <input type="text" id="editor-start-page" class="editor-input" value="https://whoer.net" />
+              </div>
+
+              <!-- Warm-up URL -->
+              <div class="editor-section">
+                <label class="editor-label">Warm-up URL <span class="info-icon" title="Opens this URL first before start page — helps avoid CAPTCHA on new profiles">ⓘ</span></label>
+                <input type="text" id="editor-warmup-url" class="editor-input" placeholder="e.g. https://google.com" />
               </div>
 
               <!-- At profile start -->

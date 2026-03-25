@@ -262,6 +262,31 @@ function setupEventListeners() {
     renderProfilesList(e.target.value);
   });
 
+  // Platform selector → update start_page + tags + trigger save
+  document.getElementById('editor-platform')?.addEventListener('change', (e) => {
+    const platform = e.target.value;
+    const platformData = {
+      instagram: { url: 'https://www.instagram.com', tag: 'instagram' },
+      facebook:  { url: 'https://www.facebook.com',  tag: 'facebook'  },
+      linkedin:  { url: 'https://www.linkedin.com',  tag: 'linkedin'  },
+    };
+    const data = platformData[platform];
+    if (data) {
+      const startPageEl = document.getElementById('editor-start-page');
+      if (startPageEl) startPageEl.value = data.url;
+      // Add platform tag if not already present
+      const tagsEl = document.getElementById('editor-tags');
+      if (tagsEl) {
+        const existing = tagsEl.value.split(',').map(t => t.trim()).filter(Boolean);
+        const platformTags = ['instagram', 'facebook', 'linkedin'];
+        const filtered = existing.filter(t => !platformTags.includes(t));
+        filtered.unshift(data.tag);
+        tagsEl.value = filtered.join(', ');
+      }
+    }
+    scheduleAutoSave(120);
+  });
+
   // Save proxy
   document.getElementById('btn-save-proxy').addEventListener('click', saveProxy);
 
@@ -292,6 +317,7 @@ function setupEventListeners() {
   const autoSaveOnInputIds = [
     'editor-profile-name',
     'editor-start-page',
+    'editor-warmup-url',
     'editor-tags',
     'profile-notes'
   ];
@@ -524,6 +550,7 @@ function collectProfileEditorData() {
     folder_id: Number.isFinite(parsedFolderId) ? parsedFolderId : null,
     group_id: Number.isFinite(parsedGroupId) ? parsedGroupId : null,
     start_page: document.getElementById('editor-start-page').value,
+    warmup_url: document.getElementById('editor-warmup-url')?.value || '',
     notes: document.getElementById('profile-notes').value,
     proxy_id: Number.isFinite(parsedProxyId) ? parsedProxyId : null,
     tags: parseTagsInput(document.getElementById('editor-tags')?.value || '')
@@ -1092,7 +1119,6 @@ function renderProfilesList(searchTerm = '') {
     const isActive = p.id === selectedProfileId;
     const isRunning = runningProfiles.has(p.id);
     const time = formatTime(p.modified_at);
-    const creatorLabel = getProfileCreatorLabel(p);
     const systemLabel = getProfileSystemLabel(fp);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';
@@ -1118,16 +1144,13 @@ function renderProfilesList(searchTerm = '') {
             </button>
           </div>
         </div>
-        <div class="profile-item-context">
-          <span class="profile-chip" title="Created by">${escapeHtml(creatorLabel)}</span>
-          <span class="profile-chip" title="System">${escapeHtml(systemLabel)}</span>
-        </div>
         <div class="profile-item-meta">
           <div class="profile-item-badges">
+            <span class="badge badge-os" title="${escapeHtml(systemLabel)}">${getOsBadgeMarkup(fp)}</span>
             ${countryFlag ? `<span class="badge badge-country" title="${countryCode}">${countryFlag}</span>` : ''}
             ${hasProxy ? `<span class="badge badge-proxy" title="Proxy active">⇄</span>` : ''}
           </div>
-          ${countryCode ? `<span class="profile-item-country">${countryCode}</span>` : ''}
+          <span class="profile-item-country">${p.created_by ? escapeHtml(p.created_by) : (countryCode || '')}</span>
           ${isRunning ? '<span class="badge badge-status running">Running</span>' : ''}
         </div>
         <span class="profile-item-engine">Chromium</span>
@@ -1217,12 +1240,18 @@ async function loadProfileEditor(id) {
     // Populate fields
     document.getElementById('editor-profile-name').value = profile.name;
     document.getElementById('editor-start-page').value = profile.start_page || 'https://whoer.net';
+    const warmupEl = document.getElementById('editor-warmup-url');
+    if (warmupEl) warmupEl.value = profile.warmup_url || '';
     document.getElementById('editor-tags').value = formatTagsInput(profile.tags);
     populateTagSuggestions();
     
     populateFolderSelect(profile.folder_id);
     populateGroupSelect(profile.group_id);
     populateProxySelect(profile.proxy_id);
+
+    // Platform selector
+    const platformEl = document.getElementById('editor-platform');
+    if (platformEl) platformEl.value = getProfilePlatform(profile) === 'other' ? 'other' : getProfilePlatform(profile);
 
     // Proxy fields
     if (profile.proxy_host) {
@@ -1886,6 +1915,36 @@ function getProfileCreatorLabel(profile) {
   if (profile?.team_id) return 'Team';
   if (profile?.remote_id) return 'Platform';
   return 'Local';
+}
+
+function getOsType(fp) {
+  const source = [
+    fp?.osShort,
+    fp?.osName,
+    fp?.platform,
+    fp?.userAgent,
+  ].filter(Boolean).join(' ').toLowerCase();
+
+  if (!source) return 'unknown';
+  if (source.includes('win')) return 'windows';
+  if (source.includes('mac') || source.includes('darwin') || source.includes('os x') || source.includes('macintosh')) return 'apple';
+  if (source.includes('iphone') || source.includes('ios')) return 'ios';
+  if (source.includes('android')) return 'android';
+  if (source.includes('linux')) return 'linux';
+  return 'unknown';
+}
+
+function getOsBadgeMarkup(fp) {
+  const type = getOsType(fp);
+  if (type === 'windows') {
+    return '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M0.6 2.7L6.9 1.8v5.7H0.6V2.7zm7.4-1l7-1v6.8h-7V1.7zM0.6 8.5h6.3v5.7l-6.3-.9V8.5zm7.4 0h7v6.8l-7-1V8.5z" fill="currentColor"/></svg>';
+  }
+  if (type === 'apple' || type === 'ios') {
+    return '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M11.5 8.2c0-1.6 1.3-2.4 1.3-2.4-.7-1-1.8-1.1-2.2-1.1-.9-.1-1.7.5-2.2.5-.5 0-1.1-.5-1.9-.4-1 .1-1.9.6-2.4 1.5-1.1 1.8-.3 4.5.8 6 .5.7 1.1 1.5 1.9 1.5.8 0 1.1-.5 2-.5.9 0 1.2.5 2 .5.8 0 1.4-.7 1.9-1.4.6-.8.8-1.6.8-1.7 0 0-1.5-.6-1.5-2.5zM10 3.5c.4-.5.7-1.2.6-1.9-.6 0-1.3.4-1.7.9-.4.5-.8 1.2-.7 1.9.7.1 1.4-.3 1.8-.9z" fill="currentColor"/></svg>';
+  }
+  if (type === 'linux') return '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="currentColor"><path d="M8 1C5.8 1 4 3 4 5.5c0 1.2.4 2.3 1 3.1-.3.4-.5.9-.5 1.4 0 .6.2 1.1.6 1.5C4.4 12 4 12.8 4 13.5c0 .8.6 1.5 1.5 1.5h5c.9 0 1.5-.7 1.5-1.5 0-.7-.4-1.5-1.1-2C11.3 11.1 11.5 10.6 11.5 10c0-.5-.2-1-.5-1.4.6-.8 1-1.9 1-3.1C12 3 10.2 1 8 1zm0 1.5c1.4 0 2.5 1.3 2.5 3S9.4 8.5 8 8.5 5.5 7.2 5.5 5.5 6.6 2.5 8 2.5zM6.5 6c.3 0 .5.2.5.5S6.8 7 6.5 7 6 6.8 6 6.5 6.2 6 6.5 6zm3 0c.3 0 .5.2.5.5S9.8 7 9.5 7 9 6.8 9 6.5 9.2 6 9.5 6zM8 9.5c.8 0 1.5.3 1.9.8H6.1c.4-.5 1.1-.8 1.9-.8zm-2.5 2h5c.3 0 .5.2.5.5s-.2.5-.5.5h-5c-.3 0-.5-.2-.5-.5s.2-.5.5-.5z"/></svg>';
+  if (type === 'android') return '🤖';
+  return '💻';
 }
 
 function getProfileSystemLabel(fp) {
