@@ -1,6 +1,6 @@
 const { chromium } = require('playwright-core');
 const path = require('path');
-const { app } = require('electron');
+const os = require('os');
 const fs = require('fs');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag } = require('./fingerprint');
 const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('./database');
@@ -8,10 +8,22 @@ const profileSync = require('./profile-sync');
 const http = require('http');
 
 // Track running browser instances
-const runningBrowsers = new Map(); // profileId -> { browser, context, page }
+// Electron mode: { context, page }
+// Server mode:   { browserServer, browser, context, page, wsEndpoint, isServer: true }
+const runningBrowsers = new Map();
+
+function getDataDir() {
+  if (process.env.ANTY_DATA_DIR) return process.env.ANTY_DATA_DIR;
+  try {
+    const { app } = require('electron');
+    return app.getPath('userData');
+  } catch {
+    return path.join(os.homedir(), '.anty');
+  }
+}
 
 function getUserDataDir(profileId) {
-  return path.join(app.getPath('userData'), 'profiles', `profile_${profileId}`);
+  return path.join(getDataDir(), 'profiles', `profile_${profileId}`);
 }
 
 function toNumber(value, fallback = 0) {
@@ -428,66 +440,27 @@ async function launchProfile(profileId, mainWindow) {
       contextOptions.permissions = ['geolocation'];
     }
 
-    // Launch persistent context
-    const context = await chromium.launchPersistentContext(userDataDir, {
-      ...launchOptions,
-      ...contextOptions,
-      chromiumSandbox: true,
-      // Hide Chrome "controlled by automated test software" banner.
-      ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
-    });
-
-    // Inject fingerprint script
     const injectionScript = buildInjectionScript(fingerprint);
-    await context.addInitScript(injectionScript);
+    const warmupUrl = profile.warmup_url;
+    const startPage = profile.start_page || 'https://whoer.net';
 
-    // Import cookies if any
-    if (profile.cookies && profile.cookies !== '[]') {
+    // Helper: import cookies into a context
+    async function importCookies(ctx) {
+      if (!profile.cookies || profile.cookies === '[]') return;
       try {
         const cookies = JSON.parse(profile.cookies)
           .map(normalizeCookieForPlaywright)
           .filter(Boolean);
-        if (cookies.length > 0) {
-          await context.addCookies(cookies);
-        }
+        if (cookies.length > 0) await ctx.addCookies(cookies);
       } catch (e) {
         console.error('[Launcher] Failed to import cookies:', e.message);
       }
     }
 
-    // Get existing page or create new
-    let page = context.pages()[0];
-    if (!page) {
-      page = await context.newPage();
-    }
-
-    // Warm-up navigation (helps avoid CAPTCHA on fresh profiles)
-    const warmupUrl = profile.warmup_url;
-    if (warmupUrl && !warmupUrl.startsWith('chrome://')) {
-      await page.goto(warmupUrl).catch(() => {});
-      await page.waitForTimeout(2500).catch(() => {});
-    }
-
-    // Navigate to start page
-    const startPage = profile.start_page || 'https://whoer.net';
-    if (!startPage.startsWith('chrome://')) {
-      await page.goto(startPage).catch(() => {});
-    }
-
-    // Track running instance
-    runningBrowsers.set(profileId, { context, page });
-
-    // Update status
-    updateProfile(profileId, { status: 'running' });
-
-    if (mainWindow) {
-      mainWindow.webContents.send('browser:status', { profileId, status: 'running' });
-    }
-
-    // Handle close — save cookies back to profile
-    context.on('close', async () => {
+    // Helper: save cookies from a context
+    async function saveCookies(ctx) {
       try {
-        const allCookies = await context.cookies();
+        const allCookies = await ctx.cookies();
         if (allCookies.length > 0) {
           updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
           console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
@@ -495,6 +468,83 @@ async function launchProfile(profileId, mainWindow) {
       } catch (e) {
         console.log(`[Launcher] Could not save cookies: ${e.message}`);
       }
+    }
+
+    // Helper: navigate warmup + start page
+    async function navigate(page) {
+      if (warmupUrl && !warmupUrl.startsWith('chrome://')) {
+        await page.goto(warmupUrl).catch(() => {});
+        await page.waitForTimeout(2500).catch(() => {});
+      }
+      if (!startPage.startsWith('chrome://')) {
+        await page.goto(startPage).catch(() => {});
+      }
+    }
+
+    // ── SERVER / HEADLESS MODE ──────────────────────────────────────────────
+    if (mainWindow === null || (typeof mainWindow === 'object' && mainWindow && mainWindow.__serverMode)) {
+      const browserServer = await chromium.launchServer({
+        headless: true,
+        executablePath,
+        args: [
+          `--user-data-dir=${userDataDir}`,
+          '--disable-features=IsolateOrigins,site-per-process',
+          '--disable-infobars',
+          '--no-first-run',
+          '--no-default-browser-check',
+          `--window-size=${viewportWidth},${viewportHeight}`,
+        ],
+        ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
+      });
+
+      const wsEndpoint = browserServer.wsEndpoint();
+      const browser = await chromium.connect(wsEndpoint);
+      const context = await browser.newContext({ ...contextOptions });
+
+      await context.addInitScript(injectionScript);
+      await importCookies(context);
+
+      const page = await context.newPage();
+      await navigate(page);
+
+      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true });
+      updateProfile(profileId, { status: 'running' });
+
+      context.on('close', async () => {
+        await saveCookies(context);
+        runningBrowsers.delete(profileId);
+        updateProfile(profileId, { status: 'ready' });
+        console.log(`[Launcher] Profile ${profileId} closed (server mode)`);
+      });
+
+      console.log(`[Launcher] Profile ${profileId} launched (headless) — wsEndpoint: ${wsEndpoint}`);
+      return { success: true, wsEndpoint };
+    }
+
+    // ── ELECTRON / GUI MODE ─────────────────────────────────────────────────
+    const context = await chromium.launchPersistentContext(userDataDir, {
+      ...launchOptions,
+      ...contextOptions,
+      chromiumSandbox: true,
+      ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
+    });
+
+    await context.addInitScript(injectionScript);
+    await importCookies(context);
+
+    let page = context.pages()[0];
+    if (!page) page = await context.newPage();
+    await navigate(page);
+
+    runningBrowsers.set(profileId, { context, page });
+    updateProfile(profileId, { status: 'running' });
+
+    if (mainWindow) {
+      mainWindow.webContents.send('browser:status', { profileId, status: 'running' });
+    }
+
+    context.on('close', async () => {
+      await saveCookies(context);
       runningBrowsers.delete(profileId);
       updateProfile(profileId, { status: 'ready' });
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -527,6 +577,7 @@ async function stopProfile(profileId) {
       }
     } catch {}
     await instance.context.close();
+    if (instance.browserServer) await instance.browserServer.close().catch(() => {});
     runningBrowsers.delete(profileId);
     updateProfile(profileId, { status: 'ready' });
     return { success: true };
@@ -561,11 +612,17 @@ function getRunningProfiles() {
   return Array.from(runningBrowsers.keys());
 }
 
+function getWsEndpoint(profileId) {
+  const instance = runningBrowsers.get(profileId);
+  return instance?.wsEndpoint || null;
+}
+
 module.exports = {
   launchProfile,
   stopProfile,
   stopAllProfiles,
   getRunningProfiles,
+  getWsEndpoint,
   checkProxy,
   syncProfileLocaleFromProxy,
   deleteProfile,

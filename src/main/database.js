@@ -1,6 +1,6 @@
 const Database = require('better-sqlite3');
 const path = require('path');
-const { app } = require('electron');
+const os = require('os');
 
 let db;
 
@@ -14,9 +14,18 @@ function ensureColumn(tableName, columnName, definitionSql) {
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definitionSql}`);
 }
 
+function getDataDir() {
+  if (process.env.ANTY_DATA_DIR) return process.env.ANTY_DATA_DIR;
+  try {
+    const { app } = require('electron');
+    return app.getPath('userData');
+  } catch {
+    return path.join(os.homedir(), '.anty');
+  }
+}
+
 function getDbPath() {
-  const userDataPath = app.getPath('userData');
-  return path.join(userDataPath, 'anty_browser.db');
+  return path.join(getDataDir(), 'anty_browser.db');
 }
 
 function initDatabase() {

@@ -1,9 +1,21 @@
-const { app, safeStorage } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const db = require('./database');
+
+// Graceful Electron helpers — fall back to plain Node.js when running as API server
+function getAppPath() {
+  try { return require('electron').app.getAppPath(); } catch { return path.join(__dirname, '../..'); }
+}
+function getAppVersion() {
+  try { return require('electron').getAppVersion(); } catch {
+    try { return require('../../package.json').version; } catch { return '0.0.0'; }
+  }
+}
+function getSafeStorage() {
+  try { return require('electron').safeStorage; } catch { return null; }
+}
 
 const ENCRYPTED_PREFIX = 'enc:v1:';
 const PLAIN_PREFIX = 'plain:v1:';
@@ -24,7 +36,7 @@ function loadStaticPlatformConfig() {
   if (staticPlatformConfigCache) return staticPlatformConfigCache;
 
   const candidatePaths = [
-    path.join(app.getAppPath(), 'config', 'platform.json'),
+    path.join(getAppPath(), 'config', 'platform.json'),
     path.join(process.cwd(), 'config', 'platform.json')
   ];
 
@@ -154,8 +166,9 @@ function decryptSecret(value) {
       if (!USE_KEYCHAIN) return '';
       const encoded = String(value).slice(ENCRYPTED_PREFIX.length);
       const buffer = Buffer.from(encoded, 'base64');
-      if (safeStorage.isEncryptionAvailable()) {
-        return safeStorage.decryptString(buffer);
+      const ss = getSafeStorage();
+      if (ss && ss.isEncryptionAvailable()) {
+        return ss.decryptString(buffer);
       }
       return buffer.toString('utf8');
     }
@@ -197,8 +210,9 @@ function encryptSecret(secret) {
   if (!secret) return '';
   if (USE_KEYCHAIN) {
     try {
-      if (safeStorage.isEncryptionAvailable()) {
-        return `${ENCRYPTED_PREFIX}${safeStorage.encryptString(secret).toString('base64')}`;
+      const ss = getSafeStorage();
+      if (ss && ss.isEncryptionAvailable()) {
+        return `${ENCRYPTED_PREFIX}${ss.encryptString(secret).toString('base64')}`;
       }
     } catch (_) {}
   }
@@ -247,7 +261,7 @@ async function refreshAccessToken() {
       body: JSON.stringify({
         refresh_token: refreshToken,
         source: ANTY_SOURCE,
-        appVersion: app.getVersion(),
+        appVersion: getAppVersion(),
         device: getDeviceInfo()
       })
     });
@@ -504,7 +518,7 @@ async function pushActionToCloud(action, payload) {
 
   const requestPayload = {
     source: ANTY_SOURCE,
-    appVersion: app.getVersion(),
+    appVersion: getAppVersion(),
     device: getDeviceInfo(),
     action,
     payload
@@ -615,7 +629,7 @@ async function pullProfilesFromCloud() {
 
   const result = await fetchWithAuthRetry(pullUrl, {
     source: ANTY_SOURCE,
-    appVersion: app.getVersion(),
+    appVersion: getAppVersion(),
     device: getDeviceInfo(),
     cursor: getSyncCursor()
   });
