@@ -68,6 +68,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   void backfillProxyLocaleForExistingProfiles();
   void runProfileCloudSync({ silent: true });
   await refreshAccountPage();
+
+  // Auto-refresh: reload local profiles every 15s (picks up changes from other sessions)
+  setInterval(async () => {
+    await loadData();
+    renderProfilesList();
+  }, 15000);
+
+  // Auto cloud sync: pull from cloud every 60s
+  setInterval(() => {
+    void runProfileCloudSync({ silent: true });
+  }, 60000);
 });
 
 async function renderAppVersion() {
