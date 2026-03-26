@@ -2,10 +2,64 @@ const { chromium } = require('playwright-core');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag } = require('./fingerprint');
+const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA } = require('./fingerprint');
 const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('./database');
 const profileSync = require('./profile-sync');
 const http = require('http');
+
+/**
+ * Build Sec-CH-UA headers that match the fingerprint UA.
+ * Without these, browsers expose the real Chromium version in CH headers
+ * which contradicts the spoofed UA — easily detectable by antifraud.
+ */
+function buildSecChUaHeaders(fingerprint) {
+  const ua = fingerprint.userAgent || '';
+  const parsed = parseUA(ua);
+  if (!parsed || !parsed.browser) return {};
+
+  const majorVersion = parseInt(parsed.version, 10) || 0;
+  const isMobile = fingerprint.hardware?.maxTouchPoints > 0;
+
+  // Sec-CH-UA-Platform mapping
+  const platformMap = {
+    Win: 'Windows', Mac: 'macOS', Linux: 'Linux',
+    Android: 'Android', iOS: 'iOS',
+  };
+  const platform = platformMap[parsed.osShort] || 'Windows';
+
+  // Platform version — Windows always reports "10.0.0" for privacy
+  const platformVersionMap = {
+    Windows: '10.0.0', macOS: '10_15_7', Linux: '', Android: '10', iOS: '17.0.0',
+  };
+  const platformVersion = platformVersionMap[platform] || '';
+
+  // Not_A_Brand value varies by Chrome version
+  const brandVersion = majorVersion >= 130 ? '24' : majorVersion >= 100 ? '8' : '99';
+  const brandName = majorVersion >= 100 ? 'Not_A Brand' : 'Not;A=Brand';
+
+  if (parsed.browser === 'Chrome' || parsed.browser === 'Edge') {
+    const edgeBrand = parsed.browser === 'Edge' ? `, "Microsoft Edge";v="${majorVersion}"` : '';
+    const secCHUA = `"${brandName}";v="${brandVersion}", "Chromium";v="${majorVersion}", "Google Chrome";v="${majorVersion}"${edgeBrand}`;
+    const fullVer = `${majorVersion}.0.0.0`;
+    return {
+      'Sec-CH-UA': secCHUA,
+      'Sec-CH-UA-Mobile': isMobile ? '?1' : '?0',
+      'Sec-CH-UA-Platform': `"${platform}"`,
+      'Sec-CH-UA-Platform-Version': `"${platformVersion}"`,
+      'Sec-CH-UA-Arch': '"x86"',
+      'Sec-CH-UA-Bitness': '"64"',
+      'Sec-CH-UA-Full-Version': `"${fullVer}"`,
+      'Sec-CH-UA-Full-Version-List': `"${brandName}";v="${brandVersion}.0.0.0", "Chromium";v="${fullVer}", "Google Chrome";v="${fullVer}"${edgeBrand}`,
+    };
+  }
+
+  if (parsed.browser === 'Firefox') {
+    // Firefox doesn't send Sec-CH-UA at all
+    return {};
+  }
+
+  return {};
+}
 
 // Track running browser instances
 // Electron mode: { context, page }
@@ -385,6 +439,7 @@ async function launchProfile(profileId, mainWindow) {
     }
 
     // Context options — use capped viewport for actual window, but spoof full resolution in fingerprint
+    const secChHeaders = buildSecChUaHeaders(fingerprint);
     const contextOptions = {
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale?.language || 'en-US',
@@ -399,6 +454,7 @@ async function launchProfile(profileId, mainWindow) {
       },
       colorScheme: 'no-preference',
       deviceScaleFactor: 1,
+      ...(Object.keys(secChHeaders).length > 0 ? { extraHTTPHeaders: secChHeaders } : {}),
     };
 
     // Add proxy if configured
