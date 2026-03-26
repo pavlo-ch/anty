@@ -159,6 +159,7 @@ function initDatabase() {
   ensureColumn('profiles', 'cloud_updated_at', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'created_by', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'warmup_url', "TEXT DEFAULT ''");
+  ensureColumn('account_state', 'team_name', "TEXT DEFAULT ''");
 
   // Seed defaults if empty
   const folderCount = db.prepare('SELECT COUNT(*) as cnt FROM folders').get();

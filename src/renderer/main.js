@@ -1512,6 +1512,13 @@ async function refreshSettingsPage() {
     if (emailEl) emailEl.textContent = state?.email || state?.displayName || 'Not logged in';
     const logoutBtn = document.getElementById('btn-settings-logout');
     if (logoutBtn) logoutBtn.disabled = !state?.isLoggedIn;
+    const teamRow = document.getElementById('settings-team-row');
+    const teamNameEl = document.getElementById('settings-team-name');
+    if (teamRow && teamNameEl) {
+      const teamName = state?.teamName || '';
+      teamRow.style.display = teamName ? '' : 'none';
+      teamNameEl.textContent = teamName || '—';
+    }
   } catch (err) {
     console.error('Failed to refresh settings page:', err);
   }

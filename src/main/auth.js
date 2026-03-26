@@ -249,7 +249,8 @@ function updateState(fields) {
     'remember_me',
     'is_logged_in',
     'last_login_at',
-    'last_logout_at'
+    'last_logout_at',
+    'team_name'
   ];
 
   for (const field of allowedFields) {
@@ -343,11 +344,13 @@ function normalizeLoginPayload(payload, fallbackEmail) {
   const email = user.email || nested.email || root.email || fallbackEmail || '';
   const displayName = user.name || user.full_name || user.fullName || user.username || nested.name || nested.full_name || '';
   const userId = user.id || user.user_id || user.userId || nested.user_id || nested.userId || nested.id || '';
+  const teamName = user.team_name || user.teamName || nested.team_name || nested.teamName || root.team_name || root.teamName || '';
 
   return {
     email: String(email || ''),
     displayName: String(displayName || ''),
     userId: String(userId || ''),
+    teamName: String(teamName || ''),
     accessToken: String(accessToken || ''),
     refreshToken: String(refreshToken || ''),
     tokenExpiresAt: String(tokenExpiresAt || '')
@@ -471,6 +474,7 @@ function getAccountState() {
     email: row.email || '',
     displayName: row.display_name || '',
     platformUserId: row.platform_user_id || '',
+    teamName: row.team_name || '',
     rememberMe,
     hasSavedPassword: Boolean(savedPassword),
     savedPassword,
@@ -559,6 +563,7 @@ function saveLoggedInState(normalized, options = {}) {
     email: normalized.email || email,
     display_name: normalized.displayName,
     platform_user_id: normalized.userId,
+    team_name: normalized.teamName || '',
     access_token: encryptSecret(normalized.accessToken),
     refresh_token: encryptSecret(normalized.refreshToken),
     token_expires_at: normalized.tokenExpiresAt,
