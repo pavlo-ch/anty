@@ -264,12 +264,45 @@ const WIN_CHROME_WEBGL_POOL = [
   { vendor: 'Google Inc. (AMD)',    renderer: 'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)',                                 screens: [{ width: 1920, height: 1080 }, { width: 1366, height: 768 }],  cpuCores: [4, 6, 8],     memoryGb: [8, 16] },
 ];
 
-const MAC_CHROME_WEBGL_POOL = [
-  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)', screens: [{ width: 1512, height: 982 }],  cpuCores: [8, 10],  memoryGb: [16, 32] },
-  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Max, Unspecified Version)', screens: [{ width: 3840, height: 2160 }], cpuCores: [10, 12], memoryGb: [32, 64] },
-  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)',     screens: [{ width: 1440, height: 900 }],  cpuCores: [8],      memoryGb: [8, 16] },
-  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 617, Unspecified Version)',          screens: [{ width: 1440, height: 900 }],  cpuCores: [4, 8],   memoryGb: [8, 16] },
+// Intel Macs — MacBook Pro/Air pre-2022
+const MAC_INTEL_WEBGL_POOL = [
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 617, Unspecified Version)',         screens: [{ width: 1440, height: 900 }, { width: 1280, height: 800 }],  cpuCores: [4],    memoryGb: [8, 16] },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) Iris Plus Graphics 640, Unspecified Version)',   screens: [{ width: 1440, height: 900 }],                                 cpuCores: [2, 4], memoryGb: [8] },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630, Unspecified Version)',         screens: [{ width: 1920, height: 1080 }, { width: 1440, height: 900 }],  cpuCores: [6, 8], memoryGb: [16, 32] },
+  { vendor: 'Google Inc. (AMD)',   renderer: 'ANGLE (AMD, AMD Radeon Pro 5500M, Unspecified Version)',                screens: [{ width: 1920, height: 1080 }, { width: 1440, height: 900 }],  cpuCores: [6, 8], memoryGb: [16] },
 ];
+
+// Apple Silicon Macs — MacBook Pro/Air M1/M2/M3 (2021+)
+const MAC_APPLE_WEBGL_POOL = [
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)',     screens: [{ width: 1440, height: 900 }, { width: 2560, height: 1600 }], cpuCores: [8],      memoryGb: [8, 16] },
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Pro, Unspecified Version)', screens: [{ width: 1512, height: 982 }, { width: 1920, height: 1200 }], cpuCores: [8, 10],  memoryGb: [16, 32] },
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)', screens: [{ width: 1512, height: 982 }],                                 cpuCores: [10],     memoryGb: [32, 64] },
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)',     screens: [{ width: 1440, height: 900 }, { width: 2560, height: 1664 }], cpuCores: [8],      memoryGb: [8, 16, 24] },
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Pro, Unspecified Version)', screens: [{ width: 1512, height: 982 }, { width: 1920, height: 1200 }], cpuCores: [10, 12], memoryGb: [16, 32] },
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)',     screens: [{ width: 1440, height: 900 }],                                 cpuCores: [8],      memoryGb: [8, 16] },
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)', screens: [{ width: 1512, height: 982 }],                                 cpuCores: [11, 12], memoryGb: [18, 36] },
+];
+
+/**
+ * Pick a Mac GPU pool automatically based on Chrome version.
+ * Chrome version ≈ release date → hints at which Macs were in use.
+ *   < 100  (pre 2022)  → almost all Intel
+ *   100-119 (2022-2023)→ mostly Intel, some Apple Silicon (30%)
+ *   120-129 (2024)     → mixed 50/50
+ *   130+   (late 2024+)→ leaning Apple Silicon (65%)
+ */
+function pickMacWebglPool(majorVersion) {
+  const v = Number(majorVersion) || 0;
+  let appleChance;
+  if (v < 100)       appleChance = 0.05;
+  else if (v < 120)  appleChance = 0.30;
+  else if (v < 130)  appleChance = 0.50;
+  else               appleChance = 0.65;
+  return Math.random() < appleChance ? MAC_APPLE_WEBGL_POOL : MAC_INTEL_WEBGL_POOL;
+}
+
+// Combined pool for backward compat (used by static profiles)
+const MAC_CHROME_WEBGL_POOL = [...MAC_INTEL_WEBGL_POOL, ...MAC_APPLE_WEBGL_POOL];
 
 /**
  * Generate a synthetic FINGERPRINT_PROFILE entry for any Chrome version on any OS.
@@ -379,7 +412,9 @@ function generateFingerprintFromUA(ua) {
   }
 
   // Unknown version — generate synthetic profile from GPU pool
-  const gpuPool = parsed.osShort === 'Mac' ? MAC_CHROME_WEBGL_POOL : WIN_CHROME_WEBGL_POOL;
+  const gpuPool = parsed.osShort === 'Mac'
+    ? pickMacWebglPool(majorVer)   // auto Intel vs Apple Silicon by Chrome version
+    : WIN_CHROME_WEBGL_POOL;
   const syntheticProfile = buildDynamicProfile(parsed.osShort, parsed.browser, majorVer, gpuPool);
   const fp = generateFingerprint(null, syntheticProfile);
   fp.userAgent = ua;
