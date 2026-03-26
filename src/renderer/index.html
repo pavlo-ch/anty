@@ -242,13 +242,19 @@
             <div class="editor-tab-content" id="tab-advanced">
               <h3 class="editor-section-title">Advanced Fingerprint</h3>
               <div class="editor-section">
-                <label class="editor-label">User Agent</label>
-                <textarea id="editor-useragent" class="editor-input" rows="2" readonly></textarea>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                  <label class="editor-label" style="margin:0">User Agent</label>
+                  <div style="display:flex;gap:6px;">
+                    <button id="btn-parse-ua" class="editor-btn-sm" title="Parse UA and apply matching hardware profile">Parse UA</button>
+                    <button id="btn-regen-fp" class="editor-btn-sm" title="Generate a completely new random fingerprint">Regenerate</button>
+                  </div>
+                </div>
+                <textarea id="editor-useragent" class="editor-input" rows="2" placeholder="Paste User-Agent here..."></textarea>
               </div>
               <div class="editor-section">
                 <label class="editor-label">WebGL Vendor / Renderer</label>
-                <input type="text" id="editor-webgl-vendor" class="editor-input" readonly />
-                <input type="text" id="editor-webgl-renderer" class="editor-input" readonly style="margin-top:6px;" />
+                <input type="text" id="editor-webgl-vendor" class="editor-input" placeholder="e.g. Google Inc. (NVIDIA)" />
+                <input type="text" id="editor-webgl-renderer" class="editor-input" style="margin-top:6px;" placeholder="e.g. ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 ...)" />
               </div>
               <div class="editor-row">
                 <div class="editor-field">

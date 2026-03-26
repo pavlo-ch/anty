@@ -150,6 +150,32 @@ const FINGERPRINT_PROFILES = [
     cpuCores: [8, 12, 16], memoryGb: [16, 32],
   },
 
+  // Windows — Chrome 142
+  {
+    os: 'Windows 11', osShort: 'Win', browser: 'Chrome', browserVersion: '142.0.0',
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+    platform: 'Win32',
+    webgl: { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 770 (0x00004680) Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+    screens: [{ width: 1920, height: 1080 }, { width: 2560, height: 1440 }],
+    cpuCores: [4, 6, 8, 12, 16], memoryGb: [8, 16, 32],
+  },
+  {
+    os: 'Windows 11', osShort: 'Win', browser: 'Chrome', browserVersion: '142.0.0',
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+    platform: 'Win32',
+    webgl: { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+    screens: [{ width: 1920, height: 1080 }, { width: 2560, height: 1440 }],
+    cpuCores: [8, 12, 16], memoryGb: [16, 32],
+  },
+  {
+    os: 'Windows 10', osShort: 'Win', browser: 'Chrome', browserVersion: '142.0.0',
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+    platform: 'Win32',
+    webgl: { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon RX 6600 XT Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+    screens: [{ width: 1920, height: 1080 }, { width: 1366, height: 768 }],
+    cpuCores: [4, 6, 8], memoryGb: [8, 16],
+  },
+
   // Linux — Chrome
   {
     os: 'Linux', osShort: 'Linux', browser: 'Chrome', browserVersion: '146.0.0',
@@ -224,12 +250,72 @@ function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function generateFingerprint(customUA) {
+/**
+ * Parse a User-Agent string and return { osShort, browser, version, mobile }
+ */
+function parseUA(ua) {
+  if (!ua) return null;
+  const s = ua.trim();
+  let mobile = /Mobile|Android|iPhone|iPad/i.test(s);
+
+  // OS detection
+  let osShort = 'Win';
+  if (/iPhone/i.test(s)) osShort = 'iOS';
+  else if (/iPad/i.test(s)) osShort = 'iOS';
+  else if (/Android/i.test(s)) osShort = 'Android';
+  else if (/Macintosh|Mac OS X/i.test(s)) osShort = 'Mac';
+  else if (/X11|Linux/i.test(s)) osShort = 'Linux';
+  else if (/Windows/i.test(s)) osShort = 'Win';
+
+  // Browser detection (order matters — Edge before Chrome)
+  let browser = 'Chrome';
+  let version = '';
+  const edgM = s.match(/Edg\/(\d+)/i);
+  const ffM = s.match(/Firefox\/(\d+)/i);
+  const crsM = s.match(/CriOS\/(\d+)/i);
+  const chrM = s.match(/Chrome\/(\d+)/i);
+  const safM = s.match(/Version\/(\d+)/i);
+  if (edgM) { browser = 'Edge'; version = edgM[1]; }
+  else if (ffM) { browser = 'Firefox'; version = ffM[1]; }
+  else if (crsM) { browser = 'Chrome'; version = crsM[1]; mobile = true; }
+  else if (chrM) { browser = 'Chrome'; version = chrM[1]; }
+  else if (safM) { browser = 'Safari'; version = safM[1]; }
+
+  return { osShort, browser, version: `${version}.0.0`, mobile };
+}
+
+/**
+ * Generate a fingerprint from an arbitrary UA string.
+ * Finds the best matching profile (same OS + browser), overrides the UA.
+ */
+function generateFingerprintFromUA(ua) {
+  const parsed = parseUA(ua);
+  if (!parsed) return generateFingerprint();
+
+  const candidates = FINGERPRINT_PROFILES.filter(p =>
+    p.osShort === parsed.osShort &&
+    p.browser === parsed.browser &&
+    !p.mobile === !parsed.mobile
+  );
+
+  const pool = candidates.length > 0 ? candidates : FINGERPRINT_PROFILES.filter(p => !p.mobile);
+  const baseProfile = randomItem(pool);
+
+  // Build fingerprint with matched profile but override UA
+  const fp = generateFingerprint(null, baseProfile);
+  fp.userAgent = ua; // exact UA from the account
+  fp.browserVersion = parsed.version;
+  return fp;
+}
+
+function generateFingerprint(customUA, _profileOverride) {
   // Pick a random fingerprint profile (excluding mobile for desktop browser)
   const desktopProfiles = FINGERPRINT_PROFILES.filter(p => !p.mobile);
-  const profile = customUA
-    ? FINGERPRINT_PROFILES.find(p => p.ua === customUA) || randomItem(desktopProfiles)
-    : randomItem(desktopProfiles);
+  const profile = _profileOverride
+    ? _profileOverride
+    : customUA
+      ? FINGERPRINT_PROFILES.find(p => p.ua === customUA) || randomItem(desktopProfiles)
+      : randomItem(desktopProfiles);
 
   const screen = randomItem(profile.screens);
   const fonts = randomItem(FONT_SETS);
@@ -591,6 +677,8 @@ function buildInjectionScript(fingerprint) {
 
 module.exports = {
   generateFingerprint,
+  generateFingerprintFromUA,
+  parseUA,
   buildInjectionScript,
   FINGERPRINT_PROFILES,
   getLocaleByCountry,

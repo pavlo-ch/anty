@@ -3,6 +3,7 @@ const db = require('./database');
 const launcher = require('./launcher');
 const auth = require('./auth');
 const profileSync = require('./profile-sync');
+const { generateFingerprint, generateFingerprintFromUA, parseUA: parseFpUA, FINGERPRINT_PROFILES } = require('./fingerprint');
 
 function requireLoggedIn() {
   if (!auth.isLoggedIn()) {
@@ -258,6 +259,46 @@ function registerIpcHandlers() {
   ipcMain.handle('account:events', (_, limit) => auth.listAccountEvents(limit));
   ipcMain.handle('account:login', (_, payload) => auth.login(payload || {}));
   ipcMain.handle('account:logout', (_, payload) => auth.logout(payload || {}));
+
+  // ---- FINGERPRINT TOOLS ----
+  // Parse a UA string → return best-matching hardware fields
+  ipcMain.handle('fingerprint:parseUA', (_, ua) => {
+    const parsed = parseFpUA(ua);
+    if (!parsed) return null;
+    // Find best matching profile
+    const candidates = FINGERPRINT_PROFILES.filter(p =>
+      p.osShort === parsed.osShort &&
+      p.browser === parsed.browser &&
+      !p.mobile === !parsed.mobile
+    );
+    const pool = candidates.length > 0 ? candidates : FINGERPRINT_PROFILES.filter(p => !p.mobile);
+    const idx = Math.floor(Math.random() * pool.length);
+    const profile = pool[idx];
+    const screen = profile.screens[Math.floor(Math.random() * profile.screens.length)];
+    const cpuCores = profile.cpuCores[Math.floor(Math.random() * profile.cpuCores.length)];
+    const memoryGb = profile.memoryGb[Math.floor(Math.random() * profile.memoryGb.length)];
+    return {
+      webglVendor: profile.webgl.vendor,
+      webglRenderer: profile.webgl.renderer,
+      cpuCores,
+      memoryGb,
+      screenWidth: screen.width,
+      screenHeight: screen.height,
+      osShort: parsed.osShort,
+      browser: parsed.browser,
+      version: parsed.version,
+    };
+  });
+
+  // Regenerate full fingerprint for a profile (keeps proxy/locale)
+  ipcMain.handle('fingerprint:regenerate', (_, profileId) => {
+    requireLoggedIn();
+    const profile = db.getProfile(Number(profileId));
+    if (!profile) throw new Error('Profile not found');
+    const newFp = generateFingerprint();
+    db.updateProfile(Number(profileId), { fingerprint: JSON.stringify(newFp) });
+    return newFp;
+  });
 }
 
 module.exports = { registerIpcHandlers };

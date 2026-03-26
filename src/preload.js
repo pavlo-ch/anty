@@ -49,6 +49,10 @@ contextBridge.exposeInMainWorld('api', {
   closeWindow: () => ipcRenderer.send('window:close'),
   openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
 
+  // Fingerprint tools
+  parseUA: (ua) => ipcRenderer.invoke('fingerprint:parseUA', ua),
+  regenerateFingerprint: (profileId) => ipcRenderer.invoke('fingerprint:regenerate', profileId),
+
   // App updates
   getUpdateConfigStatus: () => ipcRenderer.invoke('app:update:status'),
   startupUpdateCheck: () => ipcRenderer.invoke('app:update:startup-check'),
