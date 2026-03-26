@@ -355,7 +355,8 @@ function updateProfile(id, data) {
     'notes',
     'start_page',
     'warmup_url',
-    'status'
+    'status',
+    'created_by'
   ];
   
   for (const field of allowedFields) {
