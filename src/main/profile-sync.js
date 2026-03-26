@@ -350,7 +350,9 @@ function normalizeProfileForPayload(profile) {
     startPage: profile.start_page || 'https://whoer.net',
     createdAt: profile.created_at || '',
     modifiedAt: profile.modified_at || '',
-    cloudUpdatedAt: profile.cloud_updated_at || ''
+    cloudUpdatedAt: profile.cloud_updated_at || '',
+    // Pass creator name so server preserves it (e.g. when created via API with custom created_by)
+    createdByName: profile.created_by || '',
   };
 }
 

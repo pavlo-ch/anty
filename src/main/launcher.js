@@ -578,11 +578,13 @@ async function launchProfile(profileId, mainWindow) {
     }
 
     // ── ELECTRON / GUI MODE ─────────────────────────────────────────────────
+    // chromiumSandbox: false — prevents Chrome crash on macOS when closing from Dock
+    // (sandbox + Playwright's persistent context causes SIGTERM crash on macOS 13+)
     const context = await chromium.launchPersistentContext(userDataDir, {
       ...launchOptions,
       ...contextOptions,
-      chromiumSandbox: true,
-      ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
+      chromiumSandbox: false,
+      ignoreDefaultArgs: ['--enable-automation'],
     });
 
     await context.addInitScript(injectionScript);
@@ -600,9 +602,10 @@ async function launchProfile(profileId, mainWindow) {
     }
 
     context.on('close', async () => {
-      await saveCookies(context);
+      // Save cookies defensively — context may already be partially closed
+      try { await saveCookies(context); } catch {}
       runningBrowsers.delete(profileId);
-      updateProfile(profileId, { status: 'ready' });
+      try { updateProfile(profileId, { status: 'ready' }); } catch {}
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('browser:status', { profileId, status: 'ready' });
       }

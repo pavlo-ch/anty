@@ -7,6 +7,7 @@ let groups = [];
 let tags = [];
 let selectedProfileId = null;
 let runningProfiles = new Set();
+let pendingProfiles = new Set(); // profiles being launched/stopped (prevents double-click)
 let accountState = null;
 let mandatoryUpdateRequired = false;
 let mandatoryUpdateOpenInProgress = false;
@@ -68,6 +69,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   void backfillProxyLocaleForExistingProfiles();
   void runProfileCloudSync({ silent: true });
   await refreshAccountPage();
+
+  // Auto-refresh: reload local profiles every 15s (picks up API-created profiles and team changes)
+  setInterval(async () => {
+    await loadData();
+    renderProfilesList(document.getElementById('search-input')?.value || '');
+  }, 15000);
+
+  // Auto cloud sync: pull from cloud every 60s
+  setInterval(() => {
+    void runProfileCloudSync({ silent: true });
+  }, 60000);
 });
 
 async function renderAppVersion() {
@@ -815,6 +827,9 @@ async function syncProfileLocaleFromProxy(profileId, options = {}) {
 
 // ===== PROFILE LAUNCH =====
 async function launchProfile(id) {
+  if (pendingProfiles.has(id) || runningProfiles.has(id)) return;
+  pendingProfiles.add(id);
+  renderProfilesList(document.getElementById('search-input')?.value || '');
   try {
     const result = await window.api.launchProfile(id);
     if (result.success) {
@@ -824,10 +839,16 @@ async function launchProfile(id) {
     }
   } catch (err) {
     showToast('Failed to launch: ' + err.message, 'error');
+  } finally {
+    pendingProfiles.delete(id);
+    renderProfilesList(document.getElementById('search-input')?.value || '');
   }
 }
 
 async function stopProfile(id) {
+  if (pendingProfiles.has(id)) return;
+  pendingProfiles.add(id);
+  renderProfilesList(document.getElementById('search-input')?.value || '');
   try {
     const result = await window.api.stopProfile(id);
     if (result.success) {
@@ -837,6 +858,9 @@ async function stopProfile(id) {
     }
   } catch (err) {
     showToast('Failed to stop: ' + err.message, 'error');
+  } finally {
+    pendingProfiles.delete(id);
+    renderProfilesList(document.getElementById('search-input')?.value || '');
   }
 }
 
@@ -1156,7 +1180,9 @@ function renderProfilesList(searchTerm = '') {
     let fp = {};
     try { fp = JSON.parse(p.fingerprint || '{}'); } catch { fp = {}; }
     const isActive = p.id === selectedProfileId;
-    const isRunning = runningProfiles.has(p.id);
+    // isRunning: local tracking OR profile status from DB (covers team-member profiles running elsewhere)
+    const isRunning = runningProfiles.has(p.id) || p.status === 'running';
+    const isPending = pendingProfiles.has(p.id);
     const time = formatTime(p.modified_at);
     const systemLabel = getProfileSystemLabel(fp);
     const countryFlag = fp.locale?.flag || '';
@@ -1174,11 +1200,14 @@ function renderProfilesList(searchTerm = '') {
                     title="Delete profile">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
             </button>
-            <button class="profile-launch-btn ${isRunning ? 'running' : ''}" 
-                    onclick="event.stopPropagation(); ${isRunning ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}" 
-                    title="${isRunning ? 'Stop' : 'Launch'}">
-              ${isRunning 
-                ? '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>' 
+            <button class="profile-launch-btn ${isRunning ? 'running' : ''} ${isPending ? 'pending' : ''}"
+                    onclick="event.stopPropagation(); ${isPending ? '' : isRunning ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
+                    title="${isPending ? 'Please wait...' : isRunning ? 'Stop' : 'Launch'}"
+                    ${isPending ? 'disabled' : ''}>
+              ${isPending
+                ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>'
+                : isRunning
+                ? '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
                 : '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>'}
             </button>
           </div>

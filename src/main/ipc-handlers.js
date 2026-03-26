@@ -240,14 +240,33 @@ function registerIpcHandlers() {
   });
 
   // ---- BROWSER ----
-  ipcMain.handle('browser:launch', (event, id) => {
+  ipcMain.handle('browser:launch', async (event, id) => {
     requireLoggedIn();
+    // Check if profile is already running on another team member's machine (status in DB)
+    const profile = db.getProfile(id);
+    if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id)) {
+      return { success: false, error: 'Цей профіль вже запущено на іншому пристрої команди' };
+    }
     const mainWindow = BrowserWindow.fromWebContents(event.sender);
-    return launcher.launchProfile(id, mainWindow);
+    const result = await launcher.launchProfile(id, mainWindow);
+    if (result.success) {
+      // Immediately push status=running to cloud so team members see it
+      const updated = db.getProfile(id);
+      if (updated) profileSync.onLocalProfileUpsert(updated);
+      profileSync.scheduleSync();
+    }
+    return result;
   });
-  ipcMain.handle('browser:stop', (_, id) => {
+  ipcMain.handle('browser:stop', async (_, id) => {
     requireLoggedIn();
-    return launcher.stopProfile(id);
+    const result = await launcher.stopProfile(id);
+    if (result.success) {
+      // Immediately push status=ready to cloud
+      const updated = db.getProfile(id);
+      if (updated) profileSync.onLocalProfileUpsert(updated);
+      profileSync.scheduleSync();
+    }
+    return result;
   });
   ipcMain.handle('browser:running', () => {
     requireLoggedIn();
