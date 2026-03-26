@@ -251,6 +251,61 @@ function randomInt(min, max) {
 }
 
 /**
+ * Windows Chrome hardware templates (GPU pools per tier).
+ * Used when generating profiles for any Chrome version dynamically.
+ */
+const WIN_CHROME_WEBGL_POOL = [
+  { vendor: 'Google Inc. (Intel)',  renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 770 (0x00004680) Direct3D11 vs_5_0 ps_5_0, D3D11)',           screens: [{ width: 1920, height: 1080 }, { width: 2560, height: 1440 }], cpuCores: [4, 6, 8, 12], memoryGb: [8, 16] },
+  { vendor: 'Google Inc. (Intel)',  renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 730 (0x00004692) Direct3D11 vs_5_0 ps_5_0, D3D11)',           screens: [{ width: 1920, height: 1080 }, { width: 1366, height: 768 }],  cpuCores: [4, 6, 8],     memoryGb: [8, 16] },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Direct3D11 vs_5_0 ps_5_0, D3D11)',                        screens: [{ width: 1920, height: 1080 }, { width: 2560, height: 1440 }], cpuCores: [8, 12, 16],   memoryGb: [16, 32] },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)',                        screens: [{ width: 1920, height: 1080 }],                                 cpuCores: [8, 12],       memoryGb: [16, 32] },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)',                  screens: [{ width: 1920, height: 1080 }, { width: 1366, height: 768 }],  cpuCores: [6, 8, 12],    memoryGb: [8, 16] },
+  { vendor: 'Google Inc. (AMD)',    renderer: 'ANGLE (AMD, AMD Radeon RX 6600 XT Direct3D11 vs_5_0 ps_5_0, D3D11)',                             screens: [{ width: 1920, height: 1080 }],                                 cpuCores: [6, 8],        memoryGb: [16, 32] },
+  { vendor: 'Google Inc. (AMD)',    renderer: 'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)',                                 screens: [{ width: 1920, height: 1080 }, { width: 1366, height: 768 }],  cpuCores: [4, 6, 8],     memoryGb: [8, 16] },
+];
+
+const MAC_CHROME_WEBGL_POOL = [
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M1 Max, Unspecified Version)', screens: [{ width: 1512, height: 982 }],  cpuCores: [8, 10],  memoryGb: [16, 32] },
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M2 Max, Unspecified Version)', screens: [{ width: 3840, height: 2160 }], cpuCores: [10, 12], memoryGb: [32, 64] },
+  { vendor: 'Google Inc. (Apple)', renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)',     screens: [{ width: 1440, height: 900 }],  cpuCores: [8],      memoryGb: [8, 16] },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 617, Unspecified Version)',          screens: [{ width: 1440, height: 900 }],  cpuCores: [4, 8],   memoryGb: [8, 16] },
+];
+
+/**
+ * Generate a synthetic FINGERPRINT_PROFILE entry for any Chrome version on any OS.
+ * Used when the exact version isn't in the static list.
+ */
+function buildDynamicProfile(osShort, browser, versionStr, pool) {
+  const hw = randomItem(pool);
+  const osNames = {
+    Win:     `Windows ${versionStr >= '130' ? '11' : '10'}`,
+    Mac:     'Mac OS X 10.15',
+    Linux:   'Linux',
+    Android: 'Android',
+    iOS:     'iPhone OS',
+  };
+  const uaTemplates = {
+    Win:   `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionStr}.0 Safari/537.36`,
+    Mac:   `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionStr}.0 Safari/537.36`,
+    Linux: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${versionStr}.0 Safari/537.36`,
+  };
+  const platforms = { Win: 'Win32', Mac: 'MacIntel', Linux: 'Linux x86_64' };
+  return {
+    os: osNames[osShort] || osShort,
+    osShort,
+    browser,
+    browserVersion: `${versionStr}.0.0`,
+    ua: uaTemplates[osShort] || uaTemplates.Win,
+    platform: platforms[osShort] || 'Win32',
+    webgl: { vendor: hw.vendor, renderer: hw.renderer },
+    screens: hw.screens,
+    cpuCores: hw.cpuCores,
+    memoryGb: hw.memoryGb,
+    _dynamic: true,
+  };
+}
+
+/**
  * Parse a User-Agent string and return { osShort, browser, version, mobile }
  */
 function parseUA(ua) {
@@ -286,24 +341,48 @@ function parseUA(ua) {
 
 /**
  * Generate a fingerprint from an arbitrary UA string.
- * Finds the best matching profile (same OS + browser), overrides the UA.
+ * Finds the best matching profile (same OS + browser + version), overrides the UA.
+ * For unknown Chrome versions — generates a realistic synthetic hardware profile.
  */
 function generateFingerprintFromUA(ua) {
   const parsed = parseUA(ua);
   if (!parsed) return generateFingerprint();
 
-  const candidates = FINGERPRINT_PROFILES.filter(p =>
+  // Try exact profile match first
+  const exactMatch = FINGERPRINT_PROFILES.find(p => p.ua === ua);
+  if (exactMatch) return generateFingerprint(null, exactMatch);
+
+  // Try same OS + browser + same major version
+  const majorVer = parsed.version.split('.')[0];
+  const sameVersion = FINGERPRINT_PROFILES.filter(p =>
+    p.osShort === parsed.osShort &&
+    p.browser === parsed.browser &&
+    p.browserVersion.startsWith(majorVer + '.')
+  );
+  if (sameVersion.length > 0) {
+    const fp = generateFingerprint(null, randomItem(sameVersion));
+    fp.userAgent = ua;
+    return fp;
+  }
+
+  // Same OS + browser (any version) — use hardware, override UA
+  const sameOsBrowser = FINGERPRINT_PROFILES.filter(p =>
     p.osShort === parsed.osShort &&
     p.browser === parsed.browser &&
     !p.mobile === !parsed.mobile
   );
+  if (sameOsBrowser.length > 0) {
+    const fp = generateFingerprint(null, randomItem(sameOsBrowser));
+    fp.userAgent = ua;
+    fp.browserVersion = parsed.version;
+    return fp;
+  }
 
-  const pool = candidates.length > 0 ? candidates : FINGERPRINT_PROFILES.filter(p => !p.mobile);
-  const baseProfile = randomItem(pool);
-
-  // Build fingerprint with matched profile but override UA
-  const fp = generateFingerprint(null, baseProfile);
-  fp.userAgent = ua; // exact UA from the account
+  // Unknown version — generate synthetic profile from GPU pool
+  const gpuPool = parsed.osShort === 'Mac' ? MAC_CHROME_WEBGL_POOL : WIN_CHROME_WEBGL_POOL;
+  const syntheticProfile = buildDynamicProfile(parsed.osShort, parsed.browser, majorVer, gpuPool);
+  const fp = generateFingerprint(null, syntheticProfile);
+  fp.userAgent = ua;
   fp.browserVersion = parsed.version;
   return fp;
 }
