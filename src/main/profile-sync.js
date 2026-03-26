@@ -375,9 +375,12 @@ function normalizeCloudProfile(item) {
       team_id: String(root.teamId || '').trim(),
       cloud_updated_at: String(root.updatedAt || root.cloudUpdatedAt || '').trim(),
       // Map cloud created_by_name → local created_by
+      // Note: pull response returns createdBy as object {id, email, name} — extract .name
       created_by: String(
-        root.created_by_name || root.createdByName ||
-        root.created_by      || root.createdBy     || ''
+        root.created_by_name ||
+        root.createdByName   ||
+        (root.createdBy && typeof root.createdBy === 'object' ? root.createdBy.name : root.createdBy) ||
+        root.created_by      || ''
       ).trim(),
     },
     deleted: Boolean(root.deleted || root.isDeleted)
