@@ -208,6 +208,37 @@ function setupEventListeners() {
     }
   });
 
+  // Advanced tab — Parse UA button
+  document.getElementById('btn-parse-ua')?.addEventListener('click', () => {
+    const ua = document.getElementById('editor-useragent')?.value?.trim();
+    if (!ua) return;
+    // Ask main process to parse UA and return matching fingerprint fields
+    window.api?.parseUA?.(ua).then(parsed => {
+      if (!parsed) return;
+      if (parsed.webglVendor) document.getElementById('editor-webgl-vendor').value = parsed.webglVendor;
+      if (parsed.webglRenderer) document.getElementById('editor-webgl-renderer').value = parsed.webglRenderer;
+      if (parsed.cpuCores) document.getElementById('editor-cpu-cores').value = parsed.cpuCores;
+      if (parsed.memoryGb) document.getElementById('editor-memory-gb').value = parsed.memoryGb;
+      if (parsed.screenWidth) document.getElementById('editor-screen-w').value = parsed.screenWidth;
+      if (parsed.screenHeight) document.getElementById('editor-screen-h').value = parsed.screenHeight;
+      scheduleAutoSave(300);
+    }).catch(() => {});
+  });
+
+  // Advanced tab — Regenerate fingerprint button
+  document.getElementById('btn-regen-fp')?.addEventListener('click', async () => {
+    if (!selectedProfileId) return;
+    const newFp = await window.api?.regenerateFingerprint?.(selectedProfileId);
+    if (!newFp) return;
+    // Reload editor with new fingerprint
+    const profile = profiles.find(p => p.id === selectedProfileId);
+    if (profile) {
+      profile.fingerprint = JSON.stringify(newFp);
+      loadProfileIntoEditor(profile);
+      scheduleAutoSave(300);
+    }
+  });
+
   // Cookies — browse files click
   document.getElementById('cookies-browse-btn')?.addEventListener('click', () => {
     document.getElementById('cookies-file-input')?.click();
@@ -262,27 +293,18 @@ function setupEventListeners() {
     renderProfilesList(e.target.value);
   });
 
-  // Platform selector → update start_page + tags + trigger save
+  // Platform selector → update start_page only
   document.getElementById('editor-platform')?.addEventListener('change', (e) => {
     const platform = e.target.value;
-    const platformData = {
-      instagram: { url: 'https://www.instagram.com', tag: 'instagram' },
-      facebook:  { url: 'https://www.facebook.com',  tag: 'facebook'  },
-      linkedin:  { url: 'https://www.linkedin.com',  tag: 'linkedin'  },
+    const platformUrls = {
+      instagram: 'https://www.instagram.com',
+      facebook:  'https://www.facebook.com',
+      linkedin:  'https://www.linkedin.com',
     };
-    const data = platformData[platform];
-    if (data) {
+    const url = platformUrls[platform];
+    if (url) {
       const startPageEl = document.getElementById('editor-start-page');
-      if (startPageEl) startPageEl.value = data.url;
-      // Add platform tag if not already present
-      const tagsEl = document.getElementById('editor-tags');
-      if (tagsEl) {
-        const existing = tagsEl.value.split(',').map(t => t.trim()).filter(Boolean);
-        const platformTags = ['instagram', 'facebook', 'linkedin'];
-        const filtered = existing.filter(t => !platformTags.includes(t));
-        filtered.unshift(data.tag);
-        tagsEl.value = filtered.join(', ');
-      }
+      if (startPageEl) startPageEl.value = url;
     }
     scheduleAutoSave(120);
   });
@@ -357,11 +379,17 @@ function setupEventListeners() {
     'editor-screen-h',
     'editor-language',
     'editor-timezone',
+    'editor-webgl-vendor',
+    'editor-webgl-renderer',
   ];
   fpInputIds.forEach((id) => {
     document.getElementById(id)?.addEventListener('input', () => scheduleAutoSave(600));
     document.getElementById(id)?.addEventListener('change', () => scheduleAutoSave(150));
   });
+
+  // UA textarea — save on change
+  document.getElementById('editor-useragent')?.addEventListener('input', () => scheduleAutoSave(800));
+  document.getElementById('editor-useragent')?.addEventListener('change', () => scheduleAutoSave(300));
 
   document.getElementById('cookies-textarea')?.addEventListener('input', () => scheduleAutoSave(800));
   document.getElementById('cookies-textarea')?.addEventListener('change', () => scheduleAutoSave(120));
@@ -614,6 +642,14 @@ function collectProfileEditorData() {
   if (language) fp = { ...fp, locale: { ...fp.locale, language } };
   if (timezone) fp = { ...fp, locale: { ...fp.locale, timezone } };
 
+  // UA / WebGL overrides from Advanced tab
+  const customUA = document.getElementById('editor-useragent')?.value?.trim();
+  const webglVendor = document.getElementById('editor-webgl-vendor')?.value?.trim();
+  const webglRenderer = document.getElementById('editor-webgl-renderer')?.value?.trim();
+  if (customUA) fp = { ...fp, userAgent: customUA };
+  if (webglVendor) fp = { ...fp, webgl: { ...fp.webgl, vendor: webglVendor } };
+  if (webglRenderer) fp = { ...fp, webgl: { ...fp.webgl, renderer: webglRenderer } };
+
   data.fingerprint = JSON.stringify(fp);
   return data;
 }
@@ -679,9 +715,9 @@ async function persistSelectedProfile(options = {}) {
 async function createNewProfile() {
   try {
     const platformDefaults = {
-      instagram: { start_page: 'https://www.instagram.com', tags: ['instagram'] },
-      linkedin: { start_page: 'https://www.linkedin.com', tags: ['linkedin'] },
-      facebook: { start_page: 'https://www.facebook.com', tags: ['facebook'] },
+      instagram: { start_page: 'https://www.instagram.com' },
+      linkedin:  { start_page: 'https://www.linkedin.com' },
+      facebook:  { start_page: 'https://www.facebook.com' },
     };
     const defaults = platformDefaults[activePlatformTab] || {};
 
