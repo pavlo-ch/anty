@@ -115,8 +115,16 @@ route('GET', '/api/profiles/:id', async (_req, res, { id }) => {
   ok(res, { profile: { ...profile, wsEndpoint } });
 });
 
+// Platform → start_page mapping
+const PLATFORM_URLS = {
+  facebook:  'https://www.facebook.com',
+  instagram: 'https://www.instagram.com',
+  linkedin:  'https://www.linkedin.com',
+};
+
 // POST /api/profiles — create profile
-// Body: { name, proxy, start_page, warmup_url, userAgent }
+// Body: { name, platform, proxy, start_page, warmup_url, userAgent, cookies, created_by }
+//   platform: "facebook" | "instagram" | "linkedin"  (sets start_page automatically)
 //   proxy: "http://host:port:user:pass" or { type, host, port, username, password }
 route('POST', '/api/profiles', async (req, res, _params) => {
   let body;
@@ -124,6 +132,10 @@ route('POST', '/api/profiles', async (req, res, _params) => {
   catch { return badRequest(res, 'Invalid JSON body'); }
 
   const name = (body.name || '').trim() || `Profile ${Date.now()}`;
+
+  // Resolve start_page: platform shorthand takes priority, then explicit start_page
+  const platformKey = String(body.platform || '').toLowerCase();
+  const startPage = PLATFORM_URLS[platformKey] || body.start_page || 'https://whoer.net';
 
   // Parse proxy from string shorthand or object
   let proxyFields = {};
@@ -140,14 +152,18 @@ route('POST', '/api/profiles', async (req, res, _params) => {
     }
   }
 
-  const fingerprint = generateFingerprint(body.userAgent || null);
+  const { generateFingerprintFromUA } = require('../main/fingerprint');
+  const fingerprint = body.userAgent
+    ? generateFingerprintFromUA(body.userAgent)
+    : generateFingerprint();
 
   const profile = createProfile({
     name,
     fingerprint,
-    start_page: body.start_page || 'https://whoer.net',
+    start_page: startPage,
     warmup_url: body.warmup_url || '',
     cookies: body.cookies ? JSON.stringify(body.cookies) : '[]',
+    created_by: body.created_by || '',
     ...proxyFields,
   });
 
@@ -212,6 +228,35 @@ route('GET', '/api/profiles/:id/ws', async (_req, res, { id }) => {
   const wsEndpoint = launcher.getWsEndpoint(Number(id));
   if (!wsEndpoint) return notFound(res, `Profile ${id} is not running`);
   ok(res, { wsEndpoint });
+});
+
+// POST /api/proxy/check — check proxy connectivity and get geo info
+// Body: { proxy: "http://host:port:user:pass" } or { type, host, port, username, password }
+route('POST', '/api/proxy/check', async (req, res, _params) => {
+  let body;
+  try { body = await readBody(req); }
+  catch { return badRequest(res, 'Invalid JSON body'); }
+
+  const raw = body.proxy || body;
+  const p = typeof raw === 'string' ? parseProxyString(raw) : raw;
+  if (!p || !p.host || !p.port) {
+    return badRequest(res, 'Proxy required: "proxy": "http://host:port:user:pass"');
+  }
+
+  const proxyData = {
+    type:     p.type     || p.proxy_type     || 'http',
+    host:     p.host     || p.proxy_host     || '',
+    port:     p.port     || p.proxy_port     || 0,
+    username: p.username || p.proxy_username || '',
+    password: p.password || p.proxy_password || '',
+  };
+
+  try {
+    const result = await launcher.checkProxy(proxyData);
+    ok(res, result);
+  } catch (err) {
+    serverError(res, err);
+  }
 });
 
 // GET /api/running — list all running profile IDs + their wsEndpoints
