@@ -353,6 +353,8 @@ function setupEventListeners() {
     'editor-group',
     'editor-import-expired'
   ];
+
+  document.getElementById('editor-created-by')?.addEventListener('input', () => scheduleAutoSave(600));
   autoSaveOnChangeIds.forEach((id) => {
     document.getElementById(id)?.addEventListener('change', () => scheduleAutoSave(120));
   });
@@ -581,7 +583,8 @@ function collectProfileEditorData() {
     warmup_url: document.getElementById('editor-warmup-url')?.value || '',
     notes: document.getElementById('profile-notes').value,
     proxy_id: Number.isFinite(parsedProxyId) ? parsedProxyId : null,
-    tags: parseTagsInput(document.getElementById('editor-tags')?.value || '')
+    tags: parseTagsInput(document.getElementById('editor-tags')?.value || ''),
+    created_by: (document.getElementById('editor-created-by')?.value || '').trim()
   };
 
   const cookiesText = document.getElementById('cookies-textarea').value;
@@ -1280,6 +1283,8 @@ async function loadProfileEditor(id) {
     if (warmupEl) warmupEl.value = profile.warmup_url || '';
     document.getElementById('editor-tags').value = formatTagsInput(profile.tags);
     populateTagSuggestions();
+    const createdByEl = document.getElementById('editor-created-by');
+    if (createdByEl) createdByEl.value = profile.created_by || '';
     
     populateFolderSelect(profile.folder_id);
     populateGroupSelect(profile.group_id);

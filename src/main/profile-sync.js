@@ -371,7 +371,12 @@ function normalizeCloudProfile(item) {
       start_page: String(root.startPage || root.start_page || 'https://whoer.net'),
       remote_id: String(root.remoteId || root.id || '').trim(),
       team_id: String(root.teamId || '').trim(),
-      cloud_updated_at: String(root.updatedAt || root.cloudUpdatedAt || '').trim()
+      cloud_updated_at: String(root.updatedAt || root.cloudUpdatedAt || '').trim(),
+      // Map cloud created_by_name → local created_by
+      created_by: String(
+        root.created_by_name || root.createdByName ||
+        root.created_by      || root.createdBy     || ''
+      ).trim(),
     },
     deleted: Boolean(root.deleted || root.isDeleted)
   };
