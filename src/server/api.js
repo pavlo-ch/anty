@@ -138,18 +138,21 @@ route('POST', '/api/profiles', async (req, res, _params) => {
   const platformKey = String(body.platform || '').toLowerCase();
   const startPage = PLATFORM_URLS[platformKey] || body.start_page || 'https://whoer.net';
 
-  // Parse proxy from string shorthand or object
+  // Parse proxy → create a proxy record → get proxy_id
   let proxyFields = {};
   if (body.proxy) {
     const p = typeof body.proxy === 'string' ? parseProxyString(body.proxy) : body.proxy;
-    if (p) {
-      proxyFields = {
-        proxy_type: p.type || 'http',
-        proxy_host: p.host || '',
-        proxy_port: Number(p.port) || 0,
-        proxy_username: p.username || '',
-        proxy_password: p.password || '',
-      };
+    if (p && p.host) {
+      const proxy = createProxy({
+        type: p.type || 'http',
+        host: p.host,
+        port: Number(p.port) || 0,
+        username: p.username || '',
+        password: p.password || '',
+        name: p.name || p.host,
+        ip_change_link: '',
+      });
+      proxyFields = { proxy_id: proxy.id };
     }
   }
 

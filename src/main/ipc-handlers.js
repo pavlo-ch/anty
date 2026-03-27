@@ -37,11 +37,12 @@ function toCloudSyncError(prefix, reason, status) {
 
 function restoreProfilePatch(snapshot) {
   if (!snapshot) return {};
+  // proxy_id is intentionally excluded: proxy is local-only and not synced to cloud,
+  // so a cloud-push failure must never roll back a proxy change the user just made.
   return {
     name: snapshot.name,
     folder_id: snapshot.folder_id,
     group_id: snapshot.group_id,
-    proxy_id: snapshot.proxy_id,
     remote_id: snapshot.remote_id,
     team_id: snapshot.team_id,
     cloud_updated_at: snapshot.cloud_updated_at,
@@ -120,8 +121,14 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('profile:update', async (_, id, data) => {
     requireLoggedIn();
+
+    // proxy_id is local-only — never blocked by cloud, never rolled back on cloud failure.
+    // Check whether the update contains fields that must be cloud-synced.
+    const { proxy_id: _proxyId, ...cloudFields } = data || {};
+    const hasCloudFields = Object.keys(cloudFields).length > 0;
+
     const cloudRequired = profileSync.isCloudProfilesRequired();
-    if (cloudRequired) {
+    if (cloudRequired && hasCloudFields) {
       const ready = await profileSync.ensureCloudReady();
       if (!ready.ok) {
         throw new Error(toCloudSyncError('Cloud sync required', ready.reason, ready?.result?.pull?.status || ready?.result?.push?.status));
@@ -141,9 +148,11 @@ function registerIpcHandlers() {
     const finalProfile = hasProxyField
       ? ((await launcher.syncProfileLocaleFromProxy(id))?.profile || updated)
       : updated;
-    if (cloudRequired) {
+
+    if (cloudRequired && hasCloudFields) {
       const pushed = await profileSync.pushProfileUpsertNow(finalProfile);
       if (!pushed.ok) {
+        // Rollback cloud-synced fields only; proxy_id is excluded from restoreProfilePatch
         db.updateProfile(id, restoreProfilePatch(before));
         throw new Error(toCloudSyncError('Save blocked', pushed.reason, pushed.status));
       }
