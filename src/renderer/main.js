@@ -395,7 +395,6 @@ function setupEventListeners() {
   document.getElementById('cookies-textarea')?.addEventListener('change', () => scheduleAutoSave(120));
 
   // Import proxy from clipboard
-  document.getElementById('btn-import-proxy')?.addEventListener('click', importProxyFromClipboard);
 
   // Copy profile name to clipboard
   document.getElementById('btn-copy-profile')?.addEventListener('click', copyProfileName);
@@ -1097,6 +1096,7 @@ async function saveProxy() {
       const proxy = await window.api.createProxy(proxyData);
       await window.api.updateProfile(selectedProfileId, { proxy_id: proxy.id });
     }
+    showToast('Proxy updated', 'success');
   } catch (err) {
     showToast('Failed to save proxy: ' + err.message, 'error');
   }
