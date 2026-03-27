@@ -327,26 +327,7 @@ function setupEventListeners() {
   // Check proxy
   document.getElementById('btn-check-proxy').addEventListener('click', checkCurrentProxy);
 
-  // Proxy select change — load proxy data into fields
-  document.getElementById('editor-proxy-select').addEventListener('change', (e) => {
-    const proxyId = parseInt(e.target.value);
-    const proxy = proxies.find(p => p.id === proxyId);
-    if (proxy) {
-      document.getElementById('editor-proxy-type').value = proxy.type || 'http';
-      let str = proxy.host;
-      if (proxy.port) str += ':' + proxy.port;
-      if (proxy.username) str += ':' + proxy.username;
-      if (proxy.password) str += ':' + proxy.password;
-      document.getElementById('editor-proxy-value').value = str;
-      document.getElementById('editor-proxy-name').value = proxy.name || '';
-      document.getElementById('editor-proxy-change-link').value = proxy.ip_change_link || '';
-    } else {
-      document.getElementById('editor-proxy-value').value = '';
-      document.getElementById('editor-proxy-name').value = '';
-      document.getElementById('editor-proxy-change-link').value = '';
-    }
-    scheduleAutoSave(350);
-  });
+  // (proxy library select removed — proxy is per-profile only)
 
   const autoSaveOnInputIds = [
     'editor-profile-name',
@@ -422,11 +403,7 @@ function setupEventListeners() {
   document.getElementById('btn-filter')?.addEventListener('click', toggleFilterMenu);
 
   // IP Change Link — open in browser
-  document.getElementById('btn-open-change-link')?.addEventListener('click', () => {
-    const url = document.getElementById('editor-proxy-change-link')?.value?.trim();
-    if (!url) { showToast('Enter an IP change link first', 'error'); return; }
-    void window.api.openExternal(url.startsWith('http') ? url : 'http://' + url);
-  });
+  // (ip change link removed)
 
   // Geo mode — show/hide manual coordinate fields
   document.getElementById('editor-geo-mode')?.addEventListener('change', (e) => {
@@ -583,10 +560,8 @@ function populateTagSuggestions() {
 function collectProfileEditorData() {
   const folderVal = document.getElementById('editor-folder').value;
   const groupVal = document.getElementById('editor-group').value;
-  const proxySelectVal = document.getElementById('editor-proxy-select').value;
   const parsedFolderId = Number.parseInt(folderVal, 10);
   const parsedGroupId = Number.parseInt(groupVal, 10);
-  const parsedProxyId = Number.parseInt(proxySelectVal, 10);
   const data = {
     name: document.getElementById('editor-profile-name').value,
     folder_id: Number.isFinite(parsedFolderId) ? parsedFolderId : null,
@@ -594,7 +569,7 @@ function collectProfileEditorData() {
     start_page: document.getElementById('editor-start-page').value,
     warmup_url: document.getElementById('editor-warmup-url')?.value || '',
     notes: document.getElementById('profile-notes').value,
-    proxy_id: Number.isFinite(parsedProxyId) ? parsedProxyId : null,
+    // proxy_id is intentionally excluded — proxy is saved only via the dedicated Save button
     tags: parseTagsInput(document.getElementById('editor-tags')?.value || ''),
     created_by: (document.getElementById('editor-created-by')?.value || '').trim()
   };
@@ -1079,9 +1054,9 @@ function positionMenuUnderBtn(menu, btn) {
 
 // ===== PROXY =====
 async function saveProxy() {
-  const proxyValue = document.getElementById('editor-proxy-value').value;
+  const proxyValue = document.getElementById('editor-proxy-value').value.trim();
   if (!proxyValue) {
-    showToast('Enter proxy value (host:port:user:pass or http://user:pass@host:port)', 'error');
+    showToast('Paste a proxy string first', 'error');
     return;
   }
 
@@ -1091,29 +1066,36 @@ async function saveProxy() {
     showToast('Could not parse proxy — use host:port:user:pass or http://user:pass@host:port', 'error');
     return;
   }
+
   const proxyData = {
     type: parsed.type,
     host: parsed.host,
     port: parsed.port,
     username: parsed.username,
     password: parsed.password,
-    name: document.getElementById('editor-proxy-name').value || parsed.host,
-    ip_change_link: document.getElementById('editor-proxy-change-link').value,
+    name: parsed.host,
+    ip_change_link: '',
   };
 
   try {
-    const proxy = await window.api.createProxy(proxyData);
-    // Link to current profile
-    if (selectedProfileId) {
-      await window.api.updateProfile(selectedProfileId, { proxy_id: proxy.id });
+    // If the profile already has a proxy, update it in-place; otherwise create a new one
+    const currentProfile = selectedProfileId ? await window.api.getProfile(selectedProfileId) : null;
+    const existingProxyId = currentProfile?.proxy_id;
+
+    let proxy;
+    if (existingProxyId) {
+      proxy = await window.api.updateProxy(existingProxyId, proxyData);
+    } else {
+      proxy = await window.api.createProxy(proxyData);
+      if (selectedProfileId) {
+        await window.api.updateProfile(selectedProfileId, { proxy_id: proxy.id });
+      }
     }
-    await loadData();
-    populateProxySelect(proxy.id);
-    // Reload profile to show updated proxy
+
     if (selectedProfileId) {
       loadProfileEditor(selectedProfileId);
     }
-    showToast('Proxy saved & linked to profile ✓', 'success');
+    showToast('Proxy saved ✓', 'success');
   } catch (err) {
     showToast('Failed to save proxy: ' + err.message, 'error');
   }
@@ -1353,13 +1335,12 @@ async function loadProfileEditor(id) {
     
     populateFolderSelect(profile.folder_id);
     populateGroupSelect(profile.group_id);
-    populateProxySelect(profile.proxy_id);
 
     // Platform selector
     const platformEl = document.getElementById('editor-platform');
     if (platformEl) platformEl.value = getProfilePlatform(profile) === 'other' ? 'other' : getProfilePlatform(profile);
 
-    // Proxy fields
+    // Proxy fields — display current proxy as a plain string
     if (profile.proxy_host) {
       document.getElementById('editor-proxy-type').value = profile.proxy_type || 'http';
       let proxyStr = profile.proxy_host;
@@ -1367,10 +1348,8 @@ async function loadProfileEditor(id) {
       if (profile.proxy_username) proxyStr += ':' + profile.proxy_username;
       if (profile.proxy_password) proxyStr += ':' + profile.proxy_password;
       document.getElementById('editor-proxy-value').value = proxyStr;
-      document.getElementById('editor-proxy-name').value = profile.proxy_name || '';
     } else {
       document.getElementById('editor-proxy-value').value = '';
-      document.getElementById('editor-proxy-name').value = '';
     }
 
     // Cookies — reset dropzone state and populate
@@ -1549,12 +1528,8 @@ function populateGroupSelect(selectedId) {
   ).join('');
 }
 
-function populateProxySelect(selectedId) {
-  const select = document.getElementById('editor-proxy-select');
-  select.innerHTML = '<option value="">New Proxy</option>' +
-    proxies.map(p =>
-      `<option value="${p.id}" ${Number(p.id) === Number(selectedId) ? 'selected' : ''}>${escapeHtml(p.name || p.host || 'Proxy ' + p.id)}</option>`
-    ).join('');
+function populateProxySelect(_selectedId) {
+  // Proxy library removed — proxy is stored per-profile only
 }
 
 // ===== ACCOUNT =====
