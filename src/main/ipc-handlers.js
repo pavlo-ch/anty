@@ -282,6 +282,16 @@ function registerIpcHandlers() {
     return launcher.getRunningProfiles();
   });
 
+  ipcMain.handle('browser:warmup', async (event, id) => {
+    requireLoggedIn();
+    const mainWindow = BrowserWindow.fromWebContents(event.sender);
+    return launcher.warmupProfile(id, mainWindow);
+  });
+
+  // ---- SETTINGS ----
+  ipcMain.handle('setting:get', (_, key) => db.getSetting(key));
+  ipcMain.handle('setting:set', (_, key, value) => db.setSetting(key, value));
+
   // ---- ACCOUNT / PLATFORM ----
   ipcMain.handle('account:state', () => auth.getAccountState());
   ipcMain.handle('account:events', (_, limit) => auth.listAccountEvents(limit));

@@ -3,7 +3,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA } = require('./fingerprint');
-const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('./database');
+const { getProfile, updateProfile, deleteProfile: deleteProfileRow, getSetting } = require('./database');
 const profileSync = require('./profile-sync');
 const http = require('http');
 
@@ -667,6 +667,158 @@ async function stopAllProfiles() {
   };
 }
 
+// ── Warmup URL pool ──────────────────────────────────────────────────────────
+const WARMUP_URLS = [
+  'google.com','youtube.com','wikipedia.org','20minutos.es','adobe.com',
+  'airbnb.com','aliexpress.com','aljazeera.com','amazon.com','apartments.com',
+  'apple.com','autoblog.com','axios.com','bbc.co.uk','bbc.com',
+  'bleacherreport.com','blogspot.com','booking.com','businessinsider.com',
+  'buzzfeed.com','canva.com','caranddriver.com','carfax.com','cars.com',
+  'cloudflare.com','cnet.com','cnn.com','crunchbase.com','dailymail.co.uk',
+  'dev.to','digitaltrends.com','dualshockers.com','dw.com','ebay.com',
+  'elconfidencial.com','elmundo.es','elpais.com','engadget.com','espn.com',
+  'etsy.com','eurogamer.net','euronews.com','expedia.com','fifa.com',
+  'forbes.com','foreignaffairs.com','gamerant.com','gamespot.com','gizmodo.com',
+  'godaddy.com','gsmarena.com','hashnode.com','huffpost.com','ign.com',
+  'imdb.com','indeed.com','insider.com','kotaku.com','lefigaro.fr',
+  'lemonde.fr','lifehacker.com','mashable.com','mayoclinic.org','metacritic.com',
+  'metro.co.uk','microsoft.com','mlb.com','motor1.com','namecheap.com',
+  'nationalgeographic.com','nba.com','nfl.com','nme.com','npr.org',
+  'openai.com','pcgamer.com','pcmag.com','pitchfork.com','politico.com',
+  'polygon.com','producthunt.com','reuters.com','rockpapershotgun.com',
+  'rollingstone.com','rottentomatoes.com','salon.com','shopify.com',
+  'skyscanner.net','skysports.com','slate.com','spiegel.de','sportskeeda.com',
+  'stackoverflow.com','talksport.com','techcrunch.com','techradar.com',
+  'theatlantic.com','theguardian.com','thehill.com','tripadvisor.com',
+  'usatoday.com','vice.com','vox.com','washingtonpost.com','weather.com',
+  'webmd.com','wired.com','wordpress.com','yahoo.com','zdnet.com','zillow.com',
+];
+
+// ── Warmup runner ────────────────────────────────────────────────────────────
+async function warmupProfile(profileId, mainWindow) {
+  if (runningBrowsers.has(profileId)) {
+    return { success: false, error: 'Profile is already running' };
+  }
+
+  const profile = getProfile(profileId);
+  if (!profile) return { success: false, error: 'Profile not found' };
+
+  const urlCount = Math.max(3, Math.min(15, parseInt(getSetting('warmup_url_count') || '5')));
+  const delayMs  = Math.max(3000, Math.min(30000, parseInt(getSetting('warmup_delay_ms') || '8000')));
+
+  // Pick random URLs
+  const shuffled = [...WARMUP_URLS].sort(() => Math.random() - 0.5);
+  const urls = shuffled.slice(0, urlCount).map(u => `https://${u}`);
+
+  function sendProgress(current, total, url, done = false, error = null) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('warmup:progress', { profileId, current, total, url, done, error });
+    }
+  }
+
+  const fingerprint = JSON.parse(profile.fingerprint || '{}');
+  const userDataDir = getUserDataDir(profileId);
+
+  // Find executable
+  const chromiumPaths = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+  ];
+  let executablePath = null;
+  for (const p of chromiumPaths) {
+    if (fs.existsSync(p)) { executablePath = p; break; }
+  }
+  if (!executablePath) {
+    return { success: false, error: 'Chrome/Chromium not found' };
+  }
+
+  const viewportWidth  = Math.min(fingerprint.screen?.width  || 1280, 1440);
+  const viewportHeight = Math.min(fingerprint.screen?.height || 900,  900);
+  const secChHeaders   = buildSecChUaHeaders(fingerprint);
+
+  let context = null;
+  try {
+    sendProgress(0, urls.length, '');
+    context = await chromium.launchPersistentContext(userDataDir, {
+      headless: true,
+      executablePath,
+      chromiumSandbox: false,
+      ignoreDefaultArgs: ['--enable-automation'],
+      args: [
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-infobars',
+        '--no-first-run',
+        '--no-default-browser-check',
+        `--window-size=${viewportWidth},${viewportHeight}`,
+      ],
+      userAgent: fingerprint.userAgent,
+      locale: fingerprint.locale?.language || 'en-US',
+      timezoneId: fingerprint.locale?.timezone || 'America/New_York',
+      viewport: { width: viewportWidth, height: viewportHeight },
+      screen: { width: fingerprint.screen?.width || 1920, height: fingerprint.screen?.height || 1080 },
+      ...(Object.keys(secChHeaders).length > 0 ? { extraHTTPHeaders: secChHeaders } : {}),
+      ...(profile.proxy_host ? {
+        proxy: {
+          server: `${profile.proxy_type || 'http'}://${profile.proxy_host}:${profile.proxy_port || 80}`,
+          ...(profile.proxy_username ? { username: profile.proxy_username, password: profile.proxy_password || '' } : {}),
+        },
+      } : {}),
+    });
+
+    const injectionScript = buildInjectionScript(fingerprint);
+    await context.addInitScript(injectionScript);
+
+    // Import existing cookies
+    if (profile.cookies && profile.cookies !== '[]') {
+      try {
+        const cookies = JSON.parse(profile.cookies).map(normalizeCookieForPlaywright).filter(Boolean);
+        if (cookies.length > 0) await context.addCookies(cookies);
+      } catch {}
+    }
+
+    const page = context.pages()[0] || await context.newPage();
+
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      sendProgress(i + 1, urls.length, url);
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+        // Simulate human scroll
+        await page.evaluate(() => {
+          const total = document.body?.scrollHeight || 1000;
+          window.scrollTo({ top: Math.random() * total * 0.6, behavior: 'smooth' });
+        }).catch(() => {});
+        // Variable delay: base ± 30%
+        const jitter = delayMs * (0.7 + Math.random() * 0.6);
+        await page.waitForTimeout(jitter).catch(() => {});
+      } catch {}
+    }
+
+    // Save cookies to DB
+    try {
+      const allCookies = await context.cookies();
+      if (allCookies.length > 0) {
+        updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+        console.log(`[Warmup] Saved ${allCookies.length} cookies for profile ${profileId}`);
+      }
+    } catch {}
+
+    sendProgress(urls.length, urls.length, '', true);
+    return { success: true, urlsVisited: urls.length };
+
+  } catch (err) {
+    console.error(`[Warmup] Error for profile ${profileId}:`, err.message);
+    sendProgress(0, urls.length, '', true, err.message);
+    return { success: false, error: err.message };
+  } finally {
+    if (context) {
+      try { await context.close(); } catch {}
+    }
+  }
+}
+
 function getRunningProfiles() {
   return Array.from(runningBrowsers.keys());
 }
@@ -680,6 +832,7 @@ module.exports = {
   launchProfile,
   stopProfile,
   stopAllProfiles,
+  warmupProfile,
   getRunningProfiles,
   getWsEndpoint,
   checkProxy,

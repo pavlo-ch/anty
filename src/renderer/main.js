@@ -443,6 +443,63 @@ function setupEventListeners() {
     setActivePlatformTab(e.target.value, { save: true, render: true });
   });
 
+  // ── Warmup dialog buttons ──
+  document.getElementById('warmup-btn-go')?.addEventListener('click', () => {
+    const remember = document.getElementById('warmup-remember-check').checked;
+    closeWarmupDialog();
+    if (warmupResolve) warmupResolve({ doWarmup: true, remember });
+  });
+  document.getElementById('warmup-btn-skip')?.addEventListener('click', () => {
+    const remember = document.getElementById('warmup-remember-check').checked;
+    closeWarmupDialog();
+    if (warmupResolve) warmupResolve({ doWarmup: false, remember });
+  });
+
+  // ── Warmup progress listener ──
+  window.api.onWarmupProgress?.((data) => {
+    if (data.done) {
+      hideWarmupProgress();
+    } else {
+      updateWarmupProgress(data.current, data.total, data.url);
+    }
+  });
+
+  // ── Warmup settings ──
+  const warmupCount = document.getElementById('settings-warmup-count');
+  const warmupCountVal = document.getElementById('settings-warmup-count-val');
+  const warmupDelay = document.getElementById('settings-warmup-delay');
+  const warmupDelayVal = document.getElementById('settings-warmup-delay-val');
+
+  if (warmupCount) {
+    const saved = await window.api.getSetting('warmup_url_count').catch(() => null);
+    if (saved) warmupCount.value = saved;
+    warmupCountVal.textContent = warmupCount.value;
+    warmupCount.addEventListener('input', async () => {
+      warmupCountVal.textContent = warmupCount.value;
+      await window.api.setSetting('warmup_url_count', warmupCount.value).catch(() => {});
+    });
+  }
+  if (warmupDelay) {
+    const saved = await window.api.getSetting('warmup_delay_ms').catch(() => null);
+    if (saved) warmupDelay.value = Math.round(parseInt(saved) / 1000);
+    warmupDelayVal.textContent = warmupDelay.value + 's';
+    warmupDelay.addEventListener('input', async () => {
+      warmupDelayVal.textContent = warmupDelay.value + 's';
+      await window.api.setSetting('warmup_delay_ms', String(parseInt(warmupDelay.value) * 1000)).catch(() => {});
+    });
+  }
+  document.getElementById('btn-settings-warmup-reset')?.addEventListener('click', async () => {
+    const allProfiles = await window.api.getProfiles().catch(() => []);
+    for (const p of allProfiles) {
+      if (p.warmup_preference) {
+        await window.api.updateProfile(p.id, { warmup_preference: null }).catch(() => {});
+      }
+    }
+    // Reset local cache
+    profiles.forEach(p => { p.warmup_preference = null; });
+    showToast('Warmup preferences reset for all profiles', 'success');
+  });
+
   // Account
   document.getElementById('btn-account-logout')?.addEventListener('click', logoutAccount);
 
@@ -805,8 +862,81 @@ async function syncProfileLocaleFromProxy(profileId, options = {}) {
 }
 
 // ===== PROFILE LAUNCH =====
+// ── Warmup dialog ─────────────────────────────────────────────────────────────
+let warmupResolve = null; // resolves with { doWarmup, remember }
+
+function showWarmupDialog() {
+  return new Promise((resolve) => {
+    warmupResolve = resolve;
+    document.getElementById('warmup-remember-check').checked = false;
+    document.getElementById('warmup-modal').classList.remove('hidden');
+  });
+}
+
+function closeWarmupDialog() {
+  document.getElementById('warmup-modal').classList.add('hidden');
+  warmupResolve = null;
+}
+
+function showWarmupProgress() {
+  document.getElementById('warmup-progress-fill').style.width = '0%';
+  document.getElementById('warmup-progress-url').textContent = 'Starting…';
+  document.getElementById('warmup-progress-step').textContent = '';
+  document.getElementById('warmup-progress-modal').classList.remove('hidden');
+}
+
+function updateWarmupProgress(current, total, url) {
+  const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+  document.getElementById('warmup-progress-fill').style.width = pct + '%';
+  const host = url ? url.replace('https://', '').replace('http://', '').split('/')[0] : '';
+  document.getElementById('warmup-progress-url').textContent = host || '…';
+  document.getElementById('warmup-progress-step').textContent = current > 0 ? `${current} / ${total} sites` : 'Connecting…';
+}
+
+function hideWarmupProgress() {
+  document.getElementById('warmup-progress-modal').classList.add('hidden');
+}
+
 async function launchProfile(id) {
   if (pendingProfiles.has(id) || runningProfiles.has(id)) return;
+
+  // Check warmup preference for this profile
+  const profile = profiles.find(p => p.id === id);
+  const pref = profile?.warmup_preference ?? null;
+
+  if (pref !== 'no') {
+    let doWarmup = false;
+    let remember = false;
+
+    if (pref === 'yes') {
+      doWarmup = true;
+      remember = false; // already saved
+    } else {
+      // Ask user
+      const choice = await showWarmupDialog();
+      doWarmup = choice.doWarmup;
+      remember = choice.remember;
+    }
+
+    if (remember) {
+      const newPref = doWarmup ? 'yes' : 'no';
+      await window.api.updateProfile(id, { warmup_preference: newPref }).catch(() => {});
+      // Update local cache
+      if (profile) profile.warmup_preference = newPref;
+    }
+
+    if (doWarmup) {
+      pendingProfiles.add(id);
+      renderProfilesList(document.getElementById('search-input')?.value || '');
+      showWarmupProgress();
+      try {
+        await window.api.warmupProfile(id);
+      } catch {}
+      hideWarmupProgress();
+      pendingProfiles.delete(id);
+    }
+  }
+
   pendingProfiles.add(id);
   renderProfilesList(document.getElementById('search-input')?.value || '');
   try {

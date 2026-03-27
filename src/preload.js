@@ -36,6 +36,11 @@ contextBridge.exposeInMainWorld('api', {
   launchProfile: (id) => ipcRenderer.invoke('browser:launch', id),
   stopProfile: (id) => ipcRenderer.invoke('browser:stop', id),
   getRunningProfiles: () => ipcRenderer.invoke('browser:running'),
+  warmupProfile: (id) => ipcRenderer.invoke('browser:warmup', id),
+
+  // Settings
+  getSetting: (key) => ipcRenderer.invoke('setting:get', key),
+  setSetting: (key, value) => ipcRenderer.invoke('setting:set', key, value),
 
   // Account / platform auth
   getAccountState: () => ipcRenderer.invoke('account:state'),
@@ -70,5 +75,8 @@ contextBridge.exposeInMainWorld('api', {
   },
   onUpdateStatus: (callback) => {
     ipcRenderer.on('app:update-status', (_, data) => callback(data));
-  }
+  },
+  onWarmupProgress: (callback) => {
+    ipcRenderer.on('warmup:progress', (_, data) => callback(data));
+  },
 });

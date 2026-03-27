@@ -496,6 +496,37 @@
           </div>
 
           <div class="settings-section">
+            <div class="settings-section-title">Profile Warmup</div>
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-title">Sites to visit</span>
+                <span class="settings-label-sub">Number of random sites per warmup session (3–15)</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;">
+                <input type="range" id="settings-warmup-count" min="3" max="15" step="1" value="5" style="width:100px;" />
+                <span id="settings-warmup-count-val" style="min-width:18px;text-align:right;color:#e5e7eb;font-size:13px;">5</span>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-title">Delay between sites</span>
+                <span class="settings-label-sub">Seconds to spend on each site (3–30)</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;">
+                <input type="range" id="settings-warmup-delay" min="3" max="30" step="1" value="8" style="width:100px;" />
+                <span id="settings-warmup-delay-val" style="min-width:22px;text-align:right;color:#e5e7eb;font-size:13px;">8s</span>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="settings-label">
+                <span class="settings-label-title">Reset warmup preferences</span>
+                <span class="settings-label-sub">Ask again before launch for all profiles</span>
+              </div>
+              <button class="btn btn-save settings-btn" id="btn-settings-warmup-reset">Reset all</button>
+            </div>
+          </div>
+
+          <div class="settings-section">
             <div class="settings-row">
               <div class="settings-label">
                 <span class="settings-label-title">Account</span>
@@ -513,6 +544,36 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <!-- Warmup dialog -->
+  <div class="warmup-modal hidden" id="warmup-modal">
+    <div class="warmup-modal-card">
+      <div class="warmup-modal-icon">🔥</div>
+      <h3 class="warmup-modal-title">Warm up this profile?</h3>
+      <p class="warmup-modal-desc">Anty will visit a few random sites in the background to build natural cookies.<br><span class="warmup-modal-time">Takes about 1–2 minutes.</span></p>
+      <label class="warmup-remember-row">
+        <input type="checkbox" id="warmup-remember-check" />
+        <span>Remember my choice for this profile</span>
+      </label>
+      <div class="warmup-modal-actions">
+        <button class="btn warmup-btn-skip" id="warmup-btn-skip">Skip</button>
+        <button class="btn warmup-btn-go" id="warmup-btn-go">Warm Up →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Warmup progress overlay -->
+  <div class="warmup-progress-modal hidden" id="warmup-progress-modal">
+    <div class="warmup-progress-card">
+      <div class="warmup-progress-icon">🔥</div>
+      <p class="warmup-progress-label">Warming up profile…</p>
+      <div class="warmup-progress-bar-wrap">
+        <div class="warmup-progress-bar-fill" id="warmup-progress-fill"></div>
+      </div>
+      <p class="warmup-progress-url" id="warmup-progress-url">Starting…</p>
+      <p class="warmup-progress-step" id="warmup-progress-step"></p>
+    </div>
   </div>
 
   <div class="login-modal hidden" id="login-modal">
