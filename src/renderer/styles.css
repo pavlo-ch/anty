@@ -524,6 +524,11 @@ html, body {
   color: var(--green);
 }
 
+.badge-status.in-use {
+  background: rgba(255, 152, 0, 0.15);
+  color: var(--orange);
+}
+
 .profile-item-country {
   font-size: 10px;
   color: var(--text-muted);
@@ -611,6 +616,18 @@ html, body {
   background: var(--text-muted);
   cursor: not-allowed;
   opacity: 0.7;
+}
+
+.profile-launch-btn.other-running {
+  background: rgba(255, 152, 0, 0.25);
+  color: var(--orange);
+  cursor: not-allowed;
+  opacity: 0.8;
+}
+
+.profile-item.other-running {
+  border-left: 2px solid var(--orange);
+  opacity: 0.85;
 }
 
 /* ===== PROFILE EDITOR COLUMN ===== */

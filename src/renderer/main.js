@@ -1180,8 +1180,11 @@ function renderProfilesList(searchTerm = '') {
     let fp = {};
     try { fp = JSON.parse(p.fingerprint || '{}'); } catch { fp = {}; }
     const isActive = p.id === selectedProfileId;
-    // isRunning: local tracking OR profile status from DB (covers team-member profiles running elsewhere)
-    const isRunning = runningProfiles.has(p.id) || p.status === 'running';
+    // isRunningLocally: launched by current user on this machine
+    const isRunningLocally = runningProfiles.has(p.id);
+    // isRunningByOther: running on another machine / by another team member
+    const isRunningByOther = !runningProfiles.has(p.id) && p.status === 'running';
+    const isRunning = isRunningLocally || isRunningByOther;
     const isPending = pendingProfiles.has(p.id);
     const time = formatTime(p.modified_at);
     const systemLabel = getProfileSystemLabel(fp);
@@ -1190,7 +1193,7 @@ function renderProfilesList(searchTerm = '') {
     const hasProxy = !!(p.proxy_host);
     
     return `
-      <div class="profile-item ${isActive ? 'active' : ''}" data-id="${p.id}" onclick="selectProfile(${p.id})">
+      <div class="profile-item ${isActive ? 'active' : ''} ${isRunningByOther ? 'other-running' : ''}" data-id="${p.id}" onclick="selectProfile(${p.id})">
         <div class="profile-item-header">
           <span class="profile-item-name">${escapeHtml(p.name)}</span>
           <span class="profile-item-time">${time}</span>
@@ -1200,13 +1203,15 @@ function renderProfilesList(searchTerm = '') {
                     title="Delete profile">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
             </button>
-            <button class="profile-launch-btn ${isRunning ? 'running' : ''} ${isPending ? 'pending' : ''}"
-                    onclick="event.stopPropagation(); ${isPending ? '' : isRunning ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
-                    title="${isPending ? 'Please wait...' : isRunning ? 'Stop' : 'Launch'}"
-                    ${isPending ? 'disabled' : ''}>
+            <button class="profile-launch-btn ${isRunningLocally ? 'running' : isRunningByOther ? 'other-running' : ''} ${isPending ? 'pending' : ''}"
+                    onclick="event.stopPropagation(); ${isPending || isRunningByOther ? '' : isRunningLocally ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
+                    title="${isPending ? 'Please wait...' : isRunningByOther ? 'In use by another user' : isRunningLocally ? 'Stop' : 'Launch'}"
+                    ${isPending || isRunningByOther ? 'disabled' : ''}>
               ${isPending
                 ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>'
-                : isRunning
+                : isRunningByOther
+                ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>'
+                : isRunningLocally
                 ? '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
                 : '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>'}
             </button>
@@ -1219,7 +1224,8 @@ function renderProfilesList(searchTerm = '') {
             ${hasProxy ? `<span class="badge badge-proxy" title="Proxy active">⇄</span>` : ''}
           </div>
           <span class="profile-item-country">${p.created_by ? escapeHtml(p.created_by) : (countryCode || '')}</span>
-          ${isRunning ? '<span class="badge badge-status running">Running</span>' : ''}
+          ${isRunningLocally ? '<span class="badge badge-status running">Running</span>' : ''}
+          ${isRunningByOther ? '<span class="badge badge-status in-use">In use</span>' : ''}
         </div>
         <span class="profile-item-engine">Chromium</span>
       </div>
