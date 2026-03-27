@@ -26,6 +26,7 @@ const {
   listFolders,
   listGroups,
   listProxies,
+  createProxy,
 } = require('../main/database');
 
 const launcher = require('../main/launcher');
@@ -173,6 +174,8 @@ route('POST', '/api/profiles', async (req, res, _params) => {
 });
 
 // PATCH /api/profiles/:id — update profile fields
+// Supports: name, notes, start_page, warmup_url, created_by,
+//           proxy: "http://user:pass@host:port" | "host:port:user:pass" | { type,host,port,username,password }
 route('PATCH', '/api/profiles/:id', async (req, res, { id }) => {
   const profile = getProfile(Number(id));
   if (!profile) return notFound(res, `Profile ${id} not found`);
@@ -181,10 +184,85 @@ route('PATCH', '/api/profiles/:id', async (req, res, { id }) => {
   try { body = await readBody(req); }
   catch { return badRequest(res, 'Invalid JSON body'); }
 
+  // Handle proxy: resolve string / object → create proxy record → set proxy_id
+  if (body.proxy !== undefined) {
+    const p = typeof body.proxy === 'string' ? parseProxyString(body.proxy) : body.proxy;
+    if (p && p.host) {
+      const proxy = createProxy({
+        type: p.type || 'http',
+        host: p.host,
+        port: Number(p.port) || 0,
+        username: p.username || '',
+        password: p.password || '',
+        name: p.name || p.host,
+        ip_change_link: '',
+      });
+      body = { ...body, proxy_id: proxy.id };
+    }
+    delete body.proxy;
+  }
+
   const updated = updateProfile(Number(id), body);
   profileSync.onLocalProfileUpsert(updated);
   profileSync.scheduleSync();
   ok(res, { profile: updated });
+});
+
+// PUT /api/profiles/:id/notes — set profile notes (shorthand)
+// Body: { notes: "..." }  or plain text body
+route('PUT', '/api/profiles/:id/notes', async (req, res, { id }) => {
+  const profile = getProfile(Number(id));
+  if (!profile) return notFound(res, `Profile ${id} not found`);
+
+  let notes = '';
+  try {
+    const body = await readBody(req);
+    notes = typeof body === 'string' ? body : (body.notes ?? '');
+  } catch {
+    return badRequest(res, 'Invalid body');
+  }
+
+  const updated = updateProfile(Number(id), { notes });
+  profileSync.onLocalProfileUpsert(updated);
+  profileSync.scheduleSync();
+  ok(res, { id: Number(id), notes: updated.notes });
+});
+
+// PATCH /api/profiles/:id/proxy — set or remove proxy on a profile
+// Body: { proxy: "http://user:pass@host:port" | "host:port:user:pass" | null }
+route('PATCH', '/api/profiles/:id/proxy', async (req, res, { id }) => {
+  const profile = getProfile(Number(id));
+  if (!profile) return notFound(res, `Profile ${id} not found`);
+
+  let body;
+  try { body = await readBody(req); }
+  catch { return badRequest(res, 'Invalid JSON body'); }
+
+  // null / empty string → remove proxy
+  if (!body.proxy) {
+    const updated = updateProfile(Number(id), { proxy_id: null });
+    profileSync.onLocalProfileUpsert(updated);
+    profileSync.scheduleSync();
+    return ok(res, { profile: updated });
+  }
+
+  const p = typeof body.proxy === 'string' ? parseProxyString(body.proxy) : body.proxy;
+  if (!p || !p.host) return badRequest(res, 'Invalid proxy format. Use "http://user:pass@host:port" or "host:port:user:pass"');
+
+  const proxy = createProxy({
+    type: p.type || 'http',
+    host: p.host,
+    port: Number(p.port) || 0,
+    username: p.username || '',
+    password: p.password || '',
+    name: p.name || p.host,
+    ip_change_link: '',
+  });
+
+  const updated = updateProfile(Number(id), { proxy_id: proxy.id });
+  profileSync.onLocalProfileUpsert(updated);
+  profileSync.scheduleSync();
+  ok(res, { profile: updated, proxy });
 });
 
 // DELETE /api/profiles/:id — delete profile and its browser data
@@ -267,14 +345,41 @@ route('GET', '/api/running', async (_req, res, _params) => {
 });
 
 // ── Proxy string parser ───────────────────────────────────────────────────────
-// Accepts: "host:port:user:pass" or "type://host:port:user:pass"
+// Accepts:
+//   "host:port:user:pass"                       (legacy)
+//   "type://host:port:user:pass"                (legacy with proto)
+//   "http://user:pass@host:port"                (standard URL format)
+//   "socks5://user:pass@host:port"
 
 function parseProxyString(str) {
   if (!str) return null;
   let type = 'http';
-  let rest = str;
-  const protoMatch = str.match(/^(https?|socks[45]?):\/\/(.+)/);
-  if (protoMatch) { type = protoMatch[1]; rest = protoMatch[2]; }
+  let rest = str.trim();
+
+  // Extract protocol prefix
+  const protoMatch = rest.match(/^(https?|socks[45]?):\/\/(.+)/i);
+  if (protoMatch) {
+    type = protoMatch[1].toLowerCase();
+    rest = protoMatch[2];
+  }
+
+  // Standard URL format: user:pass@host:port
+  const atIdx = rest.indexOf('@');
+  if (atIdx !== -1) {
+    const credentials = rest.slice(0, atIdx);
+    const hostPort = rest.slice(atIdx + 1);
+    const credParts = credentials.split(':');
+    const hostParts = hostPort.split(':');
+    return {
+      type,
+      host: hostParts[0] || '',
+      port: hostParts[1] || '',
+      username: credParts[0] || '',
+      password: credParts[1] || '',
+    };
+  }
+
+  // Legacy format: host:port:user:pass
   const parts = rest.split(':');
   if (parts.length < 2) return null;
   return {
@@ -319,11 +424,14 @@ server.listen(PORT, HOST, () => {
   console.log('  GET    /api/profiles');
   console.log('  POST   /api/profiles');
   console.log('  GET    /api/profiles/:id');
-  console.log('  PATCH  /api/profiles/:id');
+  console.log('  PATCH  /api/profiles/:id          (name, notes, start_page, proxy, …)');
   console.log('  DELETE /api/profiles/:id');
+  console.log('  PUT    /api/profiles/:id/notes     { notes: "…" }');
+  console.log('  PATCH  /api/profiles/:id/proxy     { proxy: "http://user:pass@host:port" | null }');
   console.log('  POST   /api/profiles/:id/start   → { wsEndpoint }');
   console.log('  POST   /api/profiles/:id/stop');
   console.log('  GET    /api/profiles/:id/ws');
+  console.log('  POST   /api/proxy/check');
   console.log('  GET    /api/running');
 });
 

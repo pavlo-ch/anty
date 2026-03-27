@@ -906,6 +906,33 @@ function readCookiesFile(file) {
   reader.readAsText(file);
 }
 
+// ===== PROXY PARSING =====
+// Handles both formats:
+//   user:pass@host:port  (standard URL format, with or without protocol prefix)
+//   host:port:user:pass  (legacy format)
+function parseProxyInput(str, typeOverride) {
+  if (!str) return null;
+  let type = typeOverride || 'http';
+  let rest = str.trim();
+
+  const protoMatch = rest.match(/^(https?|socks[45]?):\/\/(.+)/i);
+  if (protoMatch) {
+    type = protoMatch[1].toLowerCase();
+    rest = protoMatch[2];
+  }
+
+  const atIdx = rest.indexOf('@');
+  if (atIdx !== -1) {
+    const creds = rest.slice(0, atIdx).split(':');
+    const hp = rest.slice(atIdx + 1).split(':');
+    return { type, host: hp[0] || '', port: parseInt(hp[1]) || 0, username: creds[0] || '', password: creds[1] || '' };
+  }
+
+  // Legacy: host:port:user:pass
+  const parts = rest.split(':');
+  return { type, host: parts[0] || '', port: parseInt(parts[1]) || 0, username: parts[2] || '', password: parts[3] || '' };
+}
+
 // ===== CLIPBOARD HELPERS =====
 async function importProxyFromClipboard() {
   try {
@@ -1054,18 +1081,23 @@ function positionMenuUnderBtn(menu, btn) {
 async function saveProxy() {
   const proxyValue = document.getElementById('editor-proxy-value').value;
   if (!proxyValue) {
-    showToast('Enter proxy value (host:port:user:pass)', 'error');
+    showToast('Enter proxy value (host:port:user:pass or http://user:pass@host:port)', 'error');
     return;
   }
 
-  const parts = proxyValue.split(':');
+  const typeOverride = document.getElementById('editor-proxy-type').value;
+  const parsed = parseProxyInput(proxyValue, typeOverride);
+  if (!parsed || !parsed.host) {
+    showToast('Could not parse proxy — use host:port:user:pass or http://user:pass@host:port', 'error');
+    return;
+  }
   const proxyData = {
-    type: document.getElementById('editor-proxy-type').value,
-    host: parts[0] || '',
-    port: parseInt(parts[1]) || 0,
-    username: parts[2] || '',
-    password: parts[3] || '',
-    name: document.getElementById('editor-proxy-name').value || parts[0],
+    type: parsed.type,
+    host: parsed.host,
+    port: parsed.port,
+    username: parsed.username,
+    password: parsed.password,
+    name: document.getElementById('editor-proxy-name').value || parsed.host,
     ip_change_link: document.getElementById('editor-proxy-change-link').value,
   };
 
@@ -1094,14 +1126,12 @@ async function checkCurrentProxy() {
     return;
   }
 
-  const parts = proxyValue.split(':');
-  const proxyData = {
-    type: document.getElementById('editor-proxy-type').value,
-    host: parts[0] || '',
-    port: parseInt(parts[1]) || 0,
-    username: parts[2] || '',
-    password: parts[3] || '',
-  };
+  const typeOverride = document.getElementById('editor-proxy-type').value;
+  const proxyData = parseProxyInput(proxyValue, typeOverride);
+  if (!proxyData || !proxyData.host) {
+    showToast('Could not parse proxy — use host:port:user:pass or http://user:pass@host:port', 'error');
+    return;
+  }
 
   const checkBtn = document.getElementById('btn-check-proxy');
   checkBtn.innerHTML = '<span class="spinner"></span>';
