@@ -321,8 +321,13 @@ function setupEventListeners() {
     scheduleAutoSave(120);
   });
 
-  // Save proxy
-  document.getElementById('btn-save-proxy').addEventListener('click', saveProxy);
+  // Auto-save proxy when user finishes editing the field
+  document.getElementById('editor-proxy-value').addEventListener('blur', () => {
+    if (selectedProfileId) saveProxy();
+  });
+  document.getElementById('editor-proxy-type').addEventListener('change', () => {
+    if (selectedProfileId && document.getElementById('editor-proxy-value').value.trim()) saveProxy();
+  });
 
   // Check proxy
   document.getElementById('btn-check-proxy').addEventListener('click', checkCurrentProxy);
@@ -1054,48 +1059,44 @@ function positionMenuUnderBtn(menu, btn) {
 
 // ===== PROXY =====
 async function saveProxy() {
+  if (!selectedProfileId) return;
   const proxyValue = document.getElementById('editor-proxy-value').value.trim();
-  if (!proxyValue) {
-    showToast('Paste a proxy string first', 'error');
-    return;
-  }
-
-  const typeOverride = document.getElementById('editor-proxy-type').value;
-  const parsed = parseProxyInput(proxyValue, typeOverride);
-  if (!parsed || !parsed.host) {
-    showToast('Could not parse proxy — use host:port:user:pass or http://user:pass@host:port', 'error');
-    return;
-  }
-
-  const proxyData = {
-    type: parsed.type,
-    host: parsed.host,
-    port: parsed.port,
-    username: parsed.username,
-    password: parsed.password,
-    name: parsed.host,
-    ip_change_link: '',
-  };
 
   try {
-    // If the profile already has a proxy, update it in-place; otherwise create a new one
-    const currentProfile = selectedProfileId ? await window.api.getProfile(selectedProfileId) : null;
+    const currentProfile = await window.api.getProfile(selectedProfileId);
     const existingProxyId = currentProfile?.proxy_id;
 
-    let proxy;
-    if (existingProxyId) {
-      proxy = await window.api.updateProxy(existingProxyId, proxyData);
-    } else {
-      proxy = await window.api.createProxy(proxyData);
-      if (selectedProfileId) {
-        await window.api.updateProfile(selectedProfileId, { proxy_id: proxy.id });
+    // Empty field → remove proxy from profile
+    if (!proxyValue) {
+      if (existingProxyId) {
+        await window.api.updateProfile(selectedProfileId, { proxy_id: null });
       }
+      return;
     }
 
-    if (selectedProfileId) {
-      loadProfileEditor(selectedProfileId);
+    const typeOverride = document.getElementById('editor-proxy-type').value;
+    const parsed = parseProxyInput(proxyValue, typeOverride);
+    if (!parsed || !parsed.host) {
+      showToast('Invalid proxy format — use host:port:user:pass or http://user:pass@host:port', 'error');
+      return;
     }
-    showToast('Proxy saved ✓', 'success');
+
+    const proxyData = {
+      type: parsed.type,
+      host: parsed.host,
+      port: parsed.port,
+      username: parsed.username,
+      password: parsed.password,
+      name: parsed.host,
+      ip_change_link: '',
+    };
+
+    if (existingProxyId) {
+      await window.api.updateProxy(existingProxyId, proxyData);
+    } else {
+      const proxy = await window.api.createProxy(proxyData);
+      await window.api.updateProfile(selectedProfileId, { proxy_id: proxy.id });
+    }
   } catch (err) {
     showToast('Failed to save proxy: ' + err.message, 'error');
   }
