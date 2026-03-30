@@ -688,6 +688,9 @@ async function pullProfilesFromCloud() {
     }
 
     // Resolve proxy object → local proxy_id (findOrCreateProxy deduplicates by host+port+username+type)
+    // Pull only SETS a proxy — it never clears one. If cloud returns null, the local
+    // proxy_id is left untouched (proxy is local-first; cloud null may just mean the
+    // push hasn't been processed yet or the profile predates proxy sync).
     const proxyData = cloud.data._proxy;
     delete cloud.data._proxy;
     if (proxyData && proxyData.host) {
@@ -697,9 +700,6 @@ async function pullProfilesFromCloud() {
       } catch (_) {
         // Non-fatal: proxy stays unset rather than blocking the whole pull
       }
-    } else if (proxyData === null && existing) {
-      // Cloud explicitly has no proxy → clear local proxy
-      cloud.data.proxy_id = null;
     }
 
     if (existing) {
