@@ -37,8 +37,10 @@ function toCloudSyncError(prefix, reason, status) {
 
 function restoreProfilePatch(snapshot) {
   if (!snapshot) return {};
-  // proxy_id is intentionally excluded: proxy is local-only and not synced to cloud,
-  // so a cloud-push failure must never roll back a proxy change the user just made.
+  // proxy_id is excluded from cloud-failure rollback: the proxy object is synced
+  // to cloud as part of the profile payload, but proxy_id itself is a local FK.
+  // Rolling back proxy_id on cloud error would silently remove a proxy the user
+  // just set, which is more confusing than leaving it in place.
   return {
     name: snapshot.name,
     folder_id: snapshot.folder_id,
@@ -122,8 +124,8 @@ function registerIpcHandlers() {
   ipcMain.handle('profile:update', async (_, id, data) => {
     requireLoggedIn();
 
-    // proxy_id is local-only — never blocked by cloud, never rolled back on cloud failure.
-    // Check whether the update contains fields that must be cloud-synced.
+    // proxy_id is a local FK — not blocked by cloud readiness check, not rolled back on
+    // cloud failure. The proxy data itself is carried inside the profile payload during sync.
     const { proxy_id: _proxyId, ...cloudFields } = data || {};
     const hasCloudFields = Object.keys(cloudFields).length > 0;
 

@@ -475,6 +475,32 @@ function deleteProxy(id) {
   return getDb().prepare('DELETE FROM proxies WHERE id = ?').run(id);
 }
 
+// Find a proxy by its connection details, or create a new one.
+// Used during cloud pull to avoid duplicating proxy records.
+function findOrCreateProxy(data) {
+  const host = String(data.host || '').trim();
+  const port = Number(data.port) || 0;
+  const username = String(data.username || '');
+  const type = String(data.type || 'http');
+  const password = String(data.password || '');
+
+  if (!host) return null;
+
+  const existing = getDb().prepare(
+    'SELECT * FROM proxies WHERE host = ? AND port = ? AND username = ? AND type = ? LIMIT 1'
+  ).get(host, port, username, type);
+
+  if (existing) {
+    // Keep password up to date if it changed
+    if (existing.password !== password) {
+      return updateProxy(existing.id, { password });
+    }
+    return existing;
+  }
+
+  return createProxy({ name: host, type, host, port, username, password, ip_change_link: '' });
+}
+
 // ---- FOLDERS ----
 function listFolders() {
   return getDb().prepare('SELECT * FROM folders ORDER BY id').all();
@@ -516,7 +542,7 @@ module.exports = {
   initDatabase, getDb,
   listProfiles, getProfile, createProfile, updateProfile, deleteProfile, getProfileByRemoteId,
   listTags, getProfileTags, setProfileTags,
-  listProxies, createProxy, updateProxy, deleteProxy,
+  listProxies, createProxy, updateProxy, deleteProxy, findOrCreateProxy,
   listFolders, createFolder,
   listGroups, createGroup,
   getSetting, setSetting,

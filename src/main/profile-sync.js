@@ -353,11 +353,34 @@ function normalizeProfileForPayload(profile) {
     cloudUpdatedAt: profile.cloud_updated_at || '',
     // Pass creator name so server preserves it (e.g. when created via API with custom created_by)
     createdByName: profile.created_by || '',
+    // Proxy is included so it syncs across devices; proxy_id itself stays local
+    proxy: profile.proxy_host
+      ? {
+          type: profile.proxy_type || 'http',
+          host: profile.proxy_host || '',
+          port: Number(profile.proxy_port) || 0,
+          username: profile.proxy_username || '',
+          password: profile.proxy_password || '',
+        }
+      : null,
   };
 }
 
 function normalizeCloudProfile(item) {
   const root = item && typeof item === 'object' ? item : {};
+
+  // Parse proxy object sent from cloud (may be null if profile has no proxy)
+  const rawProxy = root.proxy && typeof root.proxy === 'object' ? root.proxy : null;
+  const proxy = (rawProxy && rawProxy.host)
+    ? {
+        type: String(rawProxy.type || 'http'),
+        host: String(rawProxy.host || ''),
+        port: Number(rawProxy.port) || 0,
+        username: String(rawProxy.username || ''),
+        password: String(rawProxy.password || ''),
+      }
+    : null;
+
   return {
     remoteId: String(root.remoteId || root.id || '').trim(),
     teamId: String(root.teamId || '').trim(),
@@ -382,6 +405,8 @@ function normalizeCloudProfile(item) {
         (root.createdBy && typeof root.createdBy === 'object' ? root.createdBy.name : root.createdBy) ||
         root.created_by      || ''
       ).trim(),
+      // Proxy object is resolved to a local proxy_id in pullProfilesFromCloud
+      _proxy: proxy,
     },
     deleted: Boolean(root.deleted || root.isDeleted)
   };
@@ -660,6 +685,21 @@ async function pullProfilesFromCloud() {
         pulled += 1;
       }
       continue;
+    }
+
+    // Resolve proxy object → local proxy_id (findOrCreateProxy deduplicates by host+port+username+type)
+    const proxyData = cloud.data._proxy;
+    delete cloud.data._proxy;
+    if (proxyData && proxyData.host) {
+      try {
+        const proxy = db.findOrCreateProxy(proxyData);
+        if (proxy) cloud.data.proxy_id = proxy.id;
+      } catch (_) {
+        // Non-fatal: proxy stays unset rather than blocking the whole pull
+      }
+    } else if (proxyData === null && existing) {
+      // Cloud explicitly has no proxy → clear local proxy
+      cloud.data.proxy_id = null;
     }
 
     if (existing) {
