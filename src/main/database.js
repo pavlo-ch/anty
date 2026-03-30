@@ -1,4 +1,5 @@
 const Database = require('better-sqlite3');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
@@ -16,12 +17,36 @@ function ensureColumn(tableName, columnName, definitionSql) {
 
 function getDataDir() {
   if (process.env.ANTY_DATA_DIR) return process.env.ANTY_DATA_DIR;
+
+  // When running inside Electron — use app.getPath('userData')
   try {
     const { app } = require('electron');
     return app.getPath('userData');
-  } catch {
-    return path.join(os.homedir(), '.anty');
+  } catch { /* not Electron */ }
+
+  // When running as standalone API server — auto-detect where Electron wrote the DB
+  const home = os.homedir();
+  const candidates = process.platform === 'win32'
+    ? [
+        path.join(process.env.APPDATA || '', 'anty-browser'),
+        path.join(process.env.APPDATA || '', 'Anty Browser'),
+      ]
+    : process.platform === 'darwin'
+    ? [
+        path.join(home, 'Library', 'Application Support', 'anty-browser'),
+        path.join(home, 'Library', 'Application Support', 'Anty Browser'),
+      ]
+    : [
+        path.join(home, '.config', 'anty-browser'),
+        path.join(home, '.config', 'Anty Browser'),
+      ];
+
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, 'anty_browser.db'))) return dir;
   }
+
+  // Fallback — use first candidate (will be created on init)
+  return candidates[0] || path.join(home, '.anty');
 }
 
 function getDbPath() {
