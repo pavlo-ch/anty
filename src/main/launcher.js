@@ -412,13 +412,26 @@ async function launchProfile(profileId, mainWindow) {
       ],
     };
 
-    // Find Chromium executable — try common paths
-    const chromiumPaths = [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Chromium.app/Contents/MacOS/Chromium',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/google-chrome',
-    ];
+    // Find Chromium executable — try common paths per platform
+    const isWin = process.platform === 'win32';
+    const pf64 = process.env['ProgramW6432'] || process.env['PROGRAMFILES'] || 'C:\\Program Files';
+    const pf86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+    const local = process.env['LOCALAPPDATA'] || '';
+
+    const chromiumPaths = isWin
+      ? [
+          `${pf64}\\Google\\Chrome\\Application\\chrome.exe`,
+          `${pf86}\\Google\\Chrome\\Application\\chrome.exe`,
+          local ? `${local}\\Google\\Chrome\\Application\\chrome.exe` : '',
+          `${pf64}\\Chromium\\Application\\chrome.exe`,
+          `${pf86}\\Chromium\\Application\\chrome.exe`,
+        ].filter(Boolean)
+      : [
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          '/Applications/Chromium.app/Contents/MacOS/Chromium',
+          '/usr/bin/chromium-browser',
+          '/usr/bin/google-chrome',
+        ];
 
     let executablePath = null;
     for (const p of chromiumPaths) {
@@ -431,9 +444,11 @@ async function launchProfile(profileId, mainWindow) {
     if (executablePath) {
       launchOptions.executablePath = executablePath;
     } else {
+      const installHint = isWin
+        ? 'Install Google Chrome from https://www.google.com/chrome and try again.'
+        : 'Install Google Chrome and try again.';
       throw new Error(
-        'Google Chrome or Chromium not found.\n' +
-        'Install Google Chrome and try again.\n' +
+        `Google Chrome or Chromium not found.\n${installHint}\n` +
         'Expected paths:\n' + chromiumPaths.join('\n')
       );
     }

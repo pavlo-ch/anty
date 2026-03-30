@@ -1,6 +1,6 @@
 {
   "name": "anty-browser",
-  "version": "1.0.60",
+  "version": "1.0.61",
   "description": "Anti-detect browser with fingerprint spoofing and profile isolation",
   "main": "src/main/main.js",
   "scripts": {
@@ -50,9 +50,16 @@
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "win": {
-      "target": [
-        "nsis"
-      ]
+      "target": ["nsis"],
+      "icon": "src/renderer/assets/desktop-icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Anty Browser",
+      "deleteAppDataOnUninstall": false
     },
     "files": [
       "src/**/*",
