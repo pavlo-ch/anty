@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Rebuild native modules for Electron
+        run: npm run rebuild
+
       - name: Validate version matches tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

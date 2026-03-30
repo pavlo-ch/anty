@@ -669,6 +669,15 @@ function registerUpdater(window) {
   autoUpdater.on('error', (err) => {
     downloadTriggered = false;
     const message = err?.message || String(err);
+
+    // 404 on latest-mac.yml means the macOS release artifacts aren't uploaded yet
+    // (e.g. build still in progress). Treat as "already up to date" — don't alarm the user.
+    if (message.includes('404') && message.includes('latest-mac.yml')) {
+      logEvent('info', 'update_check_skipped_mac_artifacts_not_ready', { message });
+      emitStatus({ state: 'latest' });
+      return;
+    }
+
     const mandatoryActive = mandatoryDownloadRequested
       || mandatoryDownloadState.state === 'mandatory_downloading'
       || mandatoryDownloadState.state === 'mandatory_download_retry';

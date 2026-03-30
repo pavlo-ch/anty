@@ -428,7 +428,9 @@ function setupEventListeners() {
       await window.api.checkAppUpdates();
       showToast('Update check started', 'success');
     } catch (err) {
-      showToast('Update check failed: ' + err.message, 'error');
+      // Show a clean message — the raw electron-updater error is too technical for users
+      showToast('Could not check for updates. Try again later.', 'error');
+      console.error('[Update] check failed:', err);
     } finally {
       btn.disabled = false;
       btn.textContent = 'Check for updates';
