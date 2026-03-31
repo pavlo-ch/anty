@@ -48,6 +48,7 @@ function loadStaticPlatformConfig() {
       staticPlatformConfigCache = {
         authUrl: String(parsed?.authUrl || '').trim(),
         refreshUrl: String(parsed?.refreshUrl || '').trim(),
+        deviceTokenUrl: String(parsed?.deviceTokenUrl || '').trim(),
         profilesPushUrl: String(parsed?.profilesPushUrl || '').trim(),
         profilesPullUrl: String(parsed?.profilesPullUrl || '').trim(),
         cloudProfilesRequired: parseBoolean(parsed?.cloudProfilesRequired, true)
@@ -61,6 +62,7 @@ function loadStaticPlatformConfig() {
   staticPlatformConfigCache = {
     authUrl: '',
     refreshUrl: '',
+    deviceTokenUrl: '',
     profilesPushUrl: '',
     profilesPullUrl: '',
     cloudProfilesRequired: true
@@ -105,6 +107,16 @@ function getRefreshUrl() {
   ).trim();
   if (configured) return configured;
   return deriveSiblingUrl(getAuthUrl(), DEFAULT_REFRESH_SEGMENT);
+}
+
+function getDeviceTokenUrl() {
+  const staticConfig = loadStaticPlatformConfig();
+  return (
+    db.getSetting('platform_device_token_url')
+    || process.env.ANTY_PLATFORM_DEVICE_TOKEN_URL
+    || staticConfig.deviceTokenUrl
+    || ''
+  ).trim();
 }
 
 function getProfilesPushUrl() {
@@ -287,6 +299,46 @@ async function refreshAccessToken() {
     return { ok: true, accessToken: normalized.accessToken };
   } catch (err) {
     return { ok: false, reason: err.message || 'refresh_exception' };
+  }
+}
+
+// Fallback: obtain a fresh session using the device ID when refresh_token is expired.
+// Calls the /auth/device-token endpoint which uses the registered device session.
+async function refreshAccessTokenViaDevice() {
+  const deviceTokenUrl = getDeviceTokenUrl();
+  if (!deviceTokenUrl) {
+    return { ok: false, reason: 'device_token_url_not_configured' };
+  }
+  try {
+    const response = await fetch(deviceTokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: ANTY_SOURCE,
+        appVersion: getAppVersion(),
+        device: getDeviceInfo()
+      })
+    });
+    const body = parseJsonSafe(await response.text());
+    if (!response.ok) {
+      return { ok: false, status: response.status, reason: body?.error || `device_token_failed_${response.status}` };
+    }
+    const accessToken = body?.access_token || '';
+    const refreshToken = body?.refresh_token || '';
+    const expiresAt = body?.expires_at || '';
+    if (!accessToken) {
+      return { ok: false, reason: 'missing_access_token_in_device_response' };
+    }
+    saveSessionTokens({ accessToken, refreshToken, expiresAt });
+    // Mark session as valid again
+    try {
+      db.getDb().prepare(
+        "UPDATE account_state SET is_logged_in = 1, updated_at = datetime('now') WHERE id = 1"
+      ).run();
+    } catch (_) {}
+    return { ok: true, accessToken };
+  } catch (err) {
+    return { ok: false, reason: err.message || 'device_token_exception' };
   }
 }
 
@@ -487,7 +539,11 @@ function isCloudBootstrapped() {
 async function fetchWithAuthRetry(url, payload) {
   let token = getAccessToken();
   if (!token) {
-    const refreshedWithoutToken = await refreshAccessToken();
+    let refreshedWithoutToken = await refreshAccessToken();
+    // Fallback to device-based token if refresh_token is also invalid
+    if (!refreshedWithoutToken.ok) {
+      refreshedWithoutToken = await refreshAccessTokenViaDevice();
+    }
     if (!refreshedWithoutToken.ok) {
       return {
         ok: false,
@@ -520,7 +576,11 @@ async function fetchWithAuthRetry(url, payload) {
     let result = await send(token);
     if (result.ok || result.status !== 401) return result;
 
-    const refreshed = await refreshAccessToken();
+    let refreshed = await refreshAccessToken();
+    // If refresh_token is expired/invalid, fall back to device-based token renewal
+    if (!refreshed.ok && (refreshed.reason === 'invalid_refresh_token' || refreshed.status === 401)) {
+      refreshed = await refreshAccessTokenViaDevice();
+    }
     if (!refreshed.ok) {
       if (result.status === 401 || result.status === 403 || result.status === 423) {
         markSessionInvalid();
