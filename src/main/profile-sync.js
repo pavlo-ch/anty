@@ -292,8 +292,14 @@ async function refreshAccessToken() {
 
 function isLoggedIn() {
   const row = getStateRow() || {};
-  if (Number(row.is_logged_in || 0) !== 1) return false;
-  return Boolean(getAccessToken() || getRefreshToken());
+  // If we have tokens, let fetchWithAuthRetry attempt the sync and handle 401/refresh.
+  // Only skip if there are truly no tokens (explicit logout clears them).
+  const hasToken = Boolean(getAccessToken() || getRefreshToken());
+  if (!hasToken) return false;
+  // Respect explicit is_logged_in = 1 as a fast path, but also allow syncing when
+  // is_logged_in = 0 yet tokens exist (e.g. server context after token expiry — the
+  // refresh flow inside fetchWithAuthRetry will fix the session or mark it invalid).
+  return true;
 }
 
 function getOrCreateStableDeviceId() {
