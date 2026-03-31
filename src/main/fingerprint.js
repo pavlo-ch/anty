@@ -779,12 +779,84 @@ function buildInjectionScript(fingerprint) {
   // ===== 13. NAVIGATOR OVERRIDES =====
   Object.defineProperty(navigator, 'webdriver', { get: () => false });
   Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
-  
-  // Remove automation signals
+
+  // ===== 14. PERMISSIONS (Google checks this — Playwright returns "denied" by default) =====
+  if (navigator.permissions && navigator.permissions.query) {
+    const origQuery = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = function(parameters) {
+      const name = parameters && parameters.name;
+      // Return "prompt" for notifications (automation returns "denied" → detected)
+      if (name === 'notifications' || name === 'push') {
+        return Promise.resolve({ state: 'prompt', onchange: null });
+      }
+      return origQuery(parameters);
+    };
+  }
+
+  // ===== 15. window.chrome (absent in Playwright — Google immediately detects) =====
+  if (!window.chrome) {
+    const chrome = {
+      app: {
+        isInstalled: false,
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+        getDetails: function() { return null; },
+        getIsInstalled: function() { return false; },
+        installState: function(cb) { cb('not_installed'); },
+        runningState: function() { return 'cannot_run'; },
+      },
+      runtime: {
+        OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
+        OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+        PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
+        PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+        RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
+        connect: function() { return { postMessage: function() {}, disconnect: function() {}, onMessage: { addListener: function() {}, removeListener: function() {} }, onDisconnect: { addListener: function() {}, removeListener: function() {} } }; },
+        sendMessage: function() {},
+        onMessage: { addListener: function() {}, removeListener: function() {}, hasListener: function() { return false; } },
+        onConnect: { addListener: function() {}, removeListener: function() {}, hasListener: function() { return false; } },
+        onInstalled: { addListener: function() {}, removeListener: function() {}, hasListener: function() { return false; } },
+        id: undefined,
+      },
+      loadTimes: function() {
+        return {
+          requestTime: performance.timing ? performance.timing.navigationStart / 1000 : Date.now() / 1000,
+          startLoadTime: performance.timing ? performance.timing.navigationStart / 1000 : Date.now() / 1000,
+          commitLoadTime: performance.timing ? performance.timing.responseStart / 1000 : Date.now() / 1000,
+          finishDocumentLoadTime: 0,
+          finishLoadTime: 0,
+          firstPaintTime: 0,
+          firstPaintAfterLoadTime: 0,
+          navigationType: 'Other',
+          wasFetchedViaSpdy: false,
+          wasNpnNegotiated: false,
+          npnNegotiatedProtocol: 'http/1.1',
+          wasAlternateProtocolAvailable: false,
+          connectionInfo: 'http/1.1',
+        };
+      },
+      csi: function() {
+        return {
+          startE: performance.timing ? performance.timing.navigationStart : Date.now(),
+          onloadT: performance.timing ? performance.timing.loadEventEnd : Date.now(),
+          pageT: Date.now() - (performance.timing ? performance.timing.navigationStart : Date.now()),
+          tran: 15,
+        };
+      },
+    };
+    try {
+      Object.defineProperty(window, 'chrome', { value: chrome, writable: false, enumerable: true, configurable: false });
+    } catch(e) {
+      window.chrome = chrome;
+    }
+  }
+
+  // ===== 16. Remove Playwright/CDP traces =====
   delete window.__playwright;
   delete window.__pw_manual;
-  
-  console.log('[Anty] Fingerprint injected successfully');
+  delete window.__pwInitScripts;
+  // Remove Playwright's CDP binding marker
+  try { delete window[Object.keys(window).find(k => k.startsWith('__playwright') || k.startsWith('__pw_')) ]; } catch(e) {}
 })();
 `;
 }

@@ -409,6 +409,9 @@ async function launchProfile(profileId, mainWindow) {
         '--no-first-run',
         '--no-default-browser-check',
         `--window-size=${viewportWidth},${viewportHeight}`,
+        // Key flag: disables the AutomationControlled blink feature
+        // which is what makes navigator.webdriver=true and triggers Google bot detection
+        '--disable-blink-features=AutomationControlled',
       ],
     };
 
