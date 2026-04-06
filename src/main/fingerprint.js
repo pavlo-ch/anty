@@ -779,6 +779,34 @@ function buildInjectionScript(fingerprint) {
   // ===== 13. NAVIGATOR OVERRIDES =====
   Object.defineProperty(navigator, 'webdriver', { get: () => false });
   Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+  Object.defineProperty(navigator, 'appName', { get: () => 'Netscape' });
+  Object.defineProperty(navigator, 'appCodeName', { get: () => 'Mozilla' });
+
+  // navigator.connection — Google checks existence; Playwright doesn't emulate it
+  if (!navigator.connection) {
+    try {
+      Object.defineProperty(navigator, 'connection', {
+        get: () => ({
+          rtt: 50,
+          type: 'wifi',
+          saveData: false,
+          downlink: 10,
+          effectiveType: '4g',
+          onchange: null,
+          addEventListener: function() {},
+          removeEventListener: function() {},
+        }),
+        configurable: true,
+      });
+    } catch(e) {}
+  }
+
+  // window.Notification.permission — Playwright sets to "denied"; real Chrome = "default"
+  try {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+      Object.defineProperty(Notification, 'permission', { get: () => 'default' });
+    }
+  } catch(e) {}
 
   // ===== 14. PERMISSIONS (Google checks this — Playwright returns "denied" by default) =====
   if (navigator.permissions && navigator.permissions.query) {
