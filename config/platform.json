@@ -1,12 +1,12 @@
 {
-  "authUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/login",
-  "authStartUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/auth/start",
-  "authPollUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/auth/poll",
-  "refreshUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/refresh",
-  "deviceTokenUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/auth/device-token",
-  "logoutUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/logout",
-  "profilesPushUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/profiles/push",
-  "profilesPullUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/profiles/pull",
+  "authUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/login",
+  "authStartUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/auth/start",
+  "authPollUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/auth/poll",
+  "refreshUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/refresh",
+  "deviceTokenUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/auth/device-token",
+  "logoutUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/logout",
+  "profilesPushUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/profiles/push",
+  "profilesPullUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/profiles/pull",
   "cloudProfilesRequired": true,
-  "logUrl": "https://blackaffiliate.netlify.app/api/desktop/anty/logs"
+  "logUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/logs"
 }
