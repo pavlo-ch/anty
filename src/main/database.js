@@ -200,6 +200,9 @@ function initDatabase() {
     VALUES (1)
   `).run();
 
+  // On startup no profiles are running — reset any status='running' left from a previous crash.
+  db.prepare("UPDATE profiles SET status='ready' WHERE status='running'").run();
+
   console.log('[DB] Database initialized successfully');
   return db;
 }

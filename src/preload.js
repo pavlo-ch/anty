@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('api', {
   getAccountEvents: (limit = 50) => ipcRenderer.invoke('account:events', limit),
   loginAccount: (payload) => ipcRenderer.invoke('account:login', payload),
   logoutAccount: (payload) => ipcRenderer.invoke('account:logout', payload),
+  getPendingAuthUrl: () => ipcRenderer.invoke('account:pending-auth-url'),
+  reopenAuthUrl: () => ipcRenderer.invoke('account:reopen-auth-url'),
 
   // Window controls
   minimizeWindow: () => ipcRenderer.send('window:minimize'),

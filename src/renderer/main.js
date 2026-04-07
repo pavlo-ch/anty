@@ -449,6 +449,9 @@ function setupEventListeners() {
   document.getElementById('btn-account-logout')?.addEventListener('click', logoutAccount);
 
   document.getElementById('btn-modal-login')?.addEventListener('click', loginFromModal);
+  document.getElementById('btn-modal-reopen-auth')?.addEventListener('click', async () => {
+    await window.api.reopenAuthUrl?.();
+  });
 
   document.getElementById('btn-update-lock-install')?.addEventListener('click', handleMandatoryUpdatePrimaryAction);
   document.getElementById('btn-update-lock-restart')?.addEventListener('click', handleMandatoryRestartAction);
@@ -1634,8 +1637,22 @@ async function loginAccount() {
 async function loginFromModal() {
   setLoginModalError('');
   setAccountBusy(true);
+  const reopenEl = document.getElementById('login-modal-reopen');
+  if (reopenEl) reopenEl.classList.add('hidden');
+
+  // Kick off the login without awaiting — so we can fetch the auth URL once it's opened.
+  const loginPromise = window.api.loginAccount({ mode: 'web' });
+
+  // After a short delay, fetch the pending auth URL and show the re-open button.
+  const reopenTimer = setTimeout(async () => {
+    try {
+      const url = await window.api.getPendingAuthUrl?.();
+      if (url && reopenEl) reopenEl.classList.remove('hidden');
+    } catch (_) {}
+  }, 1000);
+
   try {
-    accountState = await window.api.loginAccount({ mode: 'web' });
+    accountState = await loginPromise;
     renderAccountState(accountState);
     await loadData();
     renderProfilesList();
@@ -1647,7 +1664,9 @@ async function loginFromModal() {
     setLoginModalError(msg);
     showToast(msg, 'error');
   } finally {
+    clearTimeout(reopenTimer);
     setAccountBusy(false);
+    if (reopenEl) reopenEl.classList.add('hidden');
   }
 }
 

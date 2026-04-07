@@ -7,6 +7,9 @@ const crypto = require('crypto');
 
 const DEFAULT_PLATFORM_AUTH_URL = '';
 const DEFAULT_PLATFORM_LOG_URL = '';
+
+// Stores the auth URL of the currently-pending web login flow so the user can re-open it.
+let _pendingWebLoginUrl = null;
 const ENCRYPTED_PREFIX = 'enc:v1:';
 const PLAIN_PREFIX = 'plain:v1:';
 const ANTY_SOURCE = 'anty-browser';
@@ -463,7 +466,9 @@ function getAccountState() {
   const savedPassword = rememberMe ? decryptSecret(row.password_encrypted || '') : '';
   const rowLoggedIn = Number(row.is_logged_in || 0) === 1;
   const hasUsableToken = Boolean(decryptSecret(row.access_token || '') || decryptSecret(row.refresh_token || ''));
-  const isLoggedIn = rowLoggedIn && hasUsableToken;
+  // Consider user logged in if they have any tokens — is_logged_in flag may be 0 after a crash
+  // or when tokens were refreshed via device-token before the flag was updated.
+  const isLoggedIn = hasUsableToken;
 
   if (rowLoggedIn && !hasUsableToken) {
     updateState({ is_logged_in: 0 });
@@ -485,6 +490,10 @@ function getAccountState() {
 
 function isLoggedIn() {
   return Boolean(getAccountState().isLoggedIn);
+}
+
+function getPendingWebLoginUrl() {
+  return _pendingWebLoginUrl;
 }
 
 function listAccountEvents(limit = 50) {
@@ -715,11 +724,13 @@ async function loginWithPlatformWeb(payload = {}) {
     throw new Error(msg);
   }
 
+  _pendingWebLoginUrl = authUrl;
   await shell.openExternal(authUrl);
   insertAccountEvent('login_browser_opened', 'info', 'Platform login page opened', { mode: 'web' });
   void sendPlatformLog('login_browser_opened', 'info', 'Platform login page opened', { mode: 'web' });
 
   const deadline = Date.now() + timeoutMs;
+  try {
   while (Date.now() < deadline) {
     await delay(pollIntervalMs);
     const pollResponse = await fetch(pollUrl, {
@@ -772,6 +783,9 @@ async function loginWithPlatformWeb(payload = {}) {
   insertAccountEvent('login_failed', 'error', timeoutMessage, { mode: 'web', stage: 'poll_timeout' });
   void sendPlatformLog('login_failed', 'error', timeoutMessage, { mode: 'web', stage: 'poll_timeout' });
   throw new Error(timeoutMessage);
+  } finally {
+    _pendingWebLoginUrl = null;
+  }
 }
 
 async function login(payload = {}) {
@@ -890,5 +904,6 @@ module.exports = {
   getAccountState,
   listAccountEvents,
   getPlatformConfig,
-  setPlatformConfig
+  setPlatformConfig,
+  getPendingWebLoginUrl
 };

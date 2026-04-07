@@ -642,6 +642,12 @@ async function launchProfile(profileId, mainWindow) {
 async function stopProfile(profileId) {
   const instance = runningBrowsers.get(profileId);
   if (!instance) {
+    // Not in the running map — check if the DB has it stuck as 'running' (e.g. after a crash).
+    const profile = getProfile(profileId);
+    if (profile?.status === 'running') {
+      updateProfile(profileId, { status: 'ready' });
+      return { success: true };
+    }
     return { success: false, error: 'Profile is not running' };
   }
 

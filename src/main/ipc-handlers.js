@@ -289,6 +289,13 @@ function registerIpcHandlers() {
   ipcMain.handle('account:events', (_, limit) => auth.listAccountEvents(limit));
   ipcMain.handle('account:login', (_, payload) => auth.login(payload || {}));
   ipcMain.handle('account:logout', (_, payload) => auth.logout(payload || {}));
+  ipcMain.handle('account:pending-auth-url', () => auth.getPendingWebLoginUrl() || null);
+  ipcMain.handle('account:reopen-auth-url', async () => {
+    const url = auth.getPendingWebLoginUrl();
+    if (!url) return { ok: false, reason: 'no_pending_url' };
+    await shell.openExternal(url);
+    return { ok: true };
+  });
 
   // ---- FINGERPRINT TOOLS ----
   // Parse a UA string → return best-matching hardware fields
