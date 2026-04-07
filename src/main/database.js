@@ -184,6 +184,7 @@ function initDatabase() {
   ensureColumn('profiles', 'cloud_updated_at', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'created_by', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'warmup_url', "TEXT DEFAULT ''");
+  ensureColumn('profiles', 'running_on', "TEXT DEFAULT ''");
   ensureColumn('account_state', 'team_name', "TEXT DEFAULT ''");
 
   // Seed defaults if empty
@@ -200,8 +201,10 @@ function initDatabase() {
     VALUES (1)
   `).run();
 
-  // On startup no profiles are running — reset any status='running' left from a previous crash.
-  db.prepare("UPDATE profiles SET status='ready' WHERE status='running'").run();
+  // On startup, reset profiles that were "running" on THIS device (crashed last session).
+  // Do NOT reset profiles running on other team members' devices.
+  const thisHost = os.hostname();
+  db.prepare("UPDATE profiles SET status='ready', running_on='' WHERE status='running' AND (running_on='' OR running_on=?)").run(thisHost);
 
   console.log('[DB] Database initialized successfully');
   return db;

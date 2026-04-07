@@ -582,7 +582,7 @@ async function launchProfile(profileId, mainWindow) {
       await navigate(page);
 
       runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true });
-      updateProfile(profileId, { status: 'running' });
+      updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
       context.on('close', async () => {
         await saveCookies(context);
@@ -613,7 +613,7 @@ async function launchProfile(profileId, mainWindow) {
     await navigate(page);
 
     runningBrowsers.set(profileId, { context, page });
-    updateProfile(profileId, { status: 'running' });
+    updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
     if (mainWindow) {
       mainWindow.webContents.send('browser:status', { profileId, status: 'running' });
@@ -623,7 +623,7 @@ async function launchProfile(profileId, mainWindow) {
       // Save cookies defensively — context may already be partially closed
       try { await saveCookies(context); } catch {}
       runningBrowsers.delete(profileId);
-      try { updateProfile(profileId, { status: 'ready' }); } catch {}
+      try { updateProfile(profileId, { status: 'ready', running_on: '' }); } catch {}
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('browser:status', { profileId, status: 'ready' });
       }
@@ -645,7 +645,7 @@ async function stopProfile(profileId) {
     // Not in the running map — check if the DB has it stuck as 'running' (e.g. after a crash).
     const profile = getProfile(profileId);
     if (profile?.status === 'running') {
-      updateProfile(profileId, { status: 'ready' });
+      updateProfile(profileId, { status: 'ready', running_on: '' });
       return { success: true };
     }
     return { success: false, error: 'Profile is not running' };
@@ -662,7 +662,7 @@ async function stopProfile(profileId) {
     await instance.context.close();
     if (instance.browserServer) await instance.browserServer.close().catch(() => {});
     runningBrowsers.delete(profileId);
-    updateProfile(profileId, { status: 'ready' });
+    updateProfile(profileId, { status: 'ready', running_on: '' });
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };

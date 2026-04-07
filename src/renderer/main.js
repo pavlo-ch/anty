@@ -848,6 +848,28 @@ async function stopProfile(id) {
   }
 }
 
+async function forceStopProfile(id) {
+  const profile = profiles.find((p) => p.id === id);
+  const device = profile?.running_on ? ` on "${profile.running_on}"` : ' on another device';
+  if (!window.confirm(`Force stop profile "${profile?.name || id}"${device}?\n\nUse this only if the other machine crashed or is offline.`)) return;
+  if (pendingProfiles.has(id)) return;
+  pendingProfiles.add(id);
+  renderProfilesList(document.getElementById('search-input')?.value || '');
+  try {
+    const result = await window.api.stopProfile(id);
+    if (result.success) {
+      showToast('Profile force-stopped', 'success');
+    } else {
+      showToast(result.error || 'Force stop failed', 'error');
+    }
+  } catch (err) {
+    showToast('Failed to force stop: ' + err.message, 'error');
+  } finally {
+    pendingProfiles.delete(id);
+    renderProfilesList(document.getElementById('search-input')?.value || '');
+  }
+}
+
 // ===== GEO HELPERS =====
 function toggleGeoManualFields(mode) {
   const fields = document.getElementById('geo-manual-fields');
@@ -1222,9 +1244,9 @@ function renderProfilesList(searchTerm = '') {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
             </button>
             <button class="profile-launch-btn ${isRunningLocally ? 'running' : isRunningByOther ? 'other-running' : ''} ${isPending ? 'pending' : ''}"
-                    onclick="event.stopPropagation(); ${isPending || isRunningByOther ? '' : isRunningLocally ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
-                    title="${isPending ? 'Please wait...' : isRunningByOther ? 'In use by another user' : isRunningLocally ? 'Stop' : 'Launch'}"
-                    ${isPending || isRunningByOther ? 'disabled' : ''}>
+                    onclick="event.stopPropagation(); ${isPending ? '' : isRunningByOther ? `forceStopProfile(${p.id})` : isRunningLocally ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
+                    title="${isPending ? 'Please wait...' : isRunningByOther ? 'Force stop (running on ' + escapeHtml(p.running_on || 'another device') + ')' : isRunningLocally ? 'Stop' : 'Launch'}"
+                    ${isPending ? 'disabled' : ''}>
               ${isPending
                 ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>'
                 : isRunningByOther
@@ -1243,7 +1265,7 @@ function renderProfilesList(searchTerm = '') {
           </div>
           <span class="profile-item-country">${p.created_by ? escapeHtml(p.created_by) : (countryCode || '')}</span>
           ${isRunningLocally ? '<span class="badge badge-status running">Running</span>' : ''}
-          ${isRunningByOther ? '<span class="badge badge-status in-use">In use</span>' : ''}
+          ${isRunningByOther ? `<span class="badge badge-status in-use" title="Running on ${escapeHtml(p.running_on || 'unknown device')}">In use${p.running_on ? ': ' + escapeHtml(p.running_on) : ''}</span>` : ''}
         </div>
         <span class="profile-item-engine">Chromium</span>
       </div>

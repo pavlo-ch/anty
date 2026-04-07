@@ -411,6 +411,7 @@ function normalizeProfileForPayload(profile) {
     cloudUpdatedAt: profile.cloud_updated_at || '',
     // Pass creator name so server preserves it (e.g. when created via API with custom created_by)
     createdByName: profile.created_by || '',
+    runningOn: profile.running_on || '',
     // Proxy is included so it syncs across devices; proxy_id itself stays local
     proxy: profile.proxy_host
       ? {
@@ -455,6 +456,7 @@ function normalizeCloudProfile(item) {
       remote_id: String(root.remoteId || root.id || '').trim(),
       team_id: String(root.teamId || '').trim(),
       cloud_updated_at: String(root.updatedAt || root.cloudUpdatedAt || '').trim(),
+      running_on: String(root.runningOn || root.running_on || '').trim(),
       // Map cloud created_by_name → local created_by
       // Note: pull response returns createdBy as object {id, email, name} — extract .name
       created_by: String(
