@@ -404,7 +404,6 @@ async function launchProfile(profileId, mainWindow) {
     const launchOptions = {
       headless: false,
       args: [
-        '--disable-features=IsolateOrigins,site-per-process',
         '--disable-infobars',
         '--no-first-run',
         '--no-default-browser-check',
@@ -562,7 +561,6 @@ async function launchProfile(profileId, mainWindow) {
         executablePath,
         args: [
           `--user-data-dir=${userDataDir}`,
-          '--disable-features=IsolateOrigins,site-per-process',
           '--disable-infobars',
           '--no-first-run',
           '--no-default-browser-check',
@@ -602,8 +600,7 @@ async function launchProfile(profileId, mainWindow) {
     const context = await chromium.launchPersistentContext(userDataDir, {
       ...launchOptions,
       ...contextOptions,
-      chromiumSandbox: false,
-      ignoreDefaultArgs: ['--enable-automation'],
+      ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
     });
 
     await context.addInitScript(injectionScript);
