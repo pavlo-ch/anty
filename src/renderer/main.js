@@ -1152,9 +1152,9 @@ async function checkCurrentProxy() {
     if (result.success) {
       const countryPart = result.countryCode ? ` ${result.flag || ''} ${result.countryCode}` : '';
       const langPart = result.language ? ` ${result.language}` : '';
-      showToast(`✅ Proxy OK! IP: ${result.ip}${countryPart}${langPart}`, 'success');
+      showToast(`Proxy OK! IP: ${result.ip}${countryPart}${langPart}`, 'success');
     } else {
-      showToast(`❌ Proxy check failed: ${result.error}`, 'error');
+      showToast(`Proxy check failed: ${result.error}`, 'error');
     }
   } catch (err) {
     showToast('Proxy check error: ' + err.message, 'error');
