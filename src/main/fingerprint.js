@@ -525,72 +525,110 @@ function buildInjectionScript(fingerprint) {
   
   const fp = ${JSON.stringify(fingerprint)};
 
+  // ===== UTIL: stealth property override on prototype =====
+  function stealthOverride(obj, prop, getter) {
+    const proto = Object.getPrototypeOf(obj);
+    if (proto && prop in proto) {
+      Object.defineProperty(proto, prop, {
+        get: getter,
+        configurable: true,
+        enumerable: true,
+      });
+    } else {
+      Object.defineProperty(obj, prop, {
+        get: getter,
+        configurable: true,
+        enumerable: true,
+      });
+    }
+  }
+
+  // ===== UTIL: make function look native =====
+  function makeNative(fn, name) {
+    const orig = fn.toString;
+    fn.toString = function() { return 'function ' + name + '() { [native code] }'; };
+    if (name) Object.defineProperty(fn, 'name', { value: name, configurable: true });
+    return fn;
+  }
+
   // ===== 1. USER AGENT & PLATFORM =====
-  Object.defineProperty(navigator, 'userAgent', { get: () => fp.userAgent });
-  Object.defineProperty(navigator, 'platform', { get: () => fp.platform });
-  Object.defineProperty(navigator, 'appVersion', { get: () => fp.userAgent.replace('Mozilla/', '') });
+  stealthOverride(navigator, 'userAgent', () => fp.userAgent);
+  stealthOverride(navigator, 'platform', () => fp.platform);
+  stealthOverride(navigator, 'appVersion', () => fp.userAgent.replace('Mozilla/', ''));
   
   // ===== 2. HARDWARE =====
-  Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => fp.hardware.cpuCores });
-  Object.defineProperty(navigator, 'deviceMemory', { get: () => fp.hardware.memoryGb });
-  Object.defineProperty(navigator, 'maxTouchPoints', { get: () => fp.hardware.maxTouchPoints });
-  
+  stealthOverride(navigator, 'hardwareConcurrency', () => fp.hardware.cpuCores);
+  stealthOverride(navigator, 'deviceMemory', () => fp.hardware.memoryGb);
+  stealthOverride(navigator, 'maxTouchPoints', () => fp.hardware.maxTouchPoints);
+
   // ===== 3. SCREEN =====
-  Object.defineProperty(screen, 'width', { get: () => fp.screen.width });
-  Object.defineProperty(screen, 'height', { get: () => fp.screen.height });
-  Object.defineProperty(screen, 'availWidth', { get: () => fp.screen.availWidth });
-  Object.defineProperty(screen, 'availHeight', { get: () => fp.screen.availHeight });
-  Object.defineProperty(screen, 'colorDepth', { get: () => fp.screen.colorDepth });
-  Object.defineProperty(window, 'devicePixelRatio', { get: () => fp.screen.pixelRatio });
-  Object.defineProperty(window, 'outerWidth', { get: () => fp.screen.width });
-  Object.defineProperty(window, 'outerHeight', { get: () => fp.screen.height });
+  stealthOverride(screen, 'width', () => fp.screen.width);
+  stealthOverride(screen, 'height', () => fp.screen.height);
+  stealthOverride(screen, 'availWidth', () => fp.screen.availWidth);
+  stealthOverride(screen, 'availHeight', () => fp.screen.availHeight);
+  stealthOverride(screen, 'colorDepth', () => fp.screen.colorDepth);
+  Object.defineProperty(window, 'devicePixelRatio', { get: () => fp.screen.pixelRatio, configurable: true });
+  Object.defineProperty(window, 'outerWidth', { get: () => fp.screen.width + 16, configurable: true });
+  Object.defineProperty(window, 'outerHeight', { get: () => fp.screen.height + 88, configurable: true });
   
   // ===== 4. LANGUAGE & TIMEZONE =====
-  Object.defineProperty(navigator, 'language', { get: () => fp.locale.language });
-  Object.defineProperty(navigator, 'languages', { get: () => Object.freeze([...fp.locale.languages]) });
+  stealthOverride(navigator, 'language', () => fp.locale.language);
+  stealthOverride(navigator, 'languages', () => Object.freeze([...fp.locale.languages]));
   
   const origDTF = Intl.DateTimeFormat;
-  const newDTF = function(...args) {
+  const newDTF = function DateTimeFormat(...args) {
+    if (new.target) {
+      if (args.length > 1 && args[1]) {
+        args[1] = Object.assign({}, args[1], { timeZone: args[1].timeZone || fp.locale.timezone });
+      } else {
+        args[1] = { timeZone: fp.locale.timezone };
+      }
+      return new origDTF(...args);
+    }
     if (args.length > 1 && args[1]) {
-      args[1].timeZone = args[1].timeZone || fp.locale.timezone;
+      args[1] = Object.assign({}, args[1], { timeZone: args[1].timeZone || fp.locale.timezone });
     } else {
       args[1] = { timeZone: fp.locale.timezone };
     }
-    return new origDTF(...args);
+    return origDTF(...args);
   };
   newDTF.prototype = origDTF.prototype;
   newDTF.supportedLocalesOf = origDTF.supportedLocalesOf;
+  Object.defineProperty(newDTF, 'name', { value: 'DateTimeFormat', configurable: true });
+  Object.defineProperty(newDTF, 'length', { value: 0, configurable: true });
+  makeNative(newDTF, 'DateTimeFormat');
   Intl.DateTimeFormat = newDTF;
-  
+
   const origResolvedOptions = origDTF.prototype.resolvedOptions;
-  origDTF.prototype.resolvedOptions = function() {
+  const patchedResolvedOptions = function resolvedOptions() {
     const result = origResolvedOptions.call(this);
     result.timeZone = fp.locale.timezone;
     return result;
   };
+  makeNative(patchedResolvedOptions, 'resolvedOptions');
+  origDTF.prototype.resolvedOptions = patchedResolvedOptions;
   
-  const tzOffsets = {
-    'America/New_York': 300,
-    'America/Chicago': 360,
-    'America/Los_Angeles': 480,
-    'Europe/London': 0,
-    'Europe/Berlin': -60,
-    'Europe/Paris': -60,
-    'Europe/Warsaw': -60,
-    'Europe/Kyiv': -120,
-    'Europe/Madrid': -60,
-    'Europe/Rome': -60,
-    'Europe/Amsterdam': -60,
-    'Europe/Istanbul': -180,
-    'America/Sao_Paulo': 180,
-    'Asia/Tokyo': -540,
-    'Asia/Seoul': -540,
-    'Asia/Shanghai': -480,
-    'Asia/Ho_Chi_Minh': -420,
-    'Asia/Bangkok': -420,
+  // Dynamic timezone offset that respects DST — compute from Intl API
+  const _origDateGetTZOffset = Date.prototype.getTimezoneOffset;
+  Date.prototype.getTimezoneOffset = function() {
+    try {
+      // Use the spoofed timezone to compute the correct offset for THIS date
+      const fmt = new origDTF('en-US', {
+        timeZone: fp.locale.timezone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+      });
+      const parts = fmt.formatToParts(this);
+      const get = (t) => parseInt(parts.find(p => p.type === t).value, 10);
+      const tzYear = get('year'), tzMonth = get('month') - 1, tzDay = get('day');
+      const tzHour = get('hour') === 24 ? 0 : get('hour'), tzMin = get('minute'), tzSec = get('second');
+      const tzDate = new Date(Date.UTC(tzYear, tzMonth, tzDay, tzHour, tzMin, tzSec));
+      return Math.round((tzDate.getTime() - this.getTime()) / -60000);
+    } catch(e) {
+      return _origDateGetTZOffset.call(this);
+    }
   };
-  const tzOffset = tzOffsets[fp.locale.timezone] || 0;
-  Date.prototype.getTimezoneOffset = function() { return tzOffset; };
   
   // ===== 5. CANVAS FINGERPRINT =====
   const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
@@ -618,22 +656,35 @@ function buildInjectionScript(fingerprint) {
   HTMLCanvasElement.prototype.toDataURL = function(...args) {
     try {
       const ctx = this.getContext('2d');
-      if (ctx) {
-        const imageData = origGetImageData.call(ctx, 0, 0, this.width, this.height);
-        const noisyData = addCanvasNoise(imageData);
-        ctx.putImageData(noisyData, 0, 0);
+      if (ctx && this.width > 0 && this.height > 0) {
+        // Non-destructive: create offscreen canvas with noise, read from that
+        const offscreen = document.createElement('canvas');
+        offscreen.width = this.width;
+        offscreen.height = this.height;
+        const offCtx = offscreen.getContext('2d');
+        offCtx.drawImage(this, 0, 0);
+        const imageData = origGetImageData.call(offCtx, 0, 0, offscreen.width, offscreen.height);
+        addCanvasNoise(imageData);
+        offCtx.putImageData(imageData, 0, 0);
+        return origToDataURL.apply(offscreen, args);
       }
     } catch(e) {}
     return origToDataURL.apply(this, args);
   };
-  
+
   HTMLCanvasElement.prototype.toBlob = function(cb, ...args) {
     try {
       const ctx = this.getContext('2d');
-      if (ctx) {
-        const imageData = origGetImageData.call(ctx, 0, 0, this.width, this.height);
-        const noisyData = addCanvasNoise(imageData);
-        ctx.putImageData(noisyData, 0, 0);
+      if (ctx && this.width > 0 && this.height > 0) {
+        const offscreen = document.createElement('canvas');
+        offscreen.width = this.width;
+        offscreen.height = this.height;
+        const offCtx = offscreen.getContext('2d');
+        offCtx.drawImage(this, 0, 0);
+        const imageData = origGetImageData.call(offCtx, 0, 0, offscreen.width, offscreen.height);
+        addCanvasNoise(imageData);
+        offCtx.putImageData(imageData, 0, 0);
+        return origToBlob.call(offscreen, cb, ...args);
       }
     } catch(e) {}
     return origToBlob.call(this, cb, ...args);
@@ -663,14 +714,64 @@ function buildInjectionScript(fingerprint) {
   }
   
   // ===== 7. WEBRTC MASKING =====
-  if (fp.webrtc.mode === 'disabled') {
-    if (window.RTCPeerConnection) {
-      window.RTCPeerConnection = class {
-        constructor() { throw new DOMException('RTCPeerConnection is disabled', 'NotSupportedError'); }
+  // Instead of disabling WebRTC (detectable!), filter out local IP candidates
+  if (window.RTCPeerConnection) {
+    const OrigRTCPC = window.RTCPeerConnection;
+    const patchedRTCPC = function RTCPeerConnection(config, constraints) {
+      // Force the browser to only use relay candidates (no local IP leak)
+      if (!config) config = {};
+      config.iceTransportPolicy = 'relay';
+      if (!config.iceServers || config.iceServers.length === 0) {
+        // Provide a dummy TURN that will fail — this effectively blocks local candidates
+        // while keeping the API shape intact for detection checks
+        config.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+        config.iceTransportPolicy = 'all';
+      }
+      const pc = new OrigRTCPC(config, constraints);
+      // Filter onicecandidate to strip local/srflx candidates that leak real IP
+      const origAddEventListener = pc.addEventListener.bind(pc);
+      pc.addEventListener = function(type, listener, options) {
+        if (type === 'icecandidate') {
+          const wrapped = function(event) {
+            if (event.candidate && event.candidate.candidate) {
+              const c = event.candidate.candidate;
+              // Strip host and srflx candidates (they contain local/real IPs)
+              if (c.indexOf('typ host') !== -1 || c.indexOf('typ srflx') !== -1) {
+                return; // suppress this candidate
+              }
+            }
+            listener.call(this, event);
+          };
+          return origAddEventListener(type, wrapped, options);
+        }
+        return origAddEventListener(type, listener, options);
       };
-    }
+      // Also patch the onicecandidate setter
+      let _onicecandidateFn = null;
+      Object.defineProperty(pc, 'onicecandidate', {
+        get: () => _onicecandidateFn,
+        set: (fn) => {
+          _onicecandidateFn = fn;
+          if (fn) {
+            origAddEventListener('icecandidate', function(event) {
+              if (event.candidate && event.candidate.candidate) {
+                const c = event.candidate.candidate;
+                if (c.indexOf('typ host') !== -1 || c.indexOf('typ srflx') !== -1) return;
+              }
+              fn.call(pc, event);
+            });
+          }
+        },
+        configurable: true,
+      });
+      return pc;
+    };
+    patchedRTCPC.prototype = OrigRTCPC.prototype;
+    patchedRTCPC.generateCertificate = OrigRTCPC.generateCertificate;
+    makeNative(patchedRTCPC, 'RTCPeerConnection');
+    window.RTCPeerConnection = patchedRTCPC;
     if (window.webkitRTCPeerConnection) {
-      window.webkitRTCPeerConnection = window.RTCPeerConnection;
+      window.webkitRTCPeerConnection = patchedRTCPC;
     }
   }
   
@@ -766,21 +867,62 @@ function buildInjectionScript(fingerprint) {
   };
 
   // ===== 12. PLUGINS =====
-  Object.defineProperty(navigator, 'plugins', {
-    get: () => {
-      return [
-        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-      ];
-    }
+  // Modern Chrome (97+) only has PDF plugins — Native Client was removed
+  const pluginData = [
+    { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+    { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+    { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+    { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+    { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+  ];
+  // Build a PluginArray-like object that passes instanceof checks
+  const fakePlugins = Object.create(PluginArray.prototype);
+  pluginData.forEach((p, i) => {
+    const plugin = Object.create(Plugin.prototype);
+    Object.defineProperties(plugin, {
+      name: { value: p.name, enumerable: true },
+      filename: { value: p.filename, enumerable: true },
+      description: { value: p.description, enumerable: true },
+      length: { value: p.length, enumerable: true },
+    });
+    fakePlugins[i] = plugin;
   });
-  
+  Object.defineProperty(fakePlugins, 'length', { value: pluginData.length, enumerable: true });
+  fakePlugins.item = function(i) { return this[i] || null; };
+  fakePlugins.namedItem = function(name) {
+    for (let i = 0; i < this.length; i++) { if (this[i].name === name) return this[i]; }
+    return null;
+  };
+  fakePlugins.refresh = function() {};
+  stealthOverride(navigator, 'plugins', () => fakePlugins);
+
+  // mimeTypes matching plugins
+  const fakeMimeTypes = Object.create(MimeTypeArray.prototype);
+  const mimeType = Object.create(MimeType.prototype);
+  Object.defineProperties(mimeType, {
+    type: { value: 'application/pdf', enumerable: true },
+    suffixes: { value: 'pdf', enumerable: true },
+    description: { value: 'Portable Document Format', enumerable: true },
+    enabledPlugin: { value: fakePlugins[0], enumerable: true },
+  });
+  fakeMimeTypes[0] = mimeType;
+  Object.defineProperty(fakeMimeTypes, 'length', { value: 1, enumerable: true });
+  fakeMimeTypes.item = function(i) { return this[i] || null; };
+  fakeMimeTypes.namedItem = function(name) { return name === 'application/pdf' ? this[0] : null; };
+  stealthOverride(navigator, 'mimeTypes', () => fakeMimeTypes);
+
+  // navigator.pdfViewerEnabled — always true for modern Chrome
+  stealthOverride(navigator, 'pdfViewerEnabled', () => true);
+
   // ===== 13. NAVIGATOR OVERRIDES =====
-  Object.defineProperty(navigator, 'webdriver', { get: () => false });
-  Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
-  Object.defineProperty(navigator, 'appName', { get: () => 'Netscape' });
-  Object.defineProperty(navigator, 'appCodeName', { get: () => 'Mozilla' });
+  // Override on prototype so getOwnPropertyDescriptor(navigator, 'webdriver') returns undefined
+  stealthOverride(navigator, 'webdriver', () => false);
+  // Also delete the instance property if Playwright set it
+  try { delete navigator.webdriver; delete Object.getPrototypeOf(navigator).webdriver; } catch(e) {}
+  Object.defineProperty(Object.getPrototypeOf(navigator), 'webdriver', { get: () => false, configurable: true, enumerable: true });
+  stealthOverride(navigator, 'vendor', () => 'Google Inc.');
+  stealthOverride(navigator, 'appName', () => 'Netscape');
+  stealthOverride(navigator, 'appCodeName', () => 'Mozilla');
 
   // navigator.connection — Google checks existence; Playwright doesn't emulate it
   if (!navigator.connection) {
@@ -883,8 +1025,28 @@ function buildInjectionScript(fingerprint) {
   delete window.__playwright;
   delete window.__pw_manual;
   delete window.__pwInitScripts;
-  // Remove Playwright's CDP binding marker
-  try { delete window[Object.keys(window).find(k => k.startsWith('__playwright') || k.startsWith('__pw_')) ]; } catch(e) {}
+  // Remove ALL Playwright/CDP binding markers (not just the first)
+  try {
+    Object.keys(window).filter(k => k.startsWith('__playwright') || k.startsWith('__pw_')).forEach(k => { try { delete window[k]; } catch(e) {} });
+  } catch(e) {}
+  // Remove CDP-specific markers
+  try { delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array; } catch(e) {}
+  try { delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise; } catch(e) {}
+  try { delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol; } catch(e) {}
+  // Remove any remaining cdc_ prefixed properties (ChromeDriver markers)
+  try {
+    Object.keys(window).filter(k => k.startsWith('cdc_')).forEach(k => { try { delete window[k]; } catch(e) {} });
+  } catch(e) {}
+  // Remove document markers
+  try { delete document.__selenium_evaluate; } catch(e) {}
+  try { delete document.__selenium_unwrapped; } catch(e) {}
+  try { delete document.__webdriver_evaluate; } catch(e) {}
+  try { delete document.__webdriver_script_fn; } catch(e) {}
+  try { delete document.__fxdriver_evaluate; } catch(e) {}
+  try { delete document.__driver_evaluate; } catch(e) {}
+  try { delete document.__driver_unwrapped; } catch(e) {}
+  try { delete document.$chrome_asyncScriptInfo; } catch(e) {}
+  try { delete document.$cdc_asdjflasutopfhvcZLmcfl_; } catch(e) {}
 })();
 `;
 }

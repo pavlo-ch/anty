@@ -46,8 +46,8 @@ function buildSecChUaHeaders(fingerprint) {
       'Sec-CH-UA-Mobile': isMobile ? '?1' : '?0',
       'Sec-CH-UA-Platform': `"${platform}"`,
       'Sec-CH-UA-Platform-Version': `"${platformVersion}"`,
-      'Sec-CH-UA-Arch': '"x86"',
-      'Sec-CH-UA-Bitness': '"64"',
+      'Sec-CH-UA-Arch': isMobile ? '""' : (platform === 'macOS' && process.arch === 'arm64' ? '"arm"' : '"x86"'),
+      'Sec-CH-UA-Bitness': isMobile ? '""' : '"64"',
       'Sec-CH-UA-Full-Version': `"${fullVer}"`,
       'Sec-CH-UA-Full-Version-List': `"${brandName}";v="${brandVersion}.0.0.0", "Chromium";v="${fullVer}", "Google Chrome";v="${fullVer}"${edgeBrand}`,
     };
@@ -558,7 +558,7 @@ async function launchProfile(profileId, mainWindow) {
     // ── SERVER / HEADLESS MODE ──────────────────────────────────────────────
     if (mainWindow === null || (typeof mainWindow === 'object' && mainWindow && mainWindow.__serverMode)) {
       const browserServer = await chromium.launchServer({
-        headless: true,
+        headless: 'new',
         executablePath,
         args: [
           `--user-data-dir=${userDataDir}`,
@@ -567,6 +567,7 @@ async function launchProfile(profileId, mainWindow) {
           '--no-first-run',
           '--no-default-browser-check',
           `--window-size=${viewportWidth},${viewportHeight}`,
+          '--disable-blink-features=AutomationControlled',
         ],
         ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
       });
