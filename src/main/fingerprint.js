@@ -644,6 +644,10 @@ function buildInjectionScript(fingerprint) {
       data[i] = Math.min(255, Math.max(0, data[i] + noise));
       data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + noise * 0.7));
       data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + noise * 0.5));
+      // Ensure non-zero pixels have full opacity (Sannysoft test expects A=255 for visible pixels)
+      if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) {
+        data[i + 3] = 255;
+      }
     }
     return imageData;
   }

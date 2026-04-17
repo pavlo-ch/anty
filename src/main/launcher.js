@@ -401,6 +401,12 @@ async function launchProfile(profileId, mainWindow) {
     const viewportHeight = Math.min(fingerprint.screen?.height || 900, 900);
 
     // Build launch options
+    // NOTE: do NOT pass --disable-blink-features=AutomationControlled.
+    // Chrome 136+ marks it as "unsupported command-line flag" and shows a
+    // yellow warning banner, which Google uses as a strong bot signal.
+    // navigator.webdriver is already handled by:
+    //  1) ignoreDefaultArgs: ['--enable-automation'] (Chrome doesn't set it)
+    //  2) prototype-level override in buildInjectionScript (fingerprint.js)
     const launchOptions = {
       headless: false,
       args: [
@@ -408,9 +414,6 @@ async function launchProfile(profileId, mainWindow) {
         '--no-first-run',
         '--no-default-browser-check',
         `--window-size=${viewportWidth},${viewportHeight}`,
-        // Key flag: disables the AutomationControlled blink feature
-        // which is what makes navigator.webdriver=true and triggers Google bot detection
-        '--disable-blink-features=AutomationControlled',
       ],
     };
 
@@ -565,7 +568,6 @@ async function launchProfile(profileId, mainWindow) {
           '--no-first-run',
           '--no-default-browser-check',
           `--window-size=${viewportWidth},${viewportHeight}`,
-          '--disable-blink-features=AutomationControlled',
         ],
         ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
       });
