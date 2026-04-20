@@ -185,6 +185,15 @@ function initDatabase() {
   ensureColumn('profiles', 'created_by', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'warmup_url', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'running_on', "TEXT DEFAULT ''");
+  // When adding `warmup_completed` to an existing DB, mark all PRE-EXISTING
+  // profiles as already warmed-up (skip=1). Only brand-new profiles created
+  // AFTER this point will trigger the warmup dialog on first launch.
+  const warmupColumnIsNew = !hasColumn('profiles', 'warmup_completed');
+  ensureColumn('profiles', 'warmup_completed', 'INTEGER DEFAULT 0');
+  ensureColumn('profiles', 'warmup_config', "TEXT DEFAULT ''");
+  if (warmupColumnIsNew) {
+    db.prepare('UPDATE profiles SET warmup_completed = 1').run();
+  }
   ensureColumn('account_state', 'team_name', "TEXT DEFAULT ''");
 
   // Seed defaults if empty
@@ -387,7 +396,10 @@ function updateProfile(id, data) {
     'start_page',
     'warmup_url',
     'status',
-    'created_by'
+    'created_by',
+    'running_on',
+    'warmup_completed',
+    'warmup_config'
   ];
   
   for (const field of allowedFields) {

@@ -531,6 +531,83 @@
     </div>
   </div>
 
+  <!-- Warmup setup modal -->
+  <div class="warmup-modal hidden" id="warmup-modal">
+    <div class="warmup-modal-card">
+      <div class="warmup-header">
+        <h3>Прогрів профілю перед першим запуском</h3>
+        <button class="warmup-close" id="warmup-close" title="Закрити">&times;</button>
+      </div>
+      <p class="warmup-sub">
+        Щоб знизити bot-score Google / Cloudflare / Meta — профіль автоматично відвідає
+        декілька сайтів, набиваючи реалістичні cookies (NID, CONSENT, _ga, session-ids).
+        <br />Робиться <strong>один раз</strong> на свіжому профілі.
+      </p>
+
+      <div class="warmup-row">
+        <label class="warmup-label">Кількість сайтів
+          <span class="warmup-hint">(5-10 — рекомендовано)</span>
+        </label>
+        <div class="warmup-slider-wrap">
+          <input type="range" min="1" max="20" value="7" id="warmup-sites-count" />
+          <span class="warmup-slider-value" id="warmup-sites-count-value">7</span>
+        </div>
+      </div>
+
+      <div class="warmup-row">
+        <label class="warmup-label">Секунд на сайт
+          <span class="warmup-hint">(15-30 — рекомендовано)</span>
+        </label>
+        <div class="warmup-slider-wrap">
+          <input type="range" min="5" max="60" value="20" id="warmup-seconds-per-site" />
+          <span class="warmup-slider-value" id="warmup-seconds-per-site-value">20s</span>
+        </div>
+      </div>
+
+      <div class="warmup-row warmup-row-checkboxes">
+        <label class="warmup-checkbox">
+          <input type="checkbox" id="warmup-simulate-scroll" checked />
+          <span>Імітувати скролінг</span>
+        </label>
+        <label class="warmup-checkbox">
+          <input type="checkbox" id="warmup-randomize-order" checked />
+          <span>Випадковий порядок</span>
+        </label>
+      </div>
+
+      <div class="warmup-summary" id="warmup-summary">~2 хв 20 с</div>
+
+      <div class="warmup-sites-section">
+        <div class="warmup-sites-head">
+          <span class="warmup-label">Сайти для прогріву</span>
+          <div class="warmup-sites-actions">
+            <button class="warmup-linkbtn" id="warmup-select-recommended">Рекомендовані</button>
+            <button class="warmup-linkbtn" id="warmup-select-all">Усі</button>
+            <button class="warmup-linkbtn" id="warmup-select-none">Нічого</button>
+          </div>
+        </div>
+        <div class="warmup-sites-grid" id="warmup-sites-grid"></div>
+      </div>
+
+      <div class="warmup-actions">
+        <button class="btn btn-save" id="warmup-skip">Пропустити</button>
+        <button class="btn btn-open" id="warmup-start">Запустити прогрів і відкрити</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Warmup progress modal (while running) -->
+  <div class="warmup-progress-modal hidden" id="warmup-progress-modal">
+    <div class="warmup-progress-card">
+      <h3 id="warmup-progress-title">Прогрів профілю…</h3>
+      <div class="warmup-progress-bar">
+        <div class="warmup-progress-fill" id="warmup-progress-fill"></div>
+      </div>
+      <p class="warmup-progress-status" id="warmup-progress-status">Підготовка…</p>
+      <p class="warmup-progress-hint">Не закривайте вікно браузера до завершення прогріву.</p>
+    </div>
+  </div>
+
   <div class="update-lock-modal hidden" id="update-lock-modal">
     <div class="update-lock-card">
       <div class="update-lock-header">

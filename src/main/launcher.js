@@ -5,6 +5,7 @@ const fs = require('fs');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA } = require('./fingerprint');
 const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('./database');
 const profileSync = require('./profile-sync');
+const warmup = require('./warmup');
 const http = require('http');
 
 /**
@@ -607,6 +608,39 @@ async function launchProfile(profileId, mainWindow) {
 
     await context.addInitScript(injectionScript);
     await importCookies(context);
+
+    // ── WARMUP (first-launch only) ─────────────────────────────────────────
+    // If the profile has a warmup config and hasn't been warmed up yet,
+    // run the organic browsing session BEFORE opening the start page.
+    // This bakes in cookies (NID, CONSENT, _ga, etc.) that massively reduce
+    // bot-detection scores on Google, Cloudflare, and friends.
+    if (!profile.warmup_completed && profile.warmup_config) {
+      let cfg = null;
+      try { cfg = JSON.parse(profile.warmup_config); } catch {}
+      if (cfg && cfg.enabled) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('warmup:status', { profileId, status: 'started' });
+        }
+        try {
+          await warmup.runWarmup(context, cfg, (progress) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('warmup:progress', { profileId, ...progress });
+            }
+          });
+          // Persist cookies gathered during warmup immediately
+          try { await saveCookies(context); } catch {}
+          updateProfile(profileId, { warmup_completed: 1 });
+        } catch (e) {
+          console.error('[Launcher] Warmup failed:', e.message);
+        }
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('warmup:status', { profileId, status: 'finished' });
+        }
+      } else {
+        // Config says disabled — still mark as completed so we don't ask again
+        updateProfile(profileId, { warmup_completed: 1 });
+      }
+    }
 
     let page = context.pages()[0];
     if (!page) page = await context.newPage();

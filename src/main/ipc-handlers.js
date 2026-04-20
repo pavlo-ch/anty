@@ -3,6 +3,7 @@ const db = require('./database');
 const launcher = require('./launcher');
 const auth = require('./auth');
 const profileSync = require('./profile-sync');
+const warmup = require('./warmup');
 const { generateFingerprint, generateFingerprintFromUA, parseUA: parseFpUA, FINGERPRINT_PROFILES } = require('./fingerprint');
 
 function requireLoggedIn() {
@@ -282,6 +283,34 @@ function registerIpcHandlers() {
   ipcMain.handle('browser:running', () => {
     requireLoggedIn();
     return launcher.getRunningProfiles();
+  });
+
+  // ---- WARMUP ----
+  ipcMain.handle('warmup:sites', () => {
+    return warmup.getWarmupSites();
+  });
+  ipcMain.handle('warmup:default-config', () => {
+    return warmup.getDefaultConfig();
+  });
+  ipcMain.handle('warmup:save-config', (_, profileId, config) => {
+    requireLoggedIn();
+    const normalized = warmup.normalizeConfig(config);
+    db.updateProfile(profileId, { warmup_config: JSON.stringify(normalized) });
+    return { ok: true, config: normalized };
+  });
+  ipcMain.handle('warmup:skip', (_, profileId) => {
+    requireLoggedIn();
+    // Mark as completed with a disabled config so we don't prompt again
+    db.updateProfile(profileId, {
+      warmup_completed: 1,
+      warmup_config: JSON.stringify({ ...warmup.getDefaultConfig(), enabled: false }),
+    });
+    return { ok: true };
+  });
+  ipcMain.handle('warmup:reset', (_, profileId) => {
+    requireLoggedIn();
+    db.updateProfile(profileId, { warmup_completed: 0 });
+    return { ok: true };
   });
 
   // ---- ACCOUNT / PLATFORM ----

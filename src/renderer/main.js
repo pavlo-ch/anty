@@ -812,6 +812,15 @@ async function syncProfileLocaleFromProxy(profileId, options = {}) {
 // ===== PROFILE LAUNCH =====
 async function launchProfile(id) {
   if (pendingProfiles.has(id) || runningProfiles.has(id)) return;
+
+  // Fresh profile — show warmup configuration dialog first
+  const profile = profiles.find((p) => p.id === id);
+  if (profile && !profile.warmup_completed) {
+    const decision = await openWarmupDialog(id);
+    if (decision === 'cancel') return;
+    // 'skip' or 'configured' — both proceed to actual launch
+  }
+
   pendingProfiles.add(id);
   renderProfilesList(document.getElementById('search-input')?.value || '');
   try {
@@ -828,6 +837,159 @@ async function launchProfile(id) {
     renderProfilesList(document.getElementById('search-input')?.value || '');
   }
 }
+
+// ===== WARMUP DIALOG =====
+let warmupSitesCache = null;
+let warmupDefaultCfgCache = null;
+
+async function openWarmupDialog(profileId) {
+  const modal = document.getElementById('warmup-modal');
+  if (!modal) return 'skip';
+
+  // Load data once
+  if (!warmupSitesCache) warmupSitesCache = await window.api.getWarmupSites();
+  if (!warmupDefaultCfgCache) warmupDefaultCfgCache = await window.api.getWarmupDefaultConfig();
+
+  const sitesCount   = document.getElementById('warmup-sites-count');
+  const sitesCountV  = document.getElementById('warmup-sites-count-value');
+  const secsPer      = document.getElementById('warmup-seconds-per-site');
+  const secsPerV     = document.getElementById('warmup-seconds-per-site-value');
+  const scrollCb     = document.getElementById('warmup-simulate-scroll');
+  const randomCb     = document.getElementById('warmup-randomize-order');
+  const grid         = document.getElementById('warmup-sites-grid');
+  const summary      = document.getElementById('warmup-summary');
+
+  // Apply defaults
+  sitesCount.value = warmupDefaultCfgCache.sitesCount;
+  sitesCountV.textContent = warmupDefaultCfgCache.sitesCount;
+  secsPer.value = warmupDefaultCfgCache.secondsPerSite;
+  secsPerV.textContent = warmupDefaultCfgCache.secondsPerSite + 's';
+  scrollCb.checked = warmupDefaultCfgCache.simulateScroll !== false;
+  randomCb.checked = warmupDefaultCfgCache.randomizeOrder !== false;
+
+  // Render sites
+  const selectedSet = new Set(warmupDefaultCfgCache.sites);
+  grid.innerHTML = warmupSitesCache.map((s, i) => `
+    <label class="warmup-site-item">
+      <input type="checkbox" data-url="${s.url}" ${selectedSet.has(s.url) ? 'checked' : ''} />
+      <span>${s.label}</span>
+      <span class="cat">${s.category}</span>
+    </label>
+  `).join('');
+
+  const updateSummary = () => {
+    const count = Math.min(parseInt(sitesCount.value, 10), grid.querySelectorAll('input:checked').length);
+    const total = count * parseInt(secsPer.value, 10);
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    summary.textContent = mins > 0
+      ? `≈ ${mins} хв ${secs ? secs + ' с' : ''} на повний прогрів`
+      : `≈ ${secs} с на повний прогрів`;
+  };
+
+  sitesCount.oninput = () => { sitesCountV.textContent = sitesCount.value; updateSummary(); };
+  secsPer.oninput = () => { secsPerV.textContent = secsPer.value + 's'; updateSummary(); };
+  grid.oninput = updateSummary;
+  updateSummary();
+
+  // Select helpers
+  document.getElementById('warmup-select-recommended').onclick = () => {
+    const recUrls = new Set(warmupSitesCache.filter((s) => s.recommended).map((s) => s.url));
+    grid.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = recUrls.has(c.dataset.url); });
+    updateSummary();
+  };
+  document.getElementById('warmup-select-all').onclick = () => {
+    grid.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = true; });
+    updateSummary();
+  };
+  document.getElementById('warmup-select-none').onclick = () => {
+    grid.querySelectorAll('input[type=checkbox]').forEach((c) => { c.checked = false; });
+    updateSummary();
+  };
+
+  // Show modal
+  modal.classList.remove('hidden');
+
+  return new Promise((resolve) => {
+    const close = (result) => {
+      modal.classList.add('hidden');
+      document.getElementById('warmup-start').onclick = null;
+      document.getElementById('warmup-skip').onclick = null;
+      document.getElementById('warmup-close').onclick = null;
+      resolve(result);
+    };
+
+    document.getElementById('warmup-close').onclick = () => close('cancel');
+    document.getElementById('warmup-skip').onclick = async () => {
+      await window.api.skipWarmup(profileId);
+      // Refresh local profile cache
+      const fresh = await window.api.getProfile(profileId);
+      if (fresh) {
+        const idx = profiles.findIndex((p) => p.id === profileId);
+        if (idx >= 0) profiles[idx] = fresh;
+      }
+      close('skip');
+    };
+    document.getElementById('warmup-start').onclick = async () => {
+      const selectedUrls = Array.from(grid.querySelectorAll('input:checked')).map((c) => c.dataset.url);
+      if (selectedUrls.length === 0) {
+        showToast('Обери хоча б один сайт або натисни "Пропустити"', 'error');
+        return;
+      }
+      const cfg = {
+        enabled: true,
+        sitesCount: parseInt(sitesCount.value, 10),
+        secondsPerSite: parseInt(secsPer.value, 10),
+        simulateScroll: scrollCb.checked,
+        randomizeOrder: randomCb.checked,
+        sites: selectedUrls,
+      };
+      await window.api.saveWarmupConfig(profileId, cfg);
+      const fresh = await window.api.getProfile(profileId);
+      if (fresh) {
+        const idx = profiles.findIndex((p) => p.id === profileId);
+        if (idx >= 0) profiles[idx] = fresh;
+      }
+      close('configured');
+    };
+  });
+}
+
+// Wire up warmup progress events (runs once on startup)
+function bindWarmupEvents() {
+  if (!window.api.onWarmupStatus) return;
+  const progressModal = document.getElementById('warmup-progress-modal');
+  const fill   = document.getElementById('warmup-progress-fill');
+  const status = document.getElementById('warmup-progress-status');
+  const title  = document.getElementById('warmup-progress-title');
+
+  window.api.onWarmupStatus(({ status: s }) => {
+    if (!progressModal) return;
+    if (s === 'started') {
+      fill.style.width = '0%';
+      status.textContent = 'Підготовка…';
+      title.textContent = 'Прогрів профілю…';
+      progressModal.classList.remove('hidden');
+    } else if (s === 'finished') {
+      fill.style.width = '100%';
+      status.textContent = 'Готово — відкриваю профіль';
+      setTimeout(() => progressModal.classList.add('hidden'), 800);
+    }
+  });
+
+  window.api.onWarmupProgress(({ index, total, url, status: itemStatus }) => {
+    if (!fill || !status) return;
+    const pct = (index - 1 + (itemStatus === 'done' ? 1 : 0.3)) / total * 100;
+    fill.style.width = pct + '%';
+    try {
+      const host = new URL(url).hostname.replace(/^www\./, '');
+      status.textContent = `${index}/${total} — ${host}`;
+    } catch {
+      status.textContent = `${index}/${total}`;
+    }
+  });
+}
+bindWarmupEvents();
 
 async function stopProfile(id) {
   if (pendingProfiles.has(id)) return;

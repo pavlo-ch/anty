@@ -37,6 +37,15 @@ contextBridge.exposeInMainWorld('api', {
   stopProfile: (id) => ipcRenderer.invoke('browser:stop', id),
   getRunningProfiles: () => ipcRenderer.invoke('browser:running'),
 
+  // Warmup
+  getWarmupSites: () => ipcRenderer.invoke('warmup:sites'),
+  getWarmupDefaultConfig: () => ipcRenderer.invoke('warmup:default-config'),
+  saveWarmupConfig: (profileId, config) => ipcRenderer.invoke('warmup:save-config', profileId, config),
+  skipWarmup: (profileId) => ipcRenderer.invoke('warmup:skip', profileId),
+  resetWarmup: (profileId) => ipcRenderer.invoke('warmup:reset', profileId),
+  onWarmupStatus: (cb) => ipcRenderer.on('warmup:status', (_, d) => cb(d)),
+  onWarmupProgress: (cb) => ipcRenderer.on('warmup:progress', (_, d) => cb(d)),
+
   // Account / platform auth
   getAccountState: () => ipcRenderer.invoke('account:state'),
   getAccountEvents: (limit = 50) => ipcRenderer.invoke('account:events', limit),
