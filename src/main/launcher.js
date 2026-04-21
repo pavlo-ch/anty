@@ -9,6 +9,35 @@ const warmup = require('./warmup');
 const http = require('http');
 
 /**
+ * Realistic Chrome patch versions per major version.
+ * Google User-Agent reduction makes `navigator.userAgent` always report
+ * "X.0.0.0", but Sec-CH-UA-Full-Version / Full-Version-List is supposed to
+ * carry the REAL patch number. Setting "X.0.0.0" here is a strong bot signal.
+ */
+const CHROME_PATCH_VERSIONS = {
+  146: ['146.0.7103.113', '146.0.7103.92', '146.0.7103.49'],
+  145: ['145.0.7049.95', '145.0.7049.85', '145.0.7049.52'],
+  144: ['144.0.6991.101', '144.0.6991.52'],
+  143: ['143.0.6965.81', '143.0.6965.51'],
+  142: ['142.0.6908.103', '142.0.6908.52'],
+  141: ['141.0.6871.87', '141.0.6871.51'],
+  140: ['140.0.6849.99', '140.0.6849.62'],
+  139: ['139.0.6821.81', '139.0.6821.42'],
+  138: ['138.0.6770.111', '138.0.6770.60'],
+  137: ['137.0.6735.90', '137.0.6735.51'],
+  136: ['136.0.6706.95', '136.0.6706.52'],
+  135: ['135.0.6678.82', '135.0.6678.47'],
+};
+
+function pickPatchVersion(majorVersion, fingerprintSeed) {
+  const pool = CHROME_PATCH_VERSIONS[majorVersion];
+  if (!pool || pool.length === 0) return `${majorVersion}.0.0.0`;
+  // Deterministic pick per profile so the value is stable between launches.
+  const idx = Math.floor(Math.abs((fingerprintSeed || 0) * 1000)) % pool.length;
+  return pool[idx];
+}
+
+/**
  * Build Sec-CH-UA headers that match the fingerprint UA.
  * Without these, browsers expose the real Chromium version in CH headers
  * which contradicts the spoofed UA — easily detectable by antifraud.
@@ -41,7 +70,7 @@ function buildSecChUaHeaders(fingerprint) {
   if (parsed.browser === 'Chrome' || parsed.browser === 'Edge') {
     const edgeBrand = parsed.browser === 'Edge' ? `, "Microsoft Edge";v="${majorVersion}"` : '';
     const secCHUA = `"${brandName}";v="${brandVersion}", "Chromium";v="${majorVersion}", "Google Chrome";v="${majorVersion}"${edgeBrand}`;
-    const fullVer = `${majorVersion}.0.0.0`;
+    const fullVer = pickPatchVersion(majorVersion, fingerprint.canvas?.noiseSeed);
     return {
       'Sec-CH-UA': secCHUA,
       'Sec-CH-UA-Mobile': isMobile ? '?1' : '?0',

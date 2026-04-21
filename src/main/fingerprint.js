@@ -718,39 +718,54 @@ function buildInjectionScript(fingerprint) {
   }
   
   // ===== 7. WEBRTC MASKING =====
-  // Instead of disabling WebRTC (detectable!), filter out local IP candidates
+  // A REAL Chrome always emits host + srflx candidates. Forcing iceTransportPolicy='relay'
+  // or stripping host candidates entirely is ITSELF a strong bot signal (LinkedIn/Cloudflare
+  // specifically look for this pattern). Instead we rewrite the host candidate's IP
+  // to a deterministic fake local IP — the presence of a host candidate is preserved,
+  // but the real LAN IP is never exposed.
+  const fakeLocalIp = '192.168.' + (Math.floor(Math.abs(fp.canvas.noiseSeed * 255)) % 255) + '.' + (Math.floor(Math.abs(fp.canvas.noiseSeed * 12345)) % 254 + 1);
   if (window.RTCPeerConnection) {
     const OrigRTCPC = window.RTCPeerConnection;
-    const patchedRTCPC = function RTCPeerConnection(config, constraints) {
-      // Force the browser to only use relay candidates (no local IP leak)
-      if (!config) config = {};
-      config.iceTransportPolicy = 'relay';
-      if (!config.iceServers || config.iceServers.length === 0) {
-        // Provide a dummy TURN that will fail — this effectively blocks local candidates
-        // while keeping the API shape intact for detection checks
-        config.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
-        config.iceTransportPolicy = 'all';
+    const rewriteCandidate = function(cand) {
+      if (!cand || !cand.candidate) return cand;
+      const c = cand.candidate;
+      if (c.indexOf('typ host') !== -1) {
+        // Replace any local IPv4 / IPv6 with fake local IPv4
+        const rewritten = c.replace(/(\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b)|([a-f0-9:]+:[a-f0-9:]+)/gi, fakeLocalIp);
+        try {
+          return new RTCIceCandidate({
+            candidate: rewritten,
+            sdpMid: cand.sdpMid,
+            sdpMLineIndex: cand.sdpMLineIndex,
+            usernameFragment: cand.usernameFragment,
+          });
+        } catch(e) { return cand; }
       }
+      return cand;
+    };
+    const patchedRTCPC = function RTCPeerConnection(config, constraints) {
       const pc = new OrigRTCPC(config, constraints);
-      // Filter onicecandidate to strip local/srflx candidates that leak real IP
+
+      // Wrap addEventListener to rewrite candidates in-flight
       const origAddEventListener = pc.addEventListener.bind(pc);
       pc.addEventListener = function(type, listener, options) {
-        if (type === 'icecandidate') {
+        if (type === 'icecandidate' && typeof listener === 'function') {
           const wrapped = function(event) {
-            if (event.candidate && event.candidate.candidate) {
-              const c = event.candidate.candidate;
-              // Strip host and srflx candidates (they contain local/real IPs)
-              if (c.indexOf('typ host') !== -1 || c.indexOf('typ srflx') !== -1) {
-                return; // suppress this candidate
-              }
+            if (event.candidate) {
+              const rewritten = rewriteCandidate(event.candidate);
+              // Emit a synthetic event with the rewritten candidate
+              const evt = Object.assign({}, event, { candidate: rewritten });
+              listener.call(this, evt);
+            } else {
+              listener.call(this, event);
             }
-            listener.call(this, event);
           };
           return origAddEventListener(type, wrapped, options);
         }
         return origAddEventListener(type, listener, options);
       };
-      // Also patch the onicecandidate setter
+
+      // onicecandidate setter
       let _onicecandidateFn = null;
       Object.defineProperty(pc, 'onicecandidate', {
         get: () => _onicecandidateFn,
@@ -758,16 +773,30 @@ function buildInjectionScript(fingerprint) {
           _onicecandidateFn = fn;
           if (fn) {
             origAddEventListener('icecandidate', function(event) {
-              if (event.candidate && event.candidate.candidate) {
-                const c = event.candidate.candidate;
-                if (c.indexOf('typ host') !== -1 || c.indexOf('typ srflx') !== -1) return;
+              if (event.candidate) {
+                const rewritten = rewriteCandidate(event.candidate);
+                const evt = Object.assign({}, event, { candidate: rewritten });
+                fn.call(pc, evt);
+              } else {
+                fn.call(pc, event);
               }
-              fn.call(pc, event);
             });
           }
         },
         configurable: true,
       });
+
+      // Also rewrite the SDP in createOffer/createAnswer (some detectors read SDP directly)
+      const origCreateOffer = pc.createOffer.bind(pc);
+      pc.createOffer = function(...args) {
+        return origCreateOffer(...args).then((offer) => {
+          if (offer && offer.sdp) {
+            offer.sdp = offer.sdp.replace(/c=IN IP4 (?:\\d{1,3}\\.){3}\\d{1,3}/g, 'c=IN IP4 ' + fakeLocalIp);
+          }
+          return offer;
+        });
+      };
+
       return pc;
     };
     patchedRTCPC.prototype = OrigRTCPC.prototype;
@@ -828,20 +857,43 @@ function buildInjectionScript(fingerprint) {
   }
   
   // ===== 10. MEDIA DEVICES =====
+  // Real Chrome returns deviceId = '' BEFORE user grants mic/cam permission.
+  // After permission, real IDs appear (64-char hex). Returning fake hex-like IDs
+  // without permission is itself a bot signal. Mirror Chrome's behavior:
+  // default deviceId = '' until the user grants permission.
   if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+    const fpSeed = fp.canvas.noiseSeed;
+    const stableId = (prefix, i) => {
+      // 64-char hex, stable per profile + slot (matches real Chrome format)
+      let s = prefix + i + fpSeed.toString(36);
+      let out = '';
+      for (let k = 0; k < 64; k++) {
+        s = (Math.sin(s.length * (k + 1) * 12.9898) * 43758.5453).toString();
+        out += Math.floor(Math.abs(parseFloat(s.split('.')[1]) || 0) * 16).toString(16).slice(-1);
+      }
+      return out;
+    };
+    // Before permission: deviceId='' (real Chrome behavior). We keep IDs empty
+    // so unconsented fingerprinting can't uniquely identify the profile through
+    // enumerateDevices — which is EXACTLY what real Chrome does.
     navigator.mediaDevices.enumerateDevices = async function() {
       const devices = [];
       for (let i = 0; i < fp.mediaDevices.audioInputs; i++) {
-        devices.push({ deviceId: 'ai_' + i + '_' + fp.canvas.noiseSeed.toString(36).substr(2, 9), kind: 'audioinput', label: '', groupId: 'g' + i });
+        devices.push({ deviceId: '', kind: 'audioinput', label: '', groupId: '',
+                       toJSON: () => ({ deviceId: '', kind: 'audioinput', label: '', groupId: '' }) });
       }
       for (let i = 0; i < fp.mediaDevices.audioOutputs; i++) {
-        devices.push({ deviceId: 'ao_' + i + '_' + fp.canvas.noiseSeed.toString(36).substr(2, 9), kind: 'audiooutput', label: '', groupId: 'g' + i });
+        devices.push({ deviceId: '', kind: 'audiooutput', label: '', groupId: '',
+                       toJSON: () => ({ deviceId: '', kind: 'audiooutput', label: '', groupId: '' }) });
       }
       for (let i = 0; i < fp.mediaDevices.videoInputs; i++) {
-        devices.push({ deviceId: 'vi_' + i + '_' + fp.canvas.noiseSeed.toString(36).substr(2, 9), kind: 'videoinput', label: '', groupId: 'g' + i });
+        devices.push({ deviceId: '', kind: 'videoinput', label: '', groupId: '',
+                       toJSON: () => ({ deviceId: '', kind: 'videoinput', label: '', groupId: '' }) });
       }
       return devices;
     };
+    // Expose stableId for potential post-permission use (not active by default)
+    navigator.mediaDevices.__stableId = stableId;
   }
   
   // ===== 11. CLIENT RECTS =====
@@ -871,13 +923,11 @@ function buildInjectionScript(fingerprint) {
   };
 
   // ===== 12. PLUGINS =====
-  // Modern Chrome (97+) only has PDF plugins — Native Client was removed
+  // Real Chrome (130+) exposes exactly TWO plugins, both using the same
+  // internal-pdf-viewer filename. Having 5 is a strong bot signal.
   const pluginData = [
-    { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
+    { name: 'PDF Viewer',        filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
     { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
-    { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
-    { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
-    { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
   ];
   // Build a PluginArray-like object that passes instanceof checks
   const fakePlugins = Object.create(PluginArray.prototype);
@@ -928,19 +978,30 @@ function buildInjectionScript(fingerprint) {
   stealthOverride(navigator, 'appName', () => 'Netscape');
   stealthOverride(navigator, 'appCodeName', () => 'Mozilla');
 
-  // navigator.connection — Google checks existence; Playwright doesn't emulate it
+  // navigator.connection — Google checks existence; Playwright doesn't emulate it.
+  // Values are derived from the per-profile noiseSeed so they stay stable between
+  // launches but differ across profiles (all profiles having rtt:50 downlink:10
+  // is itself a cluster-level bot signal).
   if (!navigator.connection) {
     try {
+      // Stable per-profile: rtt in {50, 100, 150}, downlink in {5, 10, 15}
+      const rttOpts = [50, 100, 150];
+      const downOpts = [5, 10, 15];
+      const seedI = Math.floor(Math.abs(fp.canvas.noiseSeed * 10000));
+      const connValues = {
+        rtt: rttOpts[seedI % rttOpts.length],
+        type: 'wifi',
+        saveData: false,
+        downlink: downOpts[(seedI >> 2) % downOpts.length],
+        effectiveType: '4g',
+        onchange: null,
+      };
       Object.defineProperty(navigator, 'connection', {
         get: () => ({
-          rtt: 50,
-          type: 'wifi',
-          saveData: false,
-          downlink: 10,
-          effectiveType: '4g',
-          onchange: null,
+          ...connValues,
           addEventListener: function() {},
           removeEventListener: function() {},
+          dispatchEvent: function() { return false; },
         }),
         configurable: true,
       });
@@ -968,17 +1029,11 @@ function buildInjectionScript(fingerprint) {
   }
 
   // ===== 15. window.chrome (absent in Playwright — Google immediately detects) =====
+  // IMPORTANT: Do NOT add window.chrome.app. Real Chrome on regular sites
+  // does not expose window.chrome.app (it only exists inside extensions).
+  // Adding it is a strong bot signal that LinkedIn/Cloudflare check for.
   if (!window.chrome) {
     const chrome = {
-      app: {
-        isInstalled: false,
-        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-        getDetails: function() { return null; },
-        getIsInstalled: function() { return false; },
-        installState: function(cb) { cb('not_installed'); },
-        runningState: function() { return 'cannot_run'; },
-      },
       runtime: {
         OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
         OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
@@ -1023,6 +1078,76 @@ function buildInjectionScript(fingerprint) {
     } catch(e) {
       window.chrome = chrome;
     }
+  }
+
+  // ===== 15b. WORKER PROPAGATION =====
+  // Web Workers inherit their OWN Navigator instance which is NOT touched by
+  // addInitScript — so navigator.webdriver / hardwareConcurrency / userAgent
+  // leak their REAL values inside workers. LinkedIn in particular spins up a
+  // worker just to read these. We intercept the Worker constructor and prepend
+  // a same-fingerprint patch before the worker's original code.
+  if (typeof Worker !== 'undefined') {
+    const OrigWorker = Worker;
+    const WORKER_PATCH = 'try {' +
+      '  var _fp = ' + ${JSON.stringify(JSON.stringify({
+        userAgent: fingerprint.userAgent,
+        platform: fingerprint.platform,
+        hardwareConcurrency: fingerprint.hardware.cpuCores,
+        deviceMemory: fingerprint.hardware.memoryGb,
+        maxTouchPoints: fingerprint.hardware.maxTouchPoints,
+        language: fingerprint.locale.language,
+        languages: fingerprint.locale.languages,
+        timezone: fingerprint.locale.timezone,
+      }))} + ';' +
+      '  if (typeof navigator !== "undefined") {' +
+      '    var proto = Object.getPrototypeOf(navigator);' +
+      '    var defs = {' +
+      '      webdriver: { get: function() { return false; }, configurable: true },' +
+      '      userAgent: { get: function() { return _fp.userAgent; }, configurable: true },' +
+      '      platform:  { get: function() { return _fp.platform; }, configurable: true },' +
+      '      language:  { get: function() { return _fp.language; }, configurable: true },' +
+      '      languages: { get: function() { return Object.freeze([].concat(_fp.languages)); }, configurable: true },' +
+      '      hardwareConcurrency: { get: function() { return _fp.hardwareConcurrency; }, configurable: true },' +
+      '      deviceMemory: { get: function() { return _fp.deviceMemory; }, configurable: true },' +
+      '      maxTouchPoints: { get: function() { return _fp.maxTouchPoints; }, configurable: true }' +
+      '    };' +
+      '    for (var k in defs) {' +
+      '      try { Object.defineProperty(proto || navigator, k, defs[k]); } catch(e) {}' +
+      '    }' +
+      '  }' +
+      '  if (typeof Intl !== "undefined" && Intl.DateTimeFormat) {' +
+      '    var _origResolved = Intl.DateTimeFormat.prototype.resolvedOptions;' +
+      '    Intl.DateTimeFormat.prototype.resolvedOptions = function() {' +
+      '      var r = _origResolved.call(this);' +
+      '      r.timeZone = _fp.timezone;' +
+      '      return r;' +
+      '    };' +
+      '  }' +
+      '  try {' +
+      '    Object.keys(self).filter(function(k){return k.indexOf("__playwright")===0 || k.indexOf("cdc_")===0 || k.indexOf("__pw_")===0;}).forEach(function(k){ try { delete self[k]; } catch(e){} });' +
+      '  } catch(e) {}' +
+      '} catch(e) {}';
+    const makeBlobWorker = function(scriptURL, options) {
+      try {
+        if (typeof scriptURL === 'string' && !scriptURL.startsWith('blob:') && !scriptURL.startsWith('data:')) {
+          const absolute = new URL(scriptURL, location.href).href;
+          const isModule = options && options.type === 'module';
+          // For classic workers we use importScripts; for module workers we use dynamic import().
+          const body = isModule
+            ? WORKER_PATCH + '\\nimport(' + JSON.stringify(absolute) + ');'
+            : WORKER_PATCH + '\\nimportScripts(' + JSON.stringify(absolute) + ');';
+          const blob = new Blob([body], { type: 'application/javascript' });
+          return new OrigWorker(URL.createObjectURL(blob), options);
+        }
+      } catch(e) {}
+      return new OrigWorker(scriptURL, options);
+    };
+    const PatchedWorker = function Worker(scriptURL, options) {
+      return makeBlobWorker(scriptURL, options);
+    };
+    PatchedWorker.prototype = OrigWorker.prototype;
+    makeNative(PatchedWorker, 'Worker');
+    try { window.Worker = PatchedWorker; } catch(e) {}
   }
 
   // ===== 16. Remove Playwright/CDP traces =====
