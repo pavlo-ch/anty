@@ -78,6 +78,7 @@ const DEFAULT_CONFIG = {
   secondsPerSite: 20,    // average time per site (randomized ±30% at runtime)
   simulateScroll: true,  // scroll through the page while waiting
   randomizeOrder: true,
+  randomizeSites: true,  // pick random sites from pool each time instead of fixed list
   sites: WARMUP_SITES.filter((s) => s.recommended).map((s) => s.url),
 };
 
@@ -98,6 +99,7 @@ function normalizeConfig(raw) {
     secondsPerSite: clamp(parseInt(raw.secondsPerSite, 10) || base.secondsPerSite, 5, 180),
     simulateScroll: raw.simulateScroll !== false,
     randomizeOrder: raw.randomizeOrder !== false,
+    randomizeSites: raw.randomizeSites !== false,
     sites: Array.isArray(raw.sites) && raw.sites.length > 0
       ? raw.sites.filter((u) => typeof u === 'string' && u.startsWith('http'))
       : base.sites,
@@ -126,7 +128,21 @@ function shuffle(arr) {
  */
 async function runWarmup(context, config, onProgress) {
   const cfg = normalizeConfig(config);
-  const pool = cfg.randomizeOrder ? shuffle(cfg.sites) : cfg.sites;
+
+  // If randomizeSites is enabled, pick random sites from the pool instead of fixed list
+  let sitesToUse = cfg.sites;
+  if (cfg.randomizeSites) {
+    const availableSites = WARMUP_SITES.filter(s => s.recommended).map(s => s.url);
+    sitesToUse = [];
+    const pool = [...availableSites];
+    for (let i = 0; i < cfg.sitesCount && pool.length > 0; i++) {
+      const idx = Math.floor(Math.random() * pool.length);
+      sitesToUse.push(pool[idx]);
+      pool.splice(idx, 1); // Remove to avoid duplicates
+    }
+  }
+
+  const pool = cfg.randomizeOrder ? shuffle(sitesToUse) : sitesToUse;
   const targets = pool.slice(0, cfg.sitesCount);
 
   console.log(`[Warmup] Starting: ${targets.length} sites, ~${cfg.secondsPerSite}s each`);

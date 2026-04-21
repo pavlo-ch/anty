@@ -850,14 +850,16 @@ async function openWarmupDialog(profileId) {
   if (!warmupSitesCache) warmupSitesCache = await window.api.getWarmupSites();
   if (!warmupDefaultCfgCache) warmupDefaultCfgCache = await window.api.getWarmupDefaultConfig();
 
-  const sitesCount   = document.getElementById('warmup-sites-count');
-  const sitesCountV  = document.getElementById('warmup-sites-count-value');
-  const secsPer      = document.getElementById('warmup-seconds-per-site');
-  const secsPerV     = document.getElementById('warmup-seconds-per-site-value');
-  const scrollCb     = document.getElementById('warmup-simulate-scroll');
-  const randomCb     = document.getElementById('warmup-randomize-order');
-  const grid         = document.getElementById('warmup-sites-grid');
-  const summary      = document.getElementById('warmup-summary');
+  const sitesCount     = document.getElementById('warmup-sites-count');
+  const sitesCountV    = document.getElementById('warmup-sites-count-value');
+  const secsPer        = document.getElementById('warmup-seconds-per-site');
+  const secsPerV       = document.getElementById('warmup-seconds-per-site-value');
+  const scrollCb       = document.getElementById('warmup-simulate-scroll');
+  const randomCb       = document.getElementById('warmup-randomize-order');
+  const randomSitesCb  = document.getElementById('warmup-randomize-sites');
+  const grid           = document.getElementById('warmup-sites-grid');
+  const sitesSection   = document.querySelector('.warmup-sites-section');
+  const summary        = document.getElementById('warmup-summary');
 
   // Apply defaults
   sitesCount.value = warmupDefaultCfgCache.sitesCount;
@@ -866,6 +868,7 @@ async function openWarmupDialog(profileId) {
   secsPerV.textContent = warmupDefaultCfgCache.secondsPerSite + 's';
   scrollCb.checked = warmupDefaultCfgCache.simulateScroll !== false;
   randomCb.checked = warmupDefaultCfgCache.randomizeOrder !== false;
+  randomSitesCb.checked = warmupDefaultCfgCache.randomizeSites !== false;
 
   // Render sites
   const selectedSet = new Set(warmupDefaultCfgCache.sites);
@@ -887,10 +890,27 @@ async function openWarmupDialog(profileId) {
       : `≈ ${secs} с на повний прогрів`;
   };
 
+  const updateGridDisabled = () => {
+    const disabled = randomSitesCb.checked;
+    grid.querySelectorAll('input[type=checkbox]').forEach((c) => { c.disabled = disabled; });
+    document.getElementById('warmup-select-recommended').disabled = disabled;
+    document.getElementById('warmup-select-all').disabled = disabled;
+    document.getElementById('warmup-select-none').disabled = disabled;
+    if (disabled) {
+      sitesSection.style.opacity = '0.5';
+      sitesSection.style.pointerEvents = 'none';
+    } else {
+      sitesSection.style.opacity = '1';
+      sitesSection.style.pointerEvents = 'auto';
+    }
+  };
+
   sitesCount.oninput = () => { sitesCountV.textContent = sitesCount.value; updateSummary(); };
   secsPer.oninput = () => { secsPerV.textContent = secsPer.value + 's'; updateSummary(); };
   grid.oninput = updateSummary;
+  randomSitesCb.onchange = updateGridDisabled;
   updateSummary();
+  updateGridDisabled();
 
   // Select helpers
   document.getElementById('warmup-select-recommended').onclick = () => {
@@ -942,6 +962,7 @@ async function openWarmupDialog(profileId) {
         secondsPerSite: parseInt(secsPer.value, 10),
         simulateScroll: scrollCb.checked,
         randomizeOrder: randomCb.checked,
+        randomizeSites: randomSitesCb.checked,
         sites: selectedUrls,
       };
       await window.api.saveWarmupConfig(profileId, cfg);
