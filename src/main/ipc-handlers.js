@@ -257,7 +257,7 @@ function registerIpcHandlers() {
     // Check if profile is already running on another team member's machine (status in DB)
     const profile = db.getProfile(id);
     if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id)) {
-      return { success: false, error: 'Цей профіль вже запущено на іншому пристрої команди' };
+      return { success: false, error: 'This profile is already running on another team device' };
     }
     const mainWindow = BrowserWindow.fromWebContents(event.sender);
     const result = await launcher.launchProfile(id, mainWindow);

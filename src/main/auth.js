@@ -367,13 +367,13 @@ function parseErrorMessage(status, payload) {
   const withDetails = (base) => (payloadMessage ? `${base} ${payloadMessage}` : base);
 
   if (status === 401) {
-    return withDetails('401: потрібен повторний вхід.');
+    return withDetails('401: re-login required.');
   }
   if (status === 403) {
-    return withDetails('403: нема доступу до Anty Browser або перевищено ліміт девайсів.');
+    return withDetails('403: no access to Anty Browser or device limit reached.');
   }
   if (status === 423) {
-    return withDetails('423: акаунт заблокований або неактивний.');
+    return withDetails('423: account is blocked or inactive.');
   }
   return payloadMessage || `Login failed (${status})`;
 }

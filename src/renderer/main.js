@@ -886,8 +886,8 @@ async function openWarmupDialog(profileId) {
     const mins = Math.floor(total / 60);
     const secs = total % 60;
     summary.textContent = mins > 0
-      ? `≈ ${mins} хв ${secs ? secs + ' с' : ''} на повний прогрів`
-      : `≈ ${secs} с на повний прогрів`;
+      ? `≈ ${mins} min ${secs ? secs + ' sec' : ''} total warmup`
+      : `≈ ${secs} sec total warmup`;
   };
 
   const updateGridDisabled = () => {
@@ -953,7 +953,7 @@ async function openWarmupDialog(profileId) {
     document.getElementById('warmup-start').onclick = async () => {
       const selectedUrls = Array.from(grid.querySelectorAll('input:checked')).map((c) => c.dataset.url);
       if (selectedUrls.length === 0) {
-        showToast('Обери хоча б один сайт або натисни "Пропустити"', 'error');
+        showToast('Select at least one website or click "Skip"', 'error');
         return;
       }
       const cfg = {
@@ -988,12 +988,12 @@ function bindWarmupEvents() {
     if (!progressModal) return;
     if (s === 'started') {
       fill.style.width = '0%';
-      status.textContent = 'Підготовка…';
-      title.textContent = 'Прогрів профілю…';
+      status.textContent = 'Preparing...';
+      title.textContent = 'Warming up profile...';
       progressModal.classList.remove('hidden');
     } else if (s === 'finished') {
       fill.style.width = '100%';
-      status.textContent = 'Готово — відкриваю профіль';
+      status.textContent = 'Done - opening profile';
       setTimeout(() => progressModal.classList.add('hidden'), 800);
     }
   });
