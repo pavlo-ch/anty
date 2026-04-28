@@ -16,7 +16,7 @@ function createWindow() {
     minWidth: 1024,
     minHeight: 600,
     frame: false,
-    titleBarStyle: 'hiddenInset',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     backgroundColor: '#0a0a1a',
     icon: appIconPath,
     webPreferences: {

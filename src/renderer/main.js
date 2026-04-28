@@ -34,6 +34,7 @@ let mandatoryUpdateFlow = {
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', async () => {
+  applyPlatformClass();
   setupEventListeners();
   setActivePlatformTab(loadStoredPlatformTab(), { save: false, render: false });
   window.api.onUpdateStatus(handleUpdateStatus);
@@ -81,6 +82,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     void runProfileCloudSync({ silent: true });
   }, 60000);
 });
+
+function applyPlatformClass() {
+  const platform = String(window.api.platform || '').trim();
+  if (!platform) return;
+  document.body.classList.add(`platform-${platform}`);
+}
 
 async function renderAppVersion() {
   try {

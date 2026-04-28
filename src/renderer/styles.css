@@ -98,12 +98,68 @@ html, body {
   border: none;
   cursor: pointer;
   transition: opacity var(--transition);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  background-clip: padding-box;
 }
 
 .titlebar-btn.close { background: #ff5f57; }
 .titlebar-btn.minimize { background: #febc2e; }
 .titlebar-btn.maximize { background: #28c840; }
+.titlebar-btn.close { order: 1; }
+.titlebar-btn.minimize { order: 2; }
+.titlebar-btn.maximize { order: 3; }
 .titlebar-btn:hover { opacity: 0.8; }
+.titlebar-btn svg {
+  display: none;
+}
+
+body.platform-win32 .titlebar {
+  padding: 0;
+}
+
+body.platform-win32 .titlebar-drag {
+  padding-right: 138px;
+}
+
+body.platform-win32 .titlebar-controls {
+  gap: 0;
+  right: 0;
+  left: auto;
+  top: 0;
+  height: 100%;
+  transform: none;
+}
+
+body.platform-win32 .titlebar-btn {
+  width: 46px;
+  height: 100%;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  opacity: 1;
+}
+
+body.platform-win32 .titlebar-btn.minimize { order: 1; }
+body.platform-win32 .titlebar-btn.maximize { order: 2; }
+body.platform-win32 .titlebar-btn.close { order: 3; }
+
+body.platform-win32 .titlebar-btn svg {
+  display: block;
+  width: 10px;
+  height: 10px;
+}
+
+body.platform-win32 .titlebar-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+body.platform-win32 .titlebar-btn.close:hover {
+  background: #e81123;
+  color: #ffffff;
+}
 
 /* ===== APP CONTAINER ===== */
 .app-container {
