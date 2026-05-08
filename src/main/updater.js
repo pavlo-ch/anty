@@ -31,6 +31,7 @@ const ENCRYPTED_PREFIX = 'enc:v1:';
 const PLAIN_PREFIX = 'plain:v1:';
 const ANTY_SOURCE = 'anty-browser';
 const USE_KEYCHAIN = String(process.env.ANTY_USE_KEYCHAIN || '').trim().toLowerCase() === 'true';
+const UPDATE_RETENTION_DIR_LIMIT = 1;
 
 function getPlatformLogUrl() {
   return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || DEFAULT_PLATFORM_LOG_URL || '').trim();
@@ -253,6 +254,79 @@ function getMandatoryDownloadPath(version, downloadUrl) {
   return path.join(versionDir, fileName);
 }
 
+function getLegacyUpdatesDir() {
+  return path.join(app.getPath('userData'), 'updates');
+}
+
+async function cleanupLegacyUpdatesDir(options = {}) {
+  const keepVersion = String(options.keepVersion || '').trim();
+  const keepLatestDirectoriesRaw = Number(options.keepLatestDirectories);
+  const keepLatestDirectories = Number.isFinite(keepLatestDirectoriesRaw) && keepLatestDirectoriesRaw >= 0
+    ? Math.floor(keepLatestDirectoriesRaw)
+    : UPDATE_RETENTION_DIR_LIMIT;
+  const updatesDir = getLegacyUpdatesDir();
+
+  let dirEntries = [];
+  try {
+    dirEntries = await fs.promises.readdir(updatesDir, { withFileTypes: true });
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return { ok: true, removed: [], kept: [] };
+    throw err;
+  }
+
+  const entries = (await Promise.all(dirEntries.map(async (dirEntry) => {
+    const fullPath = path.join(updatesDir, dirEntry.name);
+    try {
+      const stats = await fs.promises.stat(fullPath);
+      return {
+        name: dirEntry.name,
+        fullPath,
+        isDirectory: stats.isDirectory(),
+        modifiedMs: Number(stats.mtimeMs || 0),
+      };
+    } catch (_) {
+      return null;
+    }
+  }))).filter(Boolean);
+
+  const directories = entries
+    .filter((entry) => entry.isDirectory)
+    .sort((a, b) => b.modifiedMs - a.modifiedMs);
+
+  const keptDirectories = new Set();
+  if (keepVersion) {
+    keptDirectories.add(keepVersion);
+  }
+  for (const entry of directories) {
+    if (keptDirectories.size >= keepLatestDirectories) break;
+    keptDirectories.add(entry.name);
+  }
+
+  const removed = [];
+  const kept = [];
+  for (const entry of entries) {
+    const shouldKeep = entry.isDirectory && keptDirectories.has(entry.name);
+    if (shouldKeep) {
+      kept.push(entry.fullPath);
+      continue;
+    }
+    await fs.promises.rm(entry.fullPath, { recursive: true, force: true });
+    removed.push(entry.fullPath);
+  }
+
+  if (removed.length > 0) {
+    logEvent('info', 'legacy_updates_cleanup_completed', {
+      updatesDir,
+      keepVersion: keepVersion || null,
+      keepLatestDirectories,
+      removed,
+      kept,
+    });
+  }
+
+  return { ok: true, removed, kept };
+}
+
 function isNoSpaceError(err) {
   const code = String(err?.code || '').toUpperCase();
   const message = String(err?.message || '').toLowerCase();
@@ -343,6 +417,15 @@ async function downloadMandatoryUpdate(options = {}) {
     const downloadUrl = String(mandatoryUpdateInfo?.downloadUrl || '').trim();
     if (!version || !downloadUrl) {
       return { ok: false, reason: 'missing_update_info', message: 'Update metadata is missing.' };
+    }
+
+    try {
+      await cleanupLegacyUpdatesDir({ keepVersion: version, keepLatestDirectories: 1 });
+    } catch (err) {
+      logEvent('warn', 'legacy_updates_cleanup_failed_before_mandatory_download', {
+        version,
+        message: err.message,
+      });
     }
 
     const targetPath = getMandatoryDownloadPath(version, downloadUrl);
@@ -550,6 +633,12 @@ async function checkForUpdates() {
     return { ok: false, reason: 'in_progress' };
   }
 
+  try {
+    await cleanupLegacyUpdatesDir({ keepLatestDirectories: 1 });
+  } catch (err) {
+    logEvent('warn', 'legacy_updates_cleanup_failed_before_update_check', { message: err.message });
+  }
+
   if (!configureUpdateSource()) {
     return { ok: false, reason: 'provider_not_configured' };
   }
@@ -564,6 +653,12 @@ async function checkForUpdates() {
 }
 
 async function runStartupUpdateFlow() {
+  try {
+    await cleanupLegacyUpdatesDir({ keepLatestDirectories: 1 });
+  } catch (err) {
+    logEvent('warn', 'legacy_updates_cleanup_failed_on_startup', { message: err.message });
+  }
+
   const mandatory = await checkMandatoryUpdate();
   if (mandatory.required) {
     return { ok: true, required: true, version: mandatory.version, currentVersion: mandatory.currentVersion };
