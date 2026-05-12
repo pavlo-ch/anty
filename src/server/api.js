@@ -296,12 +296,20 @@ route('POST', '/api/profiles/:id/start', async (_req, res, { id }) => {
 
 // POST /api/profiles/:id/stop — stop running browser
 route('POST', '/api/profiles/:id/stop', async (_req, res, { id }) => {
-  const result = await launcher.stopProfile(Number(id));
+  const profileId = Number(id);
+  try {
+    const liveState = await launcher.getStorageState(profileId);
+    if (liveState && (Array.isArray(liveState.cookies) || Array.isArray(liveState.origins))) {
+      updateProfile(profileId, { storage_state: liveState });
+    }
+  } catch (_) {}
+
+  const result = await launcher.stopProfile(profileId);
   if (!result.success) return badRequest(res, result.error);
   // Push updated cookies to cloud after session ends
-  const saved = getProfile(Number(id));
+  const saved = getProfile(profileId);
   if (saved) { profileSync.onLocalProfileUpsert(saved); profileSync.scheduleSync(); }
-  ok(res, { stopped: Number(id) });
+  ok(res, { stopped: profileId });
 });
 
 // GET /api/profiles/:id/ws — get wsEndpoint for already running profile
@@ -345,6 +353,28 @@ route('GET', '/api/running', async (_req, res, _params) => {
   const ids = launcher.getRunningProfiles();
   const running = ids.map((id) => ({ id, wsEndpoint: launcher.getWsEndpoint(id) }));
   ok(res, { running });
+});
+
+// GET /api/sync/status — inspect current cloud sync state and queue health
+route('GET', '/api/sync/status', async (_req, res, _params) => {
+  ok(res, { sync: profileSync.getSyncStatus() });
+});
+
+// POST /api/sync/run — manually flush queue and pull latest cloud changes
+route('POST', '/api/sync/run', async (req, res, _params) => {
+  let body;
+  try { body = await readBody(req); }
+  catch { return badRequest(res, 'Invalid JSON body'); }
+
+  const limit = Number(body?.limit);
+  const result = await profileSync.runFullSync({
+    limit: Number.isFinite(limit) && limit > 0 ? limit : 100
+  });
+
+  ok(res, {
+    sync: result,
+    status: profileSync.getSyncStatus()
+  });
 });
 
 // ── Proxy string parser ───────────────────────────────────────────────────────
@@ -399,7 +429,7 @@ function parseProxyString(str) {
 const server = http.createServer(async (req, res) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' });
+    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' });
     return res.end();
   }
 
@@ -436,6 +466,8 @@ server.listen(PORT, HOST, () => {
   console.log('  GET    /api/profiles/:id/ws');
   console.log('  POST   /api/proxy/check');
   console.log('  GET    /api/running');
+  console.log('  GET    /api/sync/status');
+  console.log('  POST   /api/sync/run');
 });
 
 // Graceful shutdown

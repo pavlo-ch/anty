@@ -403,6 +403,7 @@ function normalizeProfileForPayload(profile) {
     userAgent: profile.user_agent || '',
     fingerprint: parseJsonSafe(profile.fingerprint || '{}'),
     cookies: parseJsonSafe(profile.cookies || '[]'),
+    storageState: parseJsonSafe(profile.storage_state || '{}'),
     notes: profile.notes || '',
     tags: normalizeTagNames(profile.tags),
     startPage: profile.start_page || 'https://whoer.net',
@@ -450,6 +451,9 @@ function normalizeCloudProfile(item) {
       user_agent: String(root.userAgent || root.user_agent || ''),
       fingerprint: root.fingerprint && typeof root.fingerprint === 'object' ? root.fingerprint : {},
       cookies: Array.isArray(root.cookies) ? root.cookies : [],
+      storage_state: root.storageState && typeof root.storageState === 'object'
+        ? root.storageState
+        : (root.storage_state && typeof root.storage_state === 'object' ? root.storage_state : {}),
       notes: String(root.notes || ''),
       tags: normalizeTagNames(root.tags || root.data?.tags || []),
       start_page: String(root.startPage || root.start_page || 'https://whoer.net'),

@@ -99,6 +99,7 @@ function initDatabase() {
       user_agent TEXT DEFAULT '',
       fingerprint TEXT DEFAULT '{}',
       cookies TEXT DEFAULT '[]',
+      storage_state TEXT DEFAULT '',
       notes TEXT DEFAULT '',
       start_page TEXT DEFAULT 'https://whoer.net',
       warmup_url TEXT DEFAULT '',
@@ -185,6 +186,7 @@ function initDatabase() {
   ensureColumn('profiles', 'created_by', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'warmup_url', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'running_on', "TEXT DEFAULT ''");
+  ensureColumn('profiles', 'storage_state', "TEXT DEFAULT ''");
   // When adding `warmup_completed` to an existing DB, mark all PRE-EXISTING
   // profiles as already warmed-up (skip=1). Only brand-new profiles created
   // AFTER this point will trigger the warmup dialog on first launch.
@@ -352,8 +354,8 @@ function createProfile(data) {
   }
 
   const result = getDb().prepare(`
-    INSERT INTO profiles (name, folder_id, group_id, proxy_id, user_agent, fingerprint, start_page, notes, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO profiles (name, folder_id, group_id, proxy_id, user_agent, fingerprint, start_page, notes, created_by, storage_state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     data.name || 'New Profile',
     data.folder_id || null,
@@ -363,7 +365,8 @@ function createProfile(data) {
     JSON.stringify(fingerprint),
     data.start_page || 'https://whoer.net',
     data.notes || '',
-    createdBy
+    createdBy,
+    data.storage_state ? (typeof data.storage_state === 'string' ? data.storage_state : JSON.stringify(data.storage_state)) : ''
   );
 
   if (data.tags !== undefined) {
@@ -392,6 +395,7 @@ function updateProfile(id, data) {
     'user_agent',
     'fingerprint',
     'cookies',
+    'storage_state',
     'notes',
     'start_page',
     'warmup_url',

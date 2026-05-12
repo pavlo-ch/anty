@@ -549,6 +549,14 @@ async function launchProfile(profileId, mainWindow) {
     const injectionScript = buildInjectionScript(fingerprint);
     const warmupUrl = profile.warmup_url;
     const startPage = profile.start_page || 'https://whoer.net';
+    const parsedStorageState = (() => {
+      try {
+        const raw = profile.storage_state ? JSON.parse(profile.storage_state) : null;
+        return raw && typeof raw === 'object' ? raw : null;
+      } catch (_) {
+        return null;
+      }
+    })();
 
     // Helper: import cookies into a context
     async function importCookies(ctx) {
@@ -561,6 +569,43 @@ async function launchProfile(profileId, mainWindow) {
       } catch (e) {
         console.error('[Launcher] Failed to import cookies:', e.message);
       }
+    }
+
+    async function importStorageState(ctx) {
+      if (!parsedStorageState) return false;
+
+      const cookies = Array.isArray(parsedStorageState.cookies)
+        ? parsedStorageState.cookies.map(normalizeCookieForPlaywright).filter(Boolean)
+        : [];
+      if (cookies.length > 0) {
+        await ctx.addCookies(cookies);
+      }
+
+      const origins = Array.isArray(parsedStorageState.origins)
+        ? parsedStorageState.origins
+            .filter((entry) => entry && typeof entry.origin === 'string' && Array.isArray(entry.localStorage))
+            .map((entry) => ({
+              origin: entry.origin,
+              localStorage: entry.localStorage
+                .filter((item) => item && typeof item.name === 'string')
+                .map((item) => ({ name: item.name, value: String(item.value ?? '') }))
+            }))
+        : [];
+
+      if (origins.length > 0) {
+        await ctx.addInitScript(({ origins }) => {
+          try {
+            const current = window.location.origin;
+            const match = origins.find((entry) => entry.origin === current);
+            if (!match) return;
+            for (const item of match.localStorage) {
+              try { window.localStorage.setItem(item.name, item.value); } catch (_) {}
+            }
+          } catch (_) {}
+        }, { origins });
+      }
+
+      return cookies.length > 0 || origins.length > 0;
     }
 
     // Helper: save cookies from a context
@@ -576,6 +621,18 @@ async function launchProfile(profileId, mainWindow) {
       }
     }
 
+    async function saveStorageState(ctx) {
+      try {
+        const state = await ctx.storageState();
+        if (state && (Array.isArray(state.cookies) || Array.isArray(state.origins))) {
+          updateProfile(profileId, { storage_state: JSON.stringify(state) });
+          console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
+        }
+      } catch (e) {
+        console.log(`[Launcher] Could not save storage_state: ${e.message}`);
+      }
+    }
+
     // Helper: navigate warmup + start page
     async function navigate(page) {
       if (warmupUrl && !warmupUrl.startsWith('chrome://')) {
@@ -587,27 +644,36 @@ async function launchProfile(profileId, mainWindow) {
       }
     }
 
+    // In Linux server mode under root, Chromium must keep --no-sandbox.
+    const serverIgnoreDefaultArgs =
+      process.platform === 'linux' && typeof process.getuid === 'function' && process.getuid() === 0
+        ? ['--enable-automation']
+        : ['--enable-automation', '--no-sandbox'];
+
     // ── SERVER / HEADLESS MODE ──────────────────────────────────────────────
     if (mainWindow === null || (typeof mainWindow === 'object' && mainWindow && mainWindow.__serverMode)) {
       const browserServer = await chromium.launchServer({
-        headless: 'new',
+        headless: true,
         executablePath,
         args: [
-          `--user-data-dir=${userDataDir}`,
           '--disable-infobars',
           '--no-first-run',
           '--no-default-browser-check',
           `--window-size=${viewportWidth},${viewportHeight}`,
         ],
-        ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
+        ignoreDefaultArgs: serverIgnoreDefaultArgs,
       });
 
       const wsEndpoint = browserServer.wsEndpoint();
       const browser = await chromium.connect(wsEndpoint);
-      const context = await browser.newContext({ ...contextOptions });
+      const context = parsedStorageState
+        ? await browser.newContext({ ...contextOptions, storageState: parsedStorageState })
+        : await browser.newContext({ ...contextOptions });
 
       await context.addInitScript(injectionScript);
-      await importCookies(context);
+      if (!parsedStorageState) {
+        await importCookies(context);
+      }
 
       const page = await context.newPage();
       await navigate(page);
@@ -617,6 +683,7 @@ async function launchProfile(profileId, mainWindow) {
 
       context.on('close', async () => {
         await saveCookies(context);
+        await saveStorageState(context);
         runningBrowsers.delete(profileId);
         updateProfile(profileId, { status: 'ready' });
         console.log(`[Launcher] Profile ${profileId} closed (server mode)`);
@@ -636,7 +703,10 @@ async function launchProfile(profileId, mainWindow) {
     });
 
     await context.addInitScript(injectionScript);
-    await importCookies(context);
+    const importedStorage = await importStorageState(context);
+    if (!importedStorage) {
+      await importCookies(context);
+    }
 
     // ── WARMUP (first-launch only) ─────────────────────────────────────────
     // If the profile has a warmup config and hasn't been warmed up yet,
@@ -658,6 +728,7 @@ async function launchProfile(profileId, mainWindow) {
           });
           // Persist cookies gathered during warmup immediately
           try { await saveCookies(context); } catch {}
+          try { await saveStorageState(context); } catch {}
           updateProfile(profileId, { warmup_completed: 1 });
         } catch (e) {
           console.error('[Launcher] Warmup failed:', e.message);
@@ -685,6 +756,7 @@ async function launchProfile(profileId, mainWindow) {
     context.on('close', async () => {
       // Save cookies defensively — context may already be partially closed
       try { await saveCookies(context); } catch {}
+      try { await saveStorageState(context); } catch {}
       runningBrowsers.delete(profileId);
       try { updateProfile(profileId, { status: 'ready', running_on: '' }); } catch {}
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -720,6 +792,15 @@ async function stopProfile(profileId) {
       if (allCookies.length > 0) {
         updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
         console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
+      }
+    } catch {}
+    try {
+      const state = await instance.context.storageState();
+      const cookieCount = Array.isArray(state?.cookies) ? state.cookies.length : 0;
+      const originCount = Array.isArray(state?.origins) ? state.origins.length : 0;
+      if (cookieCount > 0 || originCount > 0) {
+        updateProfile(profileId, { storage_state: JSON.stringify(state) });
+        console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
       }
     } catch {}
     await instance.context.close();
@@ -763,12 +844,19 @@ function getWsEndpoint(profileId) {
   return instance?.wsEndpoint || null;
 }
 
+async function getStorageState(profileId) {
+  const instance = runningBrowsers.get(profileId);
+  if (!instance?.context) return null;
+  return instance.context.storageState();
+}
+
 module.exports = {
   launchProfile,
   stopProfile,
   stopAllProfiles,
   getRunningProfiles,
   getWsEndpoint,
+  getStorageState,
   checkProxy,
   syncProfileLocaleFromProxy,
   deleteProfile,
