@@ -488,22 +488,20 @@ async function launchProfile(profileId, mainWindow) {
       );
     }
 
-    // Context options — use capped viewport for actual window, but spoof full resolution in fingerprint
+    // Context options — viewport null in GUI mode so Chrome doesn't pin window size
+    // (prevents window shrinking on new tab and modal clipping at bottom of screen)
+    // screen is still spoofed for fingerprint anti-detection
     const secChHeaders = buildSecChUaHeaders(fingerprint);
     const contextOptions = {
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale?.language || 'en-US',
       timezoneId: fingerprint.locale?.timezone || 'America/New_York',
-      viewport: {
-        width: viewportWidth,
-        height: viewportHeight,
-      },
+      viewport: null,
       screen: {
         width: fingerprint.screen?.width || 1920,
         height: fingerprint.screen?.height || 1080,
       },
       colorScheme: 'no-preference',
-      deviceScaleFactor: 1,
       ...(Object.keys(secChHeaders).length > 0 ? { extraHTTPHeaders: secChHeaders } : {}),
     };
 
