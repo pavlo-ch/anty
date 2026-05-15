@@ -974,6 +974,7 @@ async function launchProfile(profileId, mainWindow) {
       let cfg = null;
       try { cfg = JSON.parse(profile.warmup_config); } catch {}
       if (cfg && cfg.enabled) {
+        console.log(`[Launcher] [${profileId}] Running organic warmup (${cfg.sitesCount || '?'} sites, ~${cfg.secondsPerSite || '?'}s each)`);
         // Mark completed BEFORE running so if the user closes the browser
         // mid-warmup the flag is already set and warmup won't run again next launch
         updateProfile(profileId, { warmup_completed: 1 });
@@ -1003,84 +1004,11 @@ async function launchProfile(profileId, mainWindow) {
 
     const initialPages = context.pages();
     console.log(`[Launcher] [${profileId}] Context opened, initial pages: ${initialPages.length}`);
+    console.log(`[Launcher] [${profileId}] warmupUrl=${warmupUrl || '(none)'}, startPage=${startPage}`);
 
     let page = initialPages[0];
     if (!page) page = await context.newPage();
     await navigate(page);
-
-    // Watch for all real pages closing — when user closes the last tab in Chrome,
-    // Chrome auto-opens a blank newtab which keeps the context alive indefinitely.
-    // We detect this and close the context directly (no per-page closing to avoid loops).
-    const isBlankPage = (p) => {
-      const u = p.url();
-      return !u || u === 'about:blank' || u === 'chrome://newtab/' || u.startsWith('chrome://new-tab-page');
-    };
-
-    let watchDebounce = null;
-    let isClosingContext = false;
-
-    const doClose = async () => {
-      if (isClosingContext) return;
-      isClosingContext = true;
-      clearTimeout(watchDebounce);
-      clearInterval(statePoller);
-      console.log(`[Launcher] [${profileId}] Closing context proactively`);
-      // Close any remaining blank pages silently to avoid Chrome flash, then close context
-      const pages = context.pages();
-      await Promise.all(pages.map((p) => p.close({ runBeforeUnload: false }).catch(() => {})));
-      await context.close().catch(() => {});
-    };
-
-    const checkAllClosed = () => {
-      if (isClosingContext) return;
-      clearTimeout(watchDebounce);
-      const pages = context.pages();
-      const realPages = pages.filter((p) => !isBlankPage(p));
-
-      // If literally no pages exist (Chrome quit) → close fast
-      // If only blank pages remain (user closed last real tab, Chrome auto-opened newtab)
-      //   → wait 2 s before closing so user has time to type a URL in the new tab
-      const delay = pages.length === 0 ? 200 : 2000;
-
-      watchDebounce = setTimeout(async () => {
-        if (isClosingContext) return;
-        const pagesNow = context.pages();
-        const realNow = pagesNow.filter((p) => !isBlankPage(p));
-        console.log(`[Launcher] [${profileId}] Page check: ${pagesNow.length} total, ${realNow.length} real`);
-        if (pagesNow.length === 0 || realNow.length === 0) {
-          await doClose();
-        }
-      }, delay);
-    };
-
-    // Watch ALL pages — new tabs start as about:blank so we can't filter at open time
-    const watchPage = (p) => {
-      p.on('close', () => {
-        console.log(`[Launcher] [${profileId}] Page closed, remaining: ${context.pages().length}`);
-        checkAllClosed();
-      });
-    };
-
-    context.on('page', (newPage) => {
-      watchPage(newPage);
-    });
-
-    for (const p of initialPages) {
-      watchPage(p);
-    }
-
-    // Polling fallback: only trigger on pages.length === 0 (Chrome fully quit,
-    // e.g. macOS X button + Cmd+Q). Does NOT trigger on blank tabs to avoid
-    // killing new tabs the user just opened.
-    const statePoller = setInterval(() => {
-      if (isClosingContext) { clearInterval(statePoller); return; }
-      try {
-        if (context.pages().length === 0) {
-          clearInterval(statePoller);
-          checkAllClosed();
-        }
-      } catch (_) { clearInterval(statePoller); }
-    }, 300);
 
     const autosave = startStateAutosave(profileId, context, page);
     runningBrowsers.set(profileId, { context, page, autosave, socks5BridgeServer });
@@ -1090,13 +1018,10 @@ async function launchProfile(profileId, mainWindow) {
       mainWindow.webContents.send('browser:status', { profileId, status: 'running' });
     }
 
-    let closeFired = 0;
+    // --disable-background-mode (in launchOptions.args) makes Chrome quit when the
+    // last window closes, so context.on('close') reliably fires on X-button close.
     context.on('close', async () => {
-      closeFired++;
-      console.log(`[Launcher] [${profileId}] context.on('close') fired (#${closeFired})`);
-      isClosingContext = true;
-      clearTimeout(watchDebounce);
-      clearInterval(statePoller);
+      console.log(`[Launcher] [${profileId}] context closed`);
       try { autosave.stop(); } catch (_) {}
       if (socks5BridgeServer) { try { socks5BridgeServer.close(); } catch (_) {} }
       runningBrowsers.delete(profileId);
