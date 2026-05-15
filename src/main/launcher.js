@@ -1034,22 +1034,29 @@ async function launchProfile(profileId, mainWindow) {
     const checkAllClosed = () => {
       if (isClosingContext) return;
       clearTimeout(watchDebounce);
+      const pages = context.pages();
+      const realPages = pages.filter((p) => !isBlankPage(p));
+
+      // If literally no pages exist (Chrome quit) → close fast
+      // If only blank pages remain (user closed last real tab, Chrome auto-opened newtab)
+      //   → wait 2 s before closing so user has time to type a URL in the new tab
+      const delay = pages.length === 0 ? 200 : 2000;
+
       watchDebounce = setTimeout(async () => {
         if (isClosingContext) return;
-        const pages = context.pages();
-        const realPages = pages.filter((p) => !isBlankPage(p));
-        console.log(`[Launcher] [${profileId}] Page check: ${pages.length} total, ${realPages.length} real`);
-        if (pages.length === 0 || realPages.length === 0) {
+        const pagesNow = context.pages();
+        const realNow = pagesNow.filter((p) => !isBlankPage(p));
+        console.log(`[Launcher] [${profileId}] Page check: ${pagesNow.length} total, ${realNow.length} real`);
+        if (pagesNow.length === 0 || realNow.length === 0) {
           await doClose();
         }
-      }, 300);
+      }, delay);
     };
 
-    // Watch ALL pages — new tabs start as about:blank so we can't filter at open time;
-    // URL filtering happens inside checkAllClosed
+    // Watch ALL pages — new tabs start as about:blank so we can't filter at open time
     const watchPage = (p) => {
       p.on('close', () => {
-        console.log(`[Launcher] [${profileId}] Page closed (url=${p.url()}), remaining: ${context.pages().length}`);
+        console.log(`[Launcher] [${profileId}] Page closed, remaining: ${context.pages().length}`);
         checkAllClosed();
       });
     };
@@ -1062,14 +1069,13 @@ async function launchProfile(profileId, mainWindow) {
       watchPage(p);
     }
 
-    // Polling fallback for macOS: clicking X on the Chrome window closes the window
-    // but keeps the process alive in the Dock — page close events don't always fire.
-    // Poll every 300ms to detect when all real pages are gone and force-close.
+    // Polling fallback: only trigger on pages.length === 0 (Chrome fully quit,
+    // e.g. macOS X button + Cmd+Q). Does NOT trigger on blank tabs to avoid
+    // killing new tabs the user just opened.
     const statePoller = setInterval(() => {
       if (isClosingContext) { clearInterval(statePoller); return; }
       try {
-        const pages = context.pages();
-        if (pages.length === 0 || pages.filter((p) => !isBlankPage(p)).length === 0) {
+        if (context.pages().length === 0) {
           clearInterval(statePoller);
           checkAllClosed();
         }
