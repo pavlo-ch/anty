@@ -96,52 +96,6 @@ function buildSecChUaHeaders(fingerprint) {
 // Server mode:   { browserServer, browser, context, page, wsEndpoint, isServer: true }
 const runningBrowsers = new Map();
 
-function startStateAutosave(profileId, context, page) {
-  let stopped = false;
-  let saving = false;
-
-  const flush = async () => {
-    if (stopped || saving) return;
-    saving = true;
-    try {
-      const allCookies = await context.cookies();
-      if (allCookies.length > 0) {
-        updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
-      }
-
-      const state = await context.storageState();
-      const cookieCount = Array.isArray(state?.cookies) ? state.cookies.length : 0;
-      const originCount = Array.isArray(state?.origins) ? state.origins.length : 0;
-      if (cookieCount > 0 || originCount > 0) {
-        updateProfile(profileId, { storage_state: JSON.stringify(state) });
-      }
-    } catch (_) {
-      // Ignore autosave failures during navigation or shutdown.
-    } finally {
-      saving = false;
-    }
-  };
-
-  const timer = setInterval(() => {
-    flush().catch(() => {});
-  }, 15000);
-
-  const onLoad = () => {
-    flush().catch(() => {});
-  };
-
-  if (page) page.on('load', onLoad);
-
-  return {
-    flush,
-    stop() {
-      stopped = true;
-      clearInterval(timer);
-      try { if (page) page.off('load', onLoad); } catch (_) {}
-    }
-  };
-}
-
 function getDataDir() {
   if (process.env.ANTY_DATA_DIR) return process.env.ANTY_DATA_DIR;
   try {
@@ -165,192 +119,6 @@ function buildProxyHeaders(proxyData) {
   if (!proxyData.username) return {};
   const auth = Buffer.from(`${proxyData.username}:${proxyData.password || ''}`).toString('base64');
   return { 'Proxy-Authorization': `Basic ${auth}` };
-}
-
-// ── SOCKS5 helpers (pure Node.js, no extra deps) ──────────────────────────
-
-/**
- * Perform SOCKS5 handshake and return the connected socket ready for data.
- * Caller is responsible for destroying the socket when done.
- */
-function connectViaSocks5(proxyData, targetHost, targetPort, timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
-    const net = require('net');
-    const proxyHost = proxyData.host;
-    const proxyPort = toNumber(proxyData.port, 1080);
-    const username  = proxyData.username || '';
-    const password  = proxyData.password || '';
-    const hasAuth   = Boolean(username && password);
-
-    let state = 'greeting';
-    let buf = Buffer.alloc(0);
-    let settled = false;
-
-    const fail = (msg) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      reject(new Error(msg));
-    };
-    const ok = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.removeAllListeners('data');
-      resolve(socket);
-    };
-
-    const timer = setTimeout(() => fail('SOCKS5 connection timeout'), timeoutMs);
-    const socket = net.createConnection({ host: proxyHost, port: proxyPort });
-    socket.on('error', (err) => fail(err.message));
-
-    socket.on('connect', () => {
-      socket.write(hasAuth
-        ? Buffer.from([0x05, 0x02, 0x00, 0x02])
-        : Buffer.from([0x05, 0x01, 0x00]));
-    });
-
-    const sendConnectCmd = () => {
-      const hBuf = Buffer.from(targetHost);
-      socket.write(Buffer.concat([
-        Buffer.from([0x05, 0x01, 0x00, 0x03, hBuf.length]),
-        hBuf,
-        Buffer.from([targetPort >> 8, targetPort & 0xFF]),
-      ]));
-    };
-
-    socket.on('data', (chunk) => {
-      buf = Buffer.concat([buf, chunk]);
-
-      if (state === 'greeting') {
-        if (buf.length < 2) return;
-        const method = buf[1]; buf = buf.slice(2);
-        if (method === 0xFF) return fail('SOCKS5: no acceptable auth method');
-        if (method === 0x02) {
-          state = 'auth';
-          const u = Buffer.from(username), p = Buffer.from(password);
-          socket.write(Buffer.from([0x01, u.length, ...u, p.length, ...p]));
-        } else { state = 'connect'; sendConnectCmd(); }
-
-      } else if (state === 'auth') {
-        if (buf.length < 2) return;
-        const status = buf[1]; buf = buf.slice(2);
-        if (status !== 0x00) return fail('SOCKS5: authentication failed (wrong credentials)');
-        state = 'connect'; sendConnectCmd();
-
-      } else if (state === 'connect') {
-        if (buf.length < 4) return;
-        const rep = buf[1];
-        if (rep !== 0x00) {
-          const msgs = { 1:'server failure', 2:'not allowed', 3:'network unreachable', 4:'host unreachable', 5:'connection refused', 6:'TTL expired' };
-          return fail(`SOCKS5: ${msgs[rep] || 'connect error ' + rep}`);
-        }
-        // Skip variable-length bound address in reply then resolve
-        const atyp = buf[3];
-        let skipLen = 0;
-        if (atyp === 0x01) skipLen = 4 + 2;       // IPv4
-        else if (atyp === 0x03) skipLen = 1 + buf[4] + 2; // domain
-        else if (atyp === 0x04) skipLen = 16 + 2;  // IPv6
-        if (buf.length < 4 + skipLen) return;       // wait for full reply
-        buf = buf.slice(4 + skipLen);
-        ok(); // tunnel open
-      }
-    });
-  });
-}
-
-/**
- * Create a local HTTP proxy server that tunnels all traffic through a SOCKS5 proxy.
- * Returns { server, port }. Close server when browser closes.
- * Chrome sends:  CONNECT host:port  for HTTPS, plain GET for HTTP.
- */
-function createSocks5Bridge(proxyData) {
-  const net = require('net');
-  return new Promise((resolve, reject) => {
-    const server = http.createServer();
-
-    // Plain HTTP requests
-    server.on('request', async (req, res) => {
-      try {
-        const url = new URL(req.url);
-        const targetHost = url.hostname;
-        const targetPort = parseInt(url.port) || 80;
-        const socket = await connectViaSocks5(proxyData, targetHost, targetPort);
-        const path = url.pathname + (url.search || '');
-        const headers = Object.entries(req.headers)
-          .filter(([k]) => k.toLowerCase() !== 'proxy-connection')
-          .map(([k, v]) => `${k}: ${v}`).join('\r\n');
-        socket.write(`${req.method} ${path} HTTP/1.1\r\n${headers}\r\n\r\n`);
-        req.pipe(socket);
-        socket.pipe(res);
-        socket.on('error', () => res.end());
-        res.on('close', () => socket.destroy());
-      } catch (err) {
-        res.writeHead(502); res.end(err.message);
-      }
-    });
-
-    // HTTPS CONNECT tunnel
-    server.on('connect', async (req, clientSocket, head) => {
-      const [targetHost, targetPortStr] = req.url.split(':');
-      const targetPort = parseInt(targetPortStr) || 443;
-      try {
-        const socks5Socket = await connectViaSocks5(proxyData, targetHost, targetPort);
-        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        if (head && head.length > 0) socks5Socket.write(head);
-        socks5Socket.pipe(clientSocket);
-        clientSocket.pipe(socks5Socket);
-        socks5Socket.on('error', () => clientSocket.destroy());
-        clientSocket.on('error', () => socks5Socket.destroy());
-      } catch (err) {
-        clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-        clientSocket.end();
-      }
-    });
-
-    server.listen(0, '127.0.0.1', () => {
-      resolve({ server, port: server.address().port });
-    });
-    server.on('error', reject);
-  });
-}
-
-/**
- * Make a geo-check request through SOCKS5 proxy (for the check-proxy button).
- */
-function requestThroughSocks5Proxy(proxyData, targetUrl, timeoutMs = 10000) {
-  return new Promise(async (resolve) => {
-    let url;
-    try { url = new URL(targetUrl); } catch { return resolve({ ok: false, error: 'Invalid URL' }); }
-    const targetHost = url.hostname;
-    const targetPort = parseInt(url.port) || (url.protocol === 'https:' ? 443 : 80);
-
-    let socket;
-    try {
-      socket = await connectViaSocks5(proxyData, targetHost, targetPort, timeoutMs);
-    } catch (err) {
-      return resolve({ ok: false, error: err.message });
-    }
-
-    let buf = Buffer.alloc(0);
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolve({ ok: false, error: 'HTTP response timeout' });
-    }, timeoutMs);
-
-    socket.write(`GET ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${targetHost}\r\nConnection: close\r\n\r\n`);
-    socket.on('data', (chunk) => { buf = Buffer.concat([buf, chunk]); });
-    socket.on('error', (err) => { clearTimeout(timer); resolve({ ok: false, error: err.message }); });
-    socket.on('end', () => {
-      clearTimeout(timer);
-      const str = buf.toString();
-      const split = str.indexOf('\r\n\r\n');
-      if (split === -1) return resolve({ ok: false, error: 'Incomplete HTTP response' });
-      const statusCode = parseInt((str.split('\r\n')[0] || '').split(' ')[1]) || 0;
-      resolve({ ok: true, statusCode, body: str.slice(split + 4) });
-    });
-  });
 }
 
 function requestThroughHttpProxy(proxyData, targetUrl, timeoutMs = 8000) {
@@ -480,7 +248,14 @@ function normalizeCookieForPlaywright(raw) {
 // ===== PROXY CHECK =====
 async function checkProxy(proxyData) {
   const proxyType = String(proxyData.type || 'http').toLowerCase();
-  const isSocks = proxyType === 'socks5' || proxyType === 'socks4' || proxyType === 'socks';
+  if (proxyType !== 'http' && proxyType !== 'https') {
+    return {
+      success: false,
+      error: 'Proxy check for locale supports only HTTP/HTTPS proxies.',
+      ip: null,
+      country: null,
+    };
+  }
 
   if (!proxyData.host || !proxyData.port) {
     return {
@@ -493,9 +268,11 @@ async function checkProxy(proxyData) {
 
   const startedAt = Date.now();
   try {
-    const geoResponse = await (isSocks
-      ? requestThroughSocks5Proxy(proxyData, 'http://ip-api.com/json/?fields=status,message,query,countryCode,timezone,country', 10000)
-      : requestThroughHttpProxy(proxyData, 'http://ip-api.com/json/?fields=status,message,query,countryCode,timezone,country', 10000));
+    const geoResponse = await requestThroughHttpProxy(
+      proxyData,
+      'http://ip-api.com/json/?fields=status,message,query,countryCode,timezone,country',
+      10000
+    );
     if (!geoResponse.ok) {
       return { success: false, error: geoResponse.error || 'Proxy request failed', ip: null, country: null };
     }
@@ -632,9 +409,8 @@ async function deleteProfile(profileId, options = {}) {
 }
 
 async function launchProfile(profileId, mainWindow) {
-  console.log(`[Launcher] launchProfile called for ${profileId} — stack: ${new Error().stack.split('\n').slice(1,4).join(' | ')}`);
   if (runningBrowsers.has(profileId)) {
-    console.log(`[Launcher] Profile ${profileId} is already running — ignoring`);
+    console.log(`[Launcher] Profile ${profileId} is already running`);
     return { success: false, error: 'Profile is already running' };
   }
 
@@ -667,7 +443,6 @@ async function launchProfile(profileId, mainWindow) {
         '--disable-infobars',
         '--no-first-run',
         '--no-default-browser-check',
-        '--disable-background-mode', // prevent Chrome from staying alive after last window closes
         `--window-size=${viewportWidth},${viewportHeight}`,
       ],
     };
@@ -713,60 +488,33 @@ async function launchProfile(profileId, mainWindow) {
       );
     }
 
-    // Context options — viewport is intentionally null for GUI mode so it tracks the
-    // real Chrome window (set by --window-size). With an explicit viewport, Playwright
-    // pins the CSS viewport per page: the window is taller than the viewport (so modals
-    // like Facebook Ads Manager render their bottom buttons off-screen), and every new
-    // tab gets force-resized to that viewport (visible as a shrink on Ctrl+T).
-    // The fingerprint's screen dimensions are spoofed via the JS injection (fingerprint.js),
-    // so the real viewport size does not leak to anti-fraud checks.
+    // Context options — use capped viewport for actual window, but spoof full resolution in fingerprint
     const secChHeaders = buildSecChUaHeaders(fingerprint);
     const contextOptions = {
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale?.language || 'en-US',
       timezoneId: fingerprint.locale?.timezone || 'America/New_York',
-      viewport: null,
+      viewport: {
+        width: viewportWidth,
+        height: viewportHeight,
+      },
       screen: {
         width: fingerprint.screen?.width || 1920,
         height: fingerprint.screen?.height || 1080,
       },
       colorScheme: 'no-preference',
+      deviceScaleFactor: 1,
       ...(Object.keys(secChHeaders).length > 0 ? { extraHTTPHeaders: secChHeaders } : {}),
     };
 
     // Add proxy if configured
-    // Chrome does not support SOCKS5 with authentication natively.
-    // For SOCKS5+auth we start a local HTTP↔SOCKS5 bridge on a random port,
-    // then point Chrome at that bridge (plain HTTP, no auth needed from Chrome's side).
-    let socks5BridgeServer = null;
     if (profile.proxy_host && profile.proxy_host !== '') {
-      const proxyType = (profile.proxy_type || 'http').toLowerCase();
-      const isSocks5Auth = (proxyType === 'socks5' || proxyType === 'socks') && profile.proxy_username;
-
-      if (isSocks5Auth) {
-        try {
-          const bridge = await createSocks5Bridge({
-            host: profile.proxy_host,
-            port: profile.proxy_port || 1080,
-            username: profile.proxy_username,
-            password: profile.proxy_password || '',
-          });
-          socks5BridgeServer = bridge.server;
-          contextOptions.proxy = { server: `http://127.0.0.1:${bridge.port}` };
-          console.log(`[Launcher] SOCKS5 bridge started on port ${bridge.port} → ${profile.proxy_host}:${profile.proxy_port}`);
-        } catch (err) {
-          console.error('[Launcher] Failed to start SOCKS5 bridge:', err.message);
-          // Fallback: try direct SOCKS5 (will fail if auth is required, but at least we try)
-          contextOptions.proxy = { server: `socks5://${profile.proxy_host}:${profile.proxy_port || 1080}` };
-        }
-      } else {
-        contextOptions.proxy = {
-          server: `${proxyType}://${profile.proxy_host}:${profile.proxy_port || 80}`,
-        };
-        if (profile.proxy_username) {
-          contextOptions.proxy.username = profile.proxy_username;
-          contextOptions.proxy.password = profile.proxy_password || '';
-        }
+      contextOptions.proxy = {
+        server: `${profile.proxy_type || 'http'}://${profile.proxy_host}:${profile.proxy_port || 80}`,
+      };
+      if (profile.proxy_username) {
+        contextOptions.proxy.username = profile.proxy_username;
+        contextOptions.proxy.password = profile.proxy_password || '';
       }
     }
 
@@ -918,14 +666,9 @@ async function launchProfile(profileId, mainWindow) {
 
       const wsEndpoint = browserServer.wsEndpoint();
       const browser = await chromium.connect(wsEndpoint);
-      // Headless mode has no real window — viewport must be explicit here.
-      const serverContextOptions = {
-        ...contextOptions,
-        viewport: { width: viewportWidth, height: viewportHeight },
-      };
       const context = parsedStorageState
-        ? await browser.newContext({ ...serverContextOptions, storageState: parsedStorageState })
-        : await browser.newContext({ ...serverContextOptions });
+        ? await browser.newContext({ ...contextOptions, storageState: parsedStorageState })
+        : await browser.newContext({ ...contextOptions });
 
       await context.addInitScript(injectionScript);
       if (!parsedStorageState) {
@@ -935,12 +678,12 @@ async function launchProfile(profileId, mainWindow) {
       const page = await context.newPage();
       await navigate(page);
 
-      const autosave = startStateAutosave(profileId, context, page);
-      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, autosave });
+      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true });
       updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
       context.on('close', async () => {
-        try { autosave.stop(); } catch (_) {}
+        await saveCookies(context);
+        await saveStorageState(context);
         runningBrowsers.delete(profileId);
         updateProfile(profileId, { status: 'ready' });
         console.log(`[Launcher] Profile ${profileId} closed (server mode)`);
@@ -965,29 +708,15 @@ async function launchProfile(profileId, mainWindow) {
       await importCookies(context);
     }
 
-    // Detect whether Chrome has restored a previous session.
-    // A "real" page is anything that isn't a blank/new-tab placeholder.
-    const isBlankPage = (p) => {
-      const u = p.url();
-      return !u || u === 'about:blank' || u === 'chrome://newtab/' || u.startsWith('chrome://new-tab-page');
-    };
-
-    const initialPages = context.pages();
-    const restoredPages = initialPages.filter((p) => !isBlankPage(p));
-    const hasRestoredSession = restoredPages.length > 0;
-
-    console.log(`[Launcher] [${profileId}] Context opened — ${initialPages.length} initial pages, ${restoredPages.length} restored`);
-
-    // ── WARMUP (first-launch only, fresh profiles only) ───────────────────────
-    // Skip warmup when Chrome already restored a previous session — the profile
-    // has real browsing history and doesn't need synthetic warm-up.
-    if (!hasRestoredSession && !profile.warmup_completed && profile.warmup_config) {
+    // ── WARMUP (first-launch only) ─────────────────────────────────────────
+    // If the profile has a warmup config and hasn't been warmed up yet,
+    // run the organic browsing session BEFORE opening the start page.
+    // This bakes in cookies (NID, CONSENT, _ga, etc.) that massively reduce
+    // bot-detection scores on Google, Cloudflare, and friends.
+    if (!profile.warmup_completed && profile.warmup_config) {
       let cfg = null;
       try { cfg = JSON.parse(profile.warmup_config); } catch {}
       if (cfg && cfg.enabled) {
-        console.log(`[Launcher] [${profileId}] Running organic warmup (${cfg.sitesCount || '?'} sites, ~${cfg.secondsPerSite || '?'}s each)`);
-        // Mark completed BEFORE running so a mid-warmup close doesn't re-trigger it
-        updateProfile(profileId, { warmup_completed: 1 });
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('warmup:status', { profileId, status: 'started' });
         }
@@ -997,8 +726,10 @@ async function launchProfile(profileId, mainWindow) {
               mainWindow.webContents.send('warmup:progress', { profileId, ...progress });
             }
           });
+          // Persist cookies gathered during warmup immediately
           try { await saveCookies(context); } catch {}
           try { await saveStorageState(context); } catch {}
+          updateProfile(profileId, { warmup_completed: 1 });
         } catch (e) {
           console.error('[Launcher] Warmup failed:', e.message);
         }
@@ -1006,44 +737,32 @@ async function launchProfile(profileId, mainWindow) {
           mainWindow.webContents.send('warmup:status', { profileId, status: 'finished' });
         }
       } else {
+        // Config says disabled — still mark as completed so we don't ask again
         updateProfile(profileId, { warmup_completed: 1 });
       }
     }
 
-    let page;
-    if (hasRestoredSession) {
-      // Previous session — leave all tabs exactly as the user left them.
-      // Navigating here would force the start page on top of restored tabs and
-      // trigger bot-detection redirect loops (whoer.net → botfaqtor.ru → ...).
-      page = restoredPages[0];
-      console.log(`[Launcher] [${profileId}] Session restored — ${restoredPages.length} real tab(s), skipping start page`);
-    } else {
-      // Fresh profile (no previous session) — open the configured start page.
-      page = initialPages[0] || await context.newPage();
-      console.log(`[Launcher] [${profileId}] Fresh profile — navigating to start page: ${startPage}`);
-      await navigate(page);
-    }
+    let page = context.pages()[0];
+    if (!page) page = await context.newPage();
+    await navigate(page);
 
-    const autosave = startStateAutosave(profileId, context, page);
-    runningBrowsers.set(profileId, { context, page, autosave, socks5BridgeServer });
+    runningBrowsers.set(profileId, { context, page });
     updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
     if (mainWindow) {
       mainWindow.webContents.send('browser:status', { profileId, status: 'running' });
     }
 
-    // --disable-background-mode (in launchOptions.args) makes Chrome quit when the
-    // last window closes, so context.on('close') reliably fires on X-button close.
     context.on('close', async () => {
-      console.log(`[Launcher] [${profileId}] context closed`);
-      try { autosave.stop(); } catch (_) {}
-      if (socks5BridgeServer) { try { socks5BridgeServer.close(); } catch (_) {} }
+      // Save cookies defensively — context may already be partially closed
+      try { await saveCookies(context); } catch {}
+      try { await saveStorageState(context); } catch {}
       runningBrowsers.delete(profileId);
       try { updateProfile(profileId, { status: 'ready', running_on: '' }); } catch {}
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('browser:status', { profileId, status: 'ready' });
       }
-      console.log(`[Launcher] [${profileId}] Profile fully closed`);
+      console.log(`[Launcher] Profile ${profileId} closed`);
     });
 
     console.log(`[Launcher] Profile ${profileId} launched successfully`);
@@ -1069,10 +788,6 @@ async function stopProfile(profileId) {
 
   try {
     try {
-      await instance.autosave?.flush?.();
-      instance.autosave?.stop?.();
-    } catch {}
-    try {
       const allCookies = await instance.context.cookies();
       if (allCookies.length > 0) {
         updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
@@ -1088,13 +803,8 @@ async function stopProfile(profileId) {
         console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
       }
     } catch {}
-    // Close all pages silently first (runBeforeUnload:false skips beforeunload handlers
-    // and prevents Chrome from showing each page briefly during its graceful-exit sequence)
-    const pages = instance.context.pages();
-    await Promise.all(pages.map((p) => p.close({ runBeforeUnload: false }).catch(() => {})));
     await instance.context.close();
     if (instance.browserServer) await instance.browserServer.close().catch(() => {});
-    if (instance.socks5BridgeServer) try { instance.socks5BridgeServer.close(); } catch (_) {}
     runningBrowsers.delete(profileId);
     updateProfile(profileId, { status: 'ready', running_on: '' });
     return { success: true };
