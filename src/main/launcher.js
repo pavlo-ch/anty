@@ -965,18 +965,28 @@ async function launchProfile(profileId, mainWindow) {
       await importCookies(context);
     }
 
-    // ── WARMUP (first-launch only) ─────────────────────────────────────────
-    // If the profile has a warmup config and hasn't been warmed up yet,
-    // run the organic browsing session BEFORE opening the start page.
-    // This bakes in cookies (NID, CONSENT, _ga, etc.) that massively reduce
-    // bot-detection scores on Google, Cloudflare, and friends.
-    if (!profile.warmup_completed && profile.warmup_config) {
+    // Detect whether Chrome has restored a previous session.
+    // A "real" page is anything that isn't a blank/new-tab placeholder.
+    const isBlankPage = (p) => {
+      const u = p.url();
+      return !u || u === 'about:blank' || u === 'chrome://newtab/' || u.startsWith('chrome://new-tab-page');
+    };
+
+    const initialPages = context.pages();
+    const restoredPages = initialPages.filter((p) => !isBlankPage(p));
+    const hasRestoredSession = restoredPages.length > 0;
+
+    console.log(`[Launcher] [${profileId}] Context opened — ${initialPages.length} initial pages, ${restoredPages.length} restored`);
+
+    // ── WARMUP (first-launch only, fresh profiles only) ───────────────────────
+    // Skip warmup when Chrome already restored a previous session — the profile
+    // has real browsing history and doesn't need synthetic warm-up.
+    if (!hasRestoredSession && !profile.warmup_completed && profile.warmup_config) {
       let cfg = null;
       try { cfg = JSON.parse(profile.warmup_config); } catch {}
       if (cfg && cfg.enabled) {
         console.log(`[Launcher] [${profileId}] Running organic warmup (${cfg.sitesCount || '?'} sites, ~${cfg.secondsPerSite || '?'}s each)`);
-        // Mark completed BEFORE running so if the user closes the browser
-        // mid-warmup the flag is already set and warmup won't run again next launch
+        // Mark completed BEFORE running so a mid-warmup close doesn't re-trigger it
         updateProfile(profileId, { warmup_completed: 1 });
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('warmup:status', { profileId, status: 'started' });
@@ -987,7 +997,6 @@ async function launchProfile(profileId, mainWindow) {
               mainWindow.webContents.send('warmup:progress', { profileId, ...progress });
             }
           });
-          // Persist cookies gathered during warmup immediately
           try { await saveCookies(context); } catch {}
           try { await saveStorageState(context); } catch {}
         } catch (e) {
@@ -997,18 +1006,23 @@ async function launchProfile(profileId, mainWindow) {
           mainWindow.webContents.send('warmup:status', { profileId, status: 'finished' });
         }
       } else {
-        // Config says disabled — still mark as completed so we don't ask again
         updateProfile(profileId, { warmup_completed: 1 });
       }
     }
 
-    const initialPages = context.pages();
-    console.log(`[Launcher] [${profileId}] Context opened, initial pages: ${initialPages.length}`);
-    console.log(`[Launcher] [${profileId}] warmupUrl=${warmupUrl || '(none)'}, startPage=${startPage}`);
-
-    let page = initialPages[0];
-    if (!page) page = await context.newPage();
-    await navigate(page);
+    let page;
+    if (hasRestoredSession) {
+      // Previous session — leave all tabs exactly as the user left them.
+      // Navigating here would force the start page on top of restored tabs and
+      // trigger bot-detection redirect loops (whoer.net → botfaqtor.ru → ...).
+      page = restoredPages[0];
+      console.log(`[Launcher] [${profileId}] Session restored — ${restoredPages.length} real tab(s), skipping start page`);
+    } else {
+      // Fresh profile (no previous session) — open the configured start page.
+      page = initialPages[0] || await context.newPage();
+      console.log(`[Launcher] [${profileId}] Fresh profile — navigating to start page: ${startPage}`);
+      await navigate(page);
+    }
 
     const autosave = startStateAutosave(profileId, context, page);
     runningBrowsers.set(profileId, { context, page, autosave, socks5BridgeServer });
