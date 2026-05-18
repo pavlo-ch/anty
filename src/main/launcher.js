@@ -776,8 +776,11 @@ async function launchProfile(profileId, mainWindow) {
         });
         contextOptions.proxy = { server: proxyBridge.serverUrl };
       } else {
+        // Most providers label these as "HTTPS proxies", but Chrome expects an
+        // HTTP proxy endpoint that uses CONNECT for HTTPS destinations.
+        const chromeProxyType = profileProxyType === 'https' ? 'http' : profileProxyType;
         contextOptions.proxy = {
-          server: `${profileProxyType}://${profile.proxy_host}:${profile.proxy_port || 80}`,
+          server: `${chromeProxyType}://${profile.proxy_host}:${profile.proxy_port || 80}`,
         };
       }
       if (profile.proxy_username && !isSocks5) {
