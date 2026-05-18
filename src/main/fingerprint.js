@@ -519,11 +519,63 @@ function generateFingerprint(customUA, _profileOverride) {
 }
 
 function buildInjectionScript(fingerprint) {
+  const parsedUA = parseUA(fingerprint.userAgent || '') || {};
+  const majorVersion = parseInt(parsedUA.version, 10) || 0;
+  const brandVersion = majorVersion >= 130 ? '24' : majorVersion >= 100 ? '8' : '99';
+  const brandName = majorVersion >= 100 ? 'Not_A Brand' : 'Not;A=Brand';
+  const chromePatchVersions = {
+    146: ['146.0.7103.113', '146.0.7103.92', '146.0.7103.49'],
+    145: ['145.0.7049.95', '145.0.7049.85', '145.0.7049.52'],
+    144: ['144.0.6991.101', '144.0.6991.52'],
+    143: ['143.0.6965.81', '143.0.6965.51'],
+    142: ['142.0.6908.103', '142.0.6908.52'],
+    141: ['141.0.6871.87', '141.0.6871.51'],
+    140: ['140.0.6849.99', '140.0.6849.62'],
+    139: ['139.0.6821.81', '139.0.6821.42'],
+    138: ['138.0.6770.111', '138.0.6770.60'],
+    137: ['137.0.6735.90', '137.0.6735.51'],
+    136: ['136.0.6706.95', '136.0.6706.52'],
+    135: ['135.0.6678.82', '135.0.6678.47'],
+  };
+  const patchPool = chromePatchVersions[majorVersion] || [];
+  const patchIndex = Math.floor(Math.abs((fingerprint.canvas?.noiseSeed || 0) * 1000)) % Math.max(patchPool.length, 1);
+  const fullVersion = patchPool[patchIndex] || `${majorVersion}.0.0.0`;
+  const uaPlatformMap = { Win: 'Windows', Mac: 'macOS', Linux: 'Linux', Android: 'Android', iOS: 'iOS' };
+  const uaPlatform = uaPlatformMap[parsedUA.osShort] || 'Windows';
+  const uaPlatformVersionMap = {
+    Windows: '10.0.0',
+    macOS: '10_15_7',
+    Linux: '',
+    Android: '10',
+    iOS: '17.0.0',
+  };
+  const userAgentData = {
+    brands: [
+      { brand: brandName, version: String(brandVersion) },
+      { brand: 'Chromium', version: String(majorVersion) },
+      { brand: 'Google Chrome', version: String(majorVersion) },
+    ],
+    mobile: Boolean(parsedUA.mobile || fingerprint.hardware?.maxTouchPoints > 0),
+    platform: uaPlatform,
+    architecture: uaPlatform === 'macOS' && process.arch === 'arm64' ? 'arm' : 'x86',
+    bitness: '64',
+    model: '',
+    platformVersion: uaPlatformVersionMap[uaPlatform] || '',
+    uaFullVersion: fullVersion,
+    fullVersionList: [
+      { brand: brandName, version: `${brandVersion}.0.0.0` },
+      { brand: 'Chromium', version: fullVersion },
+      { brand: 'Google Chrome', version: fullVersion },
+    ],
+    wow64: false,
+  };
+
   return `
 (function() {
   'use strict';
   
   const fp = ${JSON.stringify(fingerprint)};
+  const uaData = ${JSON.stringify(userAgentData)};
 
   // ===== UTIL: stealth property override on prototype =====
   function stealthOverride(obj, prop, getter) {
@@ -555,6 +607,42 @@ function buildInjectionScript(fingerprint) {
   stealthOverride(navigator, 'userAgent', () => fp.userAgent);
   stealthOverride(navigator, 'platform', () => fp.platform);
   stealthOverride(navigator, 'appVersion', () => fp.userAgent.replace('Mozilla/', ''));
+  try {
+    const userAgentData = {
+      brands: Object.freeze(uaData.brands.map((item) => Object.freeze({ ...item }))),
+      mobile: uaData.mobile,
+      platform: uaData.platform,
+      getHighEntropyValues: makeNative(function(hints) {
+        const result = {
+          brands: this.brands,
+          mobile: this.mobile,
+          platform: this.platform,
+        };
+        const values = {
+          architecture: uaData.architecture,
+          bitness: uaData.bitness,
+          model: uaData.model,
+          platformVersion: uaData.platformVersion,
+          uaFullVersion: uaData.uaFullVersion,
+          fullVersionList: Object.freeze(uaData.fullVersionList.map((item) => Object.freeze({ ...item }))),
+          wow64: uaData.wow64,
+        };
+        for (const hint of Array.isArray(hints) ? hints : []) {
+          if (Object.prototype.hasOwnProperty.call(values, hint)) result[hint] = values[hint];
+        }
+        return Promise.resolve(result);
+      }, 'getHighEntropyValues'),
+      toJSON: makeNative(function() {
+        return {
+          brands: this.brands,
+          mobile: this.mobile,
+          platform: this.platform,
+        };
+      }, 'toJSON'),
+    };
+    Object.freeze(userAgentData);
+    stealthOverride(navigator, 'userAgentData', () => userAgentData);
+  } catch(e) {}
   
   // ===== 2. HARDWARE =====
   stealthOverride(navigator, 'hardwareConcurrency', () => fp.hardware.cpuCores);
