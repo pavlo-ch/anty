@@ -97,6 +97,65 @@ function buildSecChUaHeaders(fingerprint) {
 // Server mode:   { browserServer, browser, context, page, wsEndpoint, isServer: true }
 const runningBrowsers = new Map();
 
+function enqueueProfileSync(profileId) {
+  try {
+    const profile = getProfile(profileId);
+    if (!profile) return;
+    profileSync.onLocalProfileUpsert(profile);
+    profileSync.scheduleSync();
+  } catch (_) {}
+}
+
+function startStateAutosave(profileId, context, page) {
+  let stopped = false;
+  let saving = false;
+
+  const flush = async () => {
+    if (stopped || saving) return;
+    saving = true;
+    try {
+      const allCookies = await context.cookies();
+      if (allCookies.length > 0) {
+        updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+      }
+
+      const state = await context.storageState();
+      const cookieCount = Array.isArray(state?.cookies) ? state.cookies.length : 0;
+      const originCount = Array.isArray(state?.origins) ? state.origins.length : 0;
+      if (cookieCount > 0 || originCount > 0) {
+        updateProfile(profileId, { storage_state: JSON.stringify(state) });
+      }
+
+      if (allCookies.length > 0 || cookieCount > 0 || originCount > 0) {
+        enqueueProfileSync(profileId);
+      }
+    } catch (_) {
+      // Ignore autosave failures while the profile is navigating or closing.
+    } finally {
+      saving = false;
+    }
+  };
+
+  const timer = setInterval(() => {
+    flush().catch(() => {});
+  }, 15000);
+
+  const onLoad = () => {
+    flush().catch(() => {});
+  };
+
+  page?.on('load', onLoad);
+
+  return {
+    flush,
+    stop() {
+      stopped = true;
+      clearInterval(timer);
+      try { page?.off('load', onLoad); } catch (_) {}
+    }
+  };
+}
+
 function watchAllPagesClosed(context, onAllPagesClosed) {
   const trackedPages = new Set();
   let stopped = false;
@@ -823,7 +882,9 @@ async function launchProfile(profileId, mainWindow) {
     const parsedStorageState = (() => {
       try {
         const raw = profile.storage_state ? JSON.parse(profile.storage_state) : null;
-        return raw && typeof raw === 'object' ? raw : null;
+        const cookieCount = Array.isArray(raw?.cookies) ? raw.cookies.length : 0;
+        const originCount = Array.isArray(raw?.origins) ? raw.origins.length : 0;
+        return cookieCount > 0 || originCount > 0 ? raw : null;
       } catch (_) {
         return null;
       }
@@ -885,6 +946,7 @@ async function launchProfile(profileId, mainWindow) {
         const allCookies = await ctx.cookies();
         if (allCookies.length > 0) {
           updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+          enqueueProfileSync(profileId);
           console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
         }
       } catch (e) {
@@ -897,6 +959,7 @@ async function launchProfile(profileId, mainWindow) {
         const state = await ctx.storageState();
         if (state && (Array.isArray(state.cookies) || Array.isArray(state.origins))) {
           updateProfile(profileId, { storage_state: JSON.stringify(state) });
+          enqueueProfileSync(profileId);
           console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
         }
       } catch (e) {
@@ -953,6 +1016,7 @@ async function launchProfile(profileId, mainWindow) {
 
       const page = await context.newPage();
       await navigate(page);
+      const autosave = startStateAutosave(profileId, context, page);
 
       let finalized = false;
       let closeWatcher = null;
@@ -960,6 +1024,8 @@ async function launchProfile(profileId, mainWindow) {
         if (finalized) return;
         finalized = true;
         try { closeWatcher?.stop?.(); } catch (_) {}
+        try { await autosave.flush(); } catch (_) {}
+        try { autosave.stop(); } catch (_) {}
         await saveCookies(context);
         await saveStorageState(context);
         try { await proxyBridge?.close?.(); } catch (_) {}
@@ -974,7 +1040,7 @@ async function launchProfile(profileId, mainWindow) {
       closeWatcher = watchAllPagesClosed(context, () => {
         context.close().catch(() => finalizeClose());
       });
-      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher });
+      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave });
       updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
       context.on('close', finalizeClose);
@@ -1035,6 +1101,7 @@ async function launchProfile(profileId, mainWindow) {
     let page = context.pages()[0];
     if (!page) page = await context.newPage();
     await navigate(page);
+    const autosave = startStateAutosave(profileId, context, page);
 
     let finalized = false;
     let closeWatcher = null;
@@ -1042,6 +1109,8 @@ async function launchProfile(profileId, mainWindow) {
       if (finalized) return;
       finalized = true;
       try { closeWatcher?.stop?.(); } catch (_) {}
+      try { await autosave.flush(); } catch (_) {}
+      try { autosave.stop(); } catch (_) {}
       // Save cookies defensively — context may already be partially closed
       try { await saveCookies(context); } catch {}
       try { await saveStorageState(context); } catch {}
@@ -1062,7 +1131,7 @@ async function launchProfile(profileId, mainWindow) {
     closeWatcher = watchAllPagesClosed(context, () => {
       context.close().catch(() => finalizeClose());
     });
-    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher });
+    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave });
     updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
     if (mainWindow) {
@@ -1096,9 +1165,14 @@ async function stopProfile(profileId) {
   try {
     try { instance.closeWatcher?.stop?.(); } catch {}
     try {
+      await instance.autosave?.flush?.();
+      instance.autosave?.stop?.();
+    } catch {}
+    try {
       const allCookies = await instance.context.cookies();
       if (allCookies.length > 0) {
         updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+        enqueueProfileSync(profileId);
         console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
       }
     } catch {}
@@ -1108,6 +1182,7 @@ async function stopProfile(profileId) {
       const originCount = Array.isArray(state?.origins) ? state.origins.length : 0;
       if (cookieCount > 0 || originCount > 0) {
         updateProfile(profileId, { storage_state: JSON.stringify(state) });
+        enqueueProfileSync(profileId);
         console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
       }
     } catch {}
@@ -1115,7 +1190,11 @@ async function stopProfile(profileId) {
     if (instance.browserServer) await instance.browserServer.close().catch(() => {});
     await instance.proxyBridge?.close?.();
     runningBrowsers.delete(profileId);
-    updateProfile(profileId, { status: 'ready', running_on: '' });
+    const updated = updateProfile(profileId, { status: 'ready', running_on: '' });
+    if (updated) {
+      profileSync.onLocalProfileUpsert(updated);
+      profileSync.scheduleSync();
+    }
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
