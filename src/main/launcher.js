@@ -7,6 +7,7 @@ const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('
 const profileSync = require('./profile-sync');
 const warmup = require('./warmup');
 const http = require('http');
+const net = require('net');
 
 /**
  * Realistic Chrome patch versions per major version.
@@ -96,6 +97,50 @@ function buildSecChUaHeaders(fingerprint) {
 // Server mode:   { browserServer, browser, context, page, wsEndpoint, isServer: true }
 const runningBrowsers = new Map();
 
+function watchAllPagesClosed(context, onAllPagesClosed) {
+  const trackedPages = new Set();
+  let stopped = false;
+  let closeTimer = null;
+
+  const scheduleCheck = () => {
+    if (stopped) return;
+    clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => {
+      if (stopped) return;
+      let pages = [];
+      try {
+        pages = context.pages();
+      } catch (_) {
+        pages = [];
+      }
+      if (pages.length === 0) {
+        onAllPagesClosed();
+      }
+    }, 300);
+  };
+
+  const trackPage = (targetPage) => {
+    if (!targetPage || trackedPages.has(targetPage)) return;
+    trackedPages.add(targetPage);
+    targetPage.on('close', scheduleCheck);
+  };
+
+  context.pages().forEach(trackPage);
+  context.on('page', trackPage);
+
+  return {
+    stop() {
+      stopped = true;
+      clearTimeout(closeTimer);
+      try { context.off('page', trackPage); } catch (_) {}
+      for (const trackedPage of trackedPages) {
+        try { trackedPage.off('close', scheduleCheck); } catch (_) {}
+      }
+      trackedPages.clear();
+    },
+  };
+}
+
 function getDataDir() {
   if (process.env.ANTY_DATA_DIR) return process.env.ANTY_DATA_DIR;
   try {
@@ -146,6 +191,218 @@ function requestThroughHttpProxy(proxyData, targetUrl, timeoutMs = 8000) {
     });
     req.end();
   });
+}
+
+function connectThroughSocks5(proxyData, targetHost, targetPort, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({
+      host: proxyData.host,
+      port: toNumber(proxyData.port, 1080),
+    });
+    let buffer = Buffer.alloc(0);
+    let stage = 'greeting';
+    let settled = false;
+
+    const fail = (message) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      reject(new Error(message));
+    };
+
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.off('data', onData);
+      resolve(socket);
+    };
+
+    const timer = setTimeout(() => fail('SOCKS5 connection timeout'), timeoutMs);
+
+    const sendConnect = () => {
+      const host = Buffer.from(String(targetHost));
+      socket.write(Buffer.concat([
+        Buffer.from([0x05, 0x01, 0x00, 0x03, host.length]),
+        host,
+        Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]),
+      ]));
+      stage = 'connect';
+    };
+
+    const onData = (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+
+      if (stage === 'greeting') {
+        if (buffer.length < 2) return;
+        if (buffer[0] !== 0x05) return fail('Invalid SOCKS5 greeting response');
+        const method = buffer[1];
+        buffer = buffer.slice(2);
+        if (method === 0xff) return fail('SOCKS5 proxy rejected authentication methods');
+        if (method === 0x02) {
+          const username = Buffer.from(String(proxyData.username || ''));
+          const password = Buffer.from(String(proxyData.password || ''));
+          if (username.length > 255 || password.length > 255) return fail('SOCKS5 credentials are too long');
+          socket.write(Buffer.concat([
+            Buffer.from([0x01, username.length]),
+            username,
+            Buffer.from([password.length]),
+            password,
+          ]));
+          stage = 'auth';
+          return;
+        }
+        if (method !== 0x00) return fail('Unsupported SOCKS5 authentication method');
+        sendConnect();
+        return;
+      }
+
+      if (stage === 'auth') {
+        if (buffer.length < 2) return;
+        if (buffer[1] !== 0x00) return fail('SOCKS5 authentication failed');
+        buffer = buffer.slice(2);
+        sendConnect();
+        return;
+      }
+
+      if (stage === 'connect') {
+        if (buffer.length < 5) return;
+        if (buffer[1] !== 0x00) return fail(`SOCKS5 connect failed (${buffer[1]})`);
+        const atyp = buffer[3];
+        let responseLength = 0;
+        if (atyp === 0x01) responseLength = 10;
+        else if (atyp === 0x03) responseLength = 5 + buffer[4] + 2;
+        else if (atyp === 0x04) responseLength = 22;
+        else return fail('Invalid SOCKS5 address type');
+        if (buffer.length < responseLength) return;
+        done();
+      }
+    };
+
+    socket.on('connect', () => {
+      const wantsAuth = Boolean(proxyData.username);
+      socket.write(Buffer.from(wantsAuth ? [0x05, 0x02, 0x00, 0x02] : [0x05, 0x01, 0x00]));
+    });
+    socket.on('data', onData);
+    socket.on('error', (err) => fail(err.message || 'SOCKS5 connection failed'));
+    socket.on('end', () => fail('SOCKS5 connection closed early'));
+  });
+}
+
+function requestThroughSocks5Proxy(proxyData, targetUrl, timeoutMs = 10000) {
+  return new Promise(async (resolve) => {
+    let parsedUrl = null;
+    try {
+      parsedUrl = new URL(targetUrl);
+    } catch (_) {
+      resolve({ ok: false, error: 'Invalid URL' });
+      return;
+    }
+
+    const targetPort = Number(parsedUrl.port) || (parsedUrl.protocol === 'https:' ? 443 : 80);
+    let socket = null;
+    let response = Buffer.alloc(0);
+    let settled = false;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket?.destroy(); } catch (_) {}
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => finish({ ok: false, error: 'HTTP response timeout' }), timeoutMs);
+
+    try {
+      socket = await connectThroughSocks5(proxyData, parsedUrl.hostname, targetPort, timeoutMs);
+      socket.write(`GET ${parsedUrl.pathname}${parsedUrl.search} HTTP/1.1\r\nHost: ${parsedUrl.hostname}\r\nConnection: close\r\n\r\n`);
+      socket.on('data', (chunk) => { response = Buffer.concat([response, chunk]); });
+      socket.on('error', (err) => finish({ ok: false, error: err.message || 'SOCKS5 request failed' }));
+      socket.on('end', () => {
+        const raw = response.toString('utf8');
+        const headerEnd = raw.indexOf('\r\n\r\n');
+        const header = headerEnd >= 0 ? raw.slice(0, headerEnd) : '';
+        const body = headerEnd >= 0 ? raw.slice(headerEnd + 4) : raw;
+        const statusCode = Number(header.match(/^HTTP\/\d(?:\.\d)?\s+(\d+)/)?.[1] || 0);
+        finish({ ok: true, statusCode, body });
+      });
+    } catch (err) {
+      finish({ ok: false, error: err.message || 'SOCKS5 request failed' });
+    }
+  });
+}
+
+async function createSocks5HttpBridge(proxyData) {
+  const sockets = new Set();
+  let closed = false;
+  const server = http.createServer();
+
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+
+  server.on('request', async (req, res) => {
+    let parsedUrl = null;
+    try {
+      parsedUrl = new URL(req.url);
+      const targetPort = Number(parsedUrl.port) || 80;
+      const upstream = await connectThroughSocks5(proxyData, parsedUrl.hostname, targetPort);
+      sockets.add(upstream);
+      upstream.on('close', () => sockets.delete(upstream));
+      const requestPath = `${parsedUrl.pathname}${parsedUrl.search}`;
+      const headers = Object.entries(req.headers)
+        .filter(([key]) => key.toLowerCase() !== 'proxy-connection')
+        .map(([key, value]) => `${key}: ${value}`)
+        .join('\r\n');
+      upstream.write(`${req.method} ${requestPath} HTTP/1.1\r\n${headers}\r\n\r\n`);
+      req.pipe(upstream);
+      upstream.pipe(res);
+      upstream.on('error', () => res.end());
+      res.on('close', () => upstream.destroy());
+    } catch (err) {
+      if (!res.headersSent) res.writeHead(502);
+      res.end(err.message || 'SOCKS5 bridge failed');
+    }
+  });
+
+  server.on('connect', async (req, clientSocket, head) => {
+    const [targetHost, rawPort] = String(req.url || '').split(':');
+    const targetPort = Number(rawPort) || 443;
+    try {
+      const upstream = await connectThroughSocks5(proxyData, targetHost, targetPort);
+      sockets.add(upstream);
+      upstream.on('close', () => sockets.delete(upstream));
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head?.length) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+      upstream.on('error', () => clientSocket.destroy());
+      clientSocket.on('error', () => upstream.destroy());
+    } catch (_) {
+      clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
+      clientSocket.end();
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  return {
+    serverUrl: `http://127.0.0.1:${server.address().port}`,
+    close: () => new Promise((resolve) => {
+      if (closed) return resolve();
+      closed = true;
+      for (const socket of sockets) {
+        try { socket.destroy(); } catch (_) {}
+      }
+      try { server.close(() => resolve()); } catch (_) { resolve(); }
+    }),
+  };
 }
 
 async function requestDirectGeo(timeoutMs = 10000) {
@@ -248,10 +505,11 @@ function normalizeCookieForPlaywright(raw) {
 // ===== PROXY CHECK =====
 async function checkProxy(proxyData) {
   const proxyType = String(proxyData.type || 'http').toLowerCase();
-  if (proxyType !== 'http' && proxyType !== 'https') {
+  const isSocks5 = proxyType === 'socks5' || proxyType === 'sock5';
+  if (proxyType !== 'http' && proxyType !== 'https' && !isSocks5) {
     return {
       success: false,
-      error: 'Proxy check for locale supports only HTTP/HTTPS proxies.',
+      error: 'Proxy check for locale supports only HTTP/HTTPS/SOCKS5 proxies.',
       ip: null,
       country: null,
     };
@@ -268,11 +526,10 @@ async function checkProxy(proxyData) {
 
   const startedAt = Date.now();
   try {
-    const geoResponse = await requestThroughHttpProxy(
-      proxyData,
-      'http://ip-api.com/json/?fields=status,message,query,countryCode,timezone,country',
-      10000
-    );
+    const geoUrl = 'http://ip-api.com/json/?fields=status,message,query,countryCode,timezone,country';
+    const geoResponse = isSocks5
+      ? await requestThroughSocks5Proxy(proxyData, geoUrl, 10000)
+      : await requestThroughHttpProxy(proxyData, geoUrl, 10000);
     if (!geoResponse.ok) {
       return { success: false, error: geoResponse.error || 'Proxy request failed', ip: null, country: null };
     }
@@ -421,6 +678,7 @@ async function launchProfile(profileId, mainWindow) {
 
   const fingerprint = JSON.parse(profile.fingerprint || '{}');
   const userDataDir = getUserDataDir(profileId);
+  let proxyBridge = null;
 
   console.log(`[Launcher] Launching profile ${profileId}: ${profile.name}`);
   console.log(`[Launcher] User data dir: ${userDataDir}`);
@@ -488,31 +746,41 @@ async function launchProfile(profileId, mainWindow) {
       );
     }
 
-    // Context options — use capped viewport for actual window, but spoof full resolution in fingerprint
+    // Context options — keep GUI viewport dynamic so fullscreen/window resize is real.
+    // A fixed viewport pins page height and can clip sticky bottom buttons.
     const secChHeaders = buildSecChUaHeaders(fingerprint);
     const contextOptions = {
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale?.language || 'en-US',
       timezoneId: fingerprint.locale?.timezone || 'America/New_York',
-      viewport: {
-        width: viewportWidth,
-        height: viewportHeight,
-      },
+      viewport: null,
       screen: {
         width: fingerprint.screen?.width || 1920,
         height: fingerprint.screen?.height || 1080,
       },
       colorScheme: 'no-preference',
-      deviceScaleFactor: 1,
       ...(Object.keys(secChHeaders).length > 0 ? { extraHTTPHeaders: secChHeaders } : {}),
     };
 
     // Add proxy if configured
     if (profile.proxy_host && profile.proxy_host !== '') {
-      contextOptions.proxy = {
-        server: `${profile.proxy_type || 'http'}://${profile.proxy_host}:${profile.proxy_port || 80}`,
-      };
-      if (profile.proxy_username) {
+      const profileProxyType = String(profile.proxy_type || 'http').toLowerCase();
+      const isSocks5 = profileProxyType === 'socks5' || profileProxyType === 'sock5';
+      if (isSocks5) {
+        proxyBridge = await createSocks5HttpBridge({
+          type: 'socks5',
+          host: profile.proxy_host,
+          port: profile.proxy_port || 1080,
+          username: profile.proxy_username || '',
+          password: profile.proxy_password || '',
+        });
+        contextOptions.proxy = { server: proxyBridge.serverUrl };
+      } else {
+        contextOptions.proxy = {
+          server: `${profileProxyType}://${profile.proxy_host}:${profile.proxy_port || 80}`,
+        };
+      }
+      if (profile.proxy_username && !isSocks5) {
         contextOptions.proxy.username = profile.proxy_username;
         contextOptions.proxy.password = profile.proxy_password || '';
       }
@@ -666,9 +934,14 @@ async function launchProfile(profileId, mainWindow) {
 
       const wsEndpoint = browserServer.wsEndpoint();
       const browser = await chromium.connect(wsEndpoint);
+      const serverContextOptions = {
+        ...contextOptions,
+        viewport: { width: viewportWidth, height: viewportHeight },
+        deviceScaleFactor: 1,
+      };
       const context = parsedStorageState
-        ? await browser.newContext({ ...contextOptions, storageState: parsedStorageState })
-        : await browser.newContext({ ...contextOptions });
+        ? await browser.newContext({ ...serverContextOptions, storageState: parsedStorageState })
+        : await browser.newContext({ ...serverContextOptions });
 
       await context.addInitScript(injectionScript);
       if (!parsedStorageState) {
@@ -678,16 +951,30 @@ async function launchProfile(profileId, mainWindow) {
       const page = await context.newPage();
       await navigate(page);
 
-      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true });
-      updateProfile(profileId, { status: 'running', running_on: os.hostname() });
-
-      context.on('close', async () => {
+      let finalized = false;
+      let closeWatcher = null;
+      const finalizeClose = async () => {
+        if (finalized) return;
+        finalized = true;
+        try { closeWatcher?.stop?.(); } catch (_) {}
         await saveCookies(context);
         await saveStorageState(context);
+        try { await proxyBridge?.close?.(); } catch (_) {}
         runningBrowsers.delete(profileId);
-        updateProfile(profileId, { status: 'ready' });
+        const updated = updateProfile(profileId, { status: 'ready', running_on: '' });
+        if (updated) {
+          profileSync.onLocalProfileUpsert(updated);
+          profileSync.scheduleSync();
+        }
         console.log(`[Launcher] Profile ${profileId} closed (server mode)`);
+      };
+      closeWatcher = watchAllPagesClosed(context, () => {
+        context.close().catch(() => finalizeClose());
       });
+      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher });
+      updateProfile(profileId, { status: 'running', running_on: os.hostname() });
+
+      context.on('close', finalizeClose);
 
       console.log(`[Launcher] Profile ${profileId} launched (headless) — wsEndpoint: ${wsEndpoint}`);
       return { success: true, wsEndpoint };
@@ -746,29 +1033,46 @@ async function launchProfile(profileId, mainWindow) {
     if (!page) page = await context.newPage();
     await navigate(page);
 
-    runningBrowsers.set(profileId, { context, page });
+    let finalized = false;
+    let closeWatcher = null;
+    const finalizeClose = async () => {
+      if (finalized) return;
+      finalized = true;
+      try { closeWatcher?.stop?.(); } catch (_) {}
+      // Save cookies defensively — context may already be partially closed
+      try { await saveCookies(context); } catch {}
+      try { await saveStorageState(context); } catch {}
+      try { await proxyBridge?.close?.(); } catch (_) {}
+      runningBrowsers.delete(profileId);
+      try {
+        const updated = updateProfile(profileId, { status: 'ready', running_on: '' });
+        if (updated) {
+          profileSync.onLocalProfileUpsert(updated);
+          profileSync.scheduleSync();
+        }
+      } catch {}
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('browser:status', { profileId, status: 'ready' });
+      }
+      console.log(`[Launcher] Profile ${profileId} closed`);
+    };
+    closeWatcher = watchAllPagesClosed(context, () => {
+      context.close().catch(() => finalizeClose());
+    });
+    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher });
     updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
     if (mainWindow) {
       mainWindow.webContents.send('browser:status', { profileId, status: 'running' });
     }
 
-    context.on('close', async () => {
-      // Save cookies defensively — context may already be partially closed
-      try { await saveCookies(context); } catch {}
-      try { await saveStorageState(context); } catch {}
-      runningBrowsers.delete(profileId);
-      try { updateProfile(profileId, { status: 'ready', running_on: '' }); } catch {}
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('browser:status', { profileId, status: 'ready' });
-      }
-      console.log(`[Launcher] Profile ${profileId} closed`);
-    });
+    context.on('close', finalizeClose);
 
     console.log(`[Launcher] Profile ${profileId} launched successfully`);
     return { success: true };
 
   } catch (error) {
+    try { await proxyBridge?.close?.(); } catch (_) {}
     console.error(`[Launcher] Failed to launch profile ${profileId}:`, error.message);
     return { success: false, error: error.message };
   }
@@ -787,6 +1091,7 @@ async function stopProfile(profileId) {
   }
 
   try {
+    try { instance.closeWatcher?.stop?.(); } catch {}
     try {
       const allCookies = await instance.context.cookies();
       if (allCookies.length > 0) {
@@ -805,6 +1110,7 @@ async function stopProfile(profileId) {
     } catch {}
     await instance.context.close();
     if (instance.browserServer) await instance.browserServer.close().catch(() => {});
+    await instance.proxyBridge?.close?.();
     runningBrowsers.delete(profileId);
     updateProfile(profileId, { status: 'ready', running_on: '' });
     return { success: true };

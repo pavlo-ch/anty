@@ -212,6 +212,10 @@ function registerIpcHandlers() {
     requireLoggedIn();
     return db.createProxy(data);
   });
+  ipcMain.handle('proxy:usage-count', (_, id) => {
+    requireLoggedIn();
+    return db.countProfilesUsingProxy(id);
+  });
   ipcMain.handle('proxy:update', (_, id, data) => {
     requireLoggedIn();
     return db.updateProxy(id, data);

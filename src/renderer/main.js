@@ -46,6 +46,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
       runningProfiles.delete(data.profileId);
     }
+    const profileIndex = profiles.findIndex((p) => p.id === data.profileId);
+    if (profileIndex >= 0) {
+      profiles[profileIndex] = {
+        ...profiles[profileIndex],
+        status: data.status === 'running' ? 'running' : 'ready',
+        running_on: data.status === 'running' ? profiles[profileIndex].running_on : '',
+      };
+    }
     renderProfilesList();
     if (selectedProfileId === data.profileId) {
       loadProfileEditor(data.profileId);
@@ -1111,6 +1119,12 @@ function parseProxyInput(str, typeOverride) {
   let type = typeOverride || 'http';
   let rest = str.trim();
 
+  const spacedTypeMatch = rest.match(/^(https?|socks[45]?)\s+(.+)/i);
+  if (spacedTypeMatch) {
+    type = spacedTypeMatch[1].toLowerCase();
+    rest = spacedTypeMatch[2].trim();
+  }
+
   const protoMatch = rest.match(/^(https?|socks[45]?):\/\/(.+)/i);
   if (protoMatch) {
     type = protoMatch[1].toLowerCase();
@@ -1307,11 +1321,23 @@ async function saveProxy() {
       ip_change_link: '',
     };
 
-    if (existingProxyId) {
+    const usageCount = existingProxyId && window.api.getProxyUsageCount
+      ? await window.api.getProxyUsageCount(existingProxyId)
+      : 0;
+
+    if (existingProxyId && usageCount <= 1) {
       await window.api.updateProxy(existingProxyId, proxyData);
     } else {
       const proxy = await window.api.createProxy(proxyData);
       await window.api.updateProfile(selectedProfileId, { proxy_id: proxy.id });
+    }
+    await syncProfileLocaleFromProxy(selectedProfileId, { silentSuccess: true });
+    const refreshed = await window.api.getProfile(selectedProfileId);
+    if (refreshed) {
+      const index = profiles.findIndex((p) => p.id === selectedProfileId);
+      if (index >= 0) profiles[index] = refreshed;
+      loadProfileEditor(selectedProfileId);
+      renderProfilesList(document.getElementById('search-input')?.value || '');
     }
     showToast('Proxy updated', 'success');
   } catch (err) {

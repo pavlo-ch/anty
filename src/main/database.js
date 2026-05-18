@@ -451,6 +451,13 @@ function getProfileByRemoteId(remoteId) {
   return attachTagsToProfiles([row])[0] || row;
 }
 
+function countProfilesUsingProxy(proxyId) {
+  const numeric = Number(proxyId);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  const row = getDb().prepare('SELECT COUNT(*) AS count FROM profiles WHERE proxy_id = ?').get(numeric);
+  return Number(row?.count) || 0;
+}
+
 // ---- CLOUD SYNC QUEUE ----
 function enqueueProfileSync(action, payload = {}) {
   const result = getDb().prepare(`
@@ -589,7 +596,7 @@ module.exports = {
   initDatabase, getDb,
   listProfiles, getProfile, createProfile, updateProfile, deleteProfile, getProfileByRemoteId,
   listTags, getProfileTags, setProfileTags,
-  listProxies, createProxy, updateProxy, deleteProxy, findOrCreateProxy,
+  listProxies, createProxy, updateProxy, deleteProxy, findOrCreateProxy, countProfilesUsingProxy,
   listFolders, createFolder,
   listGroups, createGroup,
   getSetting, setSetting,

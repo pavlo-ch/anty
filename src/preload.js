@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   // Proxies
   getProxies: () => ipcRenderer.invoke('proxy:list'),
   createProxy: (data) => ipcRenderer.invoke('proxy:create', data),
+  getProxyUsageCount: (id) => ipcRenderer.invoke('proxy:usage-count', id),
   updateProxy: (id, data) => ipcRenderer.invoke('proxy:update', id, data),
   deleteProxy: (id) => ipcRenderer.invoke('proxy:delete', id),
   checkProxy: (data) => ipcRenderer.invoke('proxy:check', data),
