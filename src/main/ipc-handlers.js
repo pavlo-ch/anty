@@ -194,9 +194,9 @@ function registerIpcHandlers() {
     requireLoggedIn();
     return launcher.syncProfileLocaleFromProxy(id);
   });
-  ipcMain.handle('profile:sync:run', async () => {
+  ipcMain.handle('profile:sync:run', async (_, options = {}) => {
     requireLoggedIn();
-    return profileSync.runFullSync();
+    return profileSync.runFullSync(options);
   });
   ipcMain.handle('profile:sync:status', () => {
     requireLoggedIn();

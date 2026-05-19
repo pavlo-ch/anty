@@ -76,7 +76,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadData();
   renderProfilesList();
   void backfillProxyLocaleForExistingProfiles();
-  void runProfileCloudSync({ silent: true });
+  void runProfileCloudSync({ silent: true, fullPull: true });
   await refreshAccountPage();
 
   // Auto-refresh: reload local profiles every 15s (picks up API-created profiles and team changes)
@@ -135,7 +135,7 @@ async function runProfileCloudSync(options = {}) {
   if (!window.api.runProfileCloudSync || profileCloudSyncRunning) return;
   profileCloudSyncRunning = true;
   try {
-    const result = await window.api.runProfileCloudSync();
+    const result = await window.api.runProfileCloudSync(options);
     const pulled = Number(result?.pull?.pulled || 0);
     if (pulled > 0) {
       await loadData();
@@ -1860,7 +1860,7 @@ async function loginAccount() {
     renderAccountState(accountState);
     await loadData();
     renderProfilesList();
-    void runProfileCloudSync({ silent: true });
+    void runProfileCloudSync({ silent: true, fullPull: true });
     hideLoginModal();
     showToast('Login successful', 'success');
   } catch (err) {
@@ -1894,7 +1894,7 @@ async function loginFromModal() {
     renderAccountState(accountState);
     await loadData();
     renderProfilesList();
-    void runProfileCloudSync({ silent: true });
+    void runProfileCloudSync({ silent: true, fullPull: true });
     hideLoginModal();
     showToast('Login successful', 'success');
   } catch (err) {

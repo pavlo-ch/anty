@@ -725,7 +725,7 @@ async function pushQueueToCloud(limit = 100) {
   return { ok: failed === 0, pushed, failed };
 }
 
-async function pullProfilesFromCloud() {
+async function pullProfilesFromCloud(options = {}) {
   const pullUrl = getProfilesPullUrl();
   if (!isLoggedIn()) {
     return { ok: false, pulled: 0, skipped: true, reason: 'not_logged_in' };
@@ -738,7 +738,7 @@ async function pullProfilesFromCloud() {
     source: ANTY_SOURCE,
     appVersion: getAppVersion(),
     device: getDeviceInfo(),
-    cursor: getSyncCursor()
+    cursor: options.fullPull ? '' : getSyncCursor()
   });
   if (!result.ok) {
     return { ok: false, pulled: 0, reason: result.body?.error || result.reason || `pull_failed_${result.status}` };
@@ -794,7 +794,7 @@ async function pullProfilesFromCloud() {
   if (cursor) setSyncCursor(cursor);
   else if (items.length > 0) setSyncCursor(new Date().toISOString());
 
-  return { ok: true, pulled, cursor: getSyncCursor() };
+  return { ok: true, pulled, cursor: getSyncCursor(), fullPull: Boolean(options.fullPull) };
 }
 
 async function runFullSync(options = {}) {
@@ -804,7 +804,7 @@ async function runFullSync(options = {}) {
   syncInProgress = true;
   try {
     const push = await pushQueueToCloud(options.limit || 100);
-    const pull = await pullProfilesFromCloud();
+    const pull = await pullProfilesFromCloud({ fullPull: Boolean(options.fullPull) });
     const pushAfterPull = await pushQueueToCloud(options.limit || 100);
     const result = {
       ok: Boolean(push.ok && pull.ok && pushAfterPull.ok),

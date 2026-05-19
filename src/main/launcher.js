@@ -9,6 +9,43 @@ const warmup = require('./warmup');
 const http = require('http');
 const net = require('net');
 
+const STARTUP_NOISE_HOST_PATTERNS = [
+  'adtrafficquality.google',
+  'googleadservices.com',
+  'googlesyndication.com',
+  'doubleclick.net',
+  'pubmatic.com',
+  'openx.net',
+  'rubiconproject.com',
+  'criteo.com',
+  'adsrvr.org',
+  'adform.net',
+  'adgrx.com',
+  'adkernel.com',
+  'smartadserver.com',
+  'indexww.com',
+  'connatix.com',
+  'yellowblue.io',
+  '3lift.com',
+  'id5-sync.com',
+  'gumgum.com',
+  'simpli.fi',
+  'amazon-adsystem.com',
+  'btloader.com',
+  'botfaqtor.ru',
+  'measureadv.com',
+  'eskimi.com',
+  'creativecdn.com',
+  'ctnsnet.com',
+  'smilewanted.com',
+  'the-ozone-project.com',
+  'mediavine.com',
+  'pubnation.com',
+  'journeymv.com',
+  'de17a.com',
+  'wp.pl',
+];
+
 /**
  * Realistic Chrome patch versions per major version.
  * Google User-Agent reduction makes `navigator.userAgent` always report
@@ -106,7 +143,7 @@ function enqueueProfileSync(profileId) {
   } catch (_) {}
 }
 
-function startStateAutosave(profileId, context, page) {
+function startStateAutosave(profileId, context) {
   let stopped = false;
   let saving = false;
 
@@ -136,22 +173,10 @@ function startStateAutosave(profileId, context, page) {
     }
   };
 
-  const timer = setInterval(() => {
-    flush().catch(() => {});
-  }, 15000);
-
-  const onLoad = () => {
-    flush().catch(() => {});
-  };
-
-  page?.on('load', onLoad);
-
   return {
     flush,
     stop() {
       stopped = true;
-      clearInterval(timer);
-      try { page?.off('load', onLoad); } catch (_) {}
     }
   };
 }
@@ -200,6 +225,20 @@ function watchAllPagesClosed(context, onAllPagesClosed) {
   };
 }
 
+async function installStartupNoiseBlocker(context) {
+  const handler = async (route) => {
+    const url = route.request().url();
+    if (isStartupNoiseUrl(url)) {
+      await route.abort('blockedbyclient').catch(() => {});
+      return;
+    }
+    await route.continue().catch(() => {});
+  };
+
+  await context.route('**/*', handler);
+  return () => context.unroute('**/*', handler).catch(() => {});
+}
+
 function getDataDir() {
   if (process.env.ANTY_DATA_DIR) return process.env.ANTY_DATA_DIR;
   try {
@@ -212,6 +251,86 @@ function getDataDir() {
 
 function getUserDataDir(profileId) {
   return path.join(getDataDir(), 'profiles', `profile_${profileId}`);
+}
+
+function writeJsonFileSafe(filePath, patcher) {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsed = raw ? JSON.parse(raw) : {};
+    const next = patcher(parsed) || parsed;
+    fs.writeFileSync(filePath, JSON.stringify(next));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function isStartupNoiseUrl(rawUrl) {
+  try {
+    const host = new URL(String(rawUrl || '')).hostname.replace(/^www\./, '').toLowerCase();
+    return STARTUP_NOISE_HOST_PATTERNS.some((pattern) => host === pattern || host.endsWith(`.${pattern}`));
+  } catch (_) {
+    return false;
+  }
+}
+
+function cleanupStartupNoiseHistory(userDataDir) {
+  const historyPath = path.join(userDataDir, 'Default', 'History');
+  if (!fs.existsSync(historyPath)) return;
+
+  let chromeHistoryDb = null;
+  try {
+    const Database = require('better-sqlite3');
+    chromeHistoryDb = new Database(historyPath);
+    const rows = chromeHistoryDb.prepare('SELECT id, url FROM urls').all();
+    const ids = rows
+      .filter((row) => isStartupNoiseUrl(row.url))
+      .map((row) => row.id)
+      .filter((id) => Number.isFinite(Number(id)));
+
+    if (ids.length === 0) return;
+
+    const placeholders = ids.map(() => '?').join(',');
+    chromeHistoryDb.prepare(`DELETE FROM visits WHERE url IN (${placeholders})`).run(...ids);
+    chromeHistoryDb.prepare(`DELETE FROM urls WHERE id IN (${placeholders})`).run(...ids);
+  } catch (_) {
+    // Chrome may have History locked; the network blocker still prevents new noise.
+  } finally {
+    try { chromeHistoryDb?.close?.(); } catch (_) {}
+  }
+}
+
+function disableChromeSessionRestore(userDataDir, startAction = 'open-page') {
+  if (startAction === 'continue-session') return;
+
+  try {
+    const sessionsDir = path.join(userDataDir, 'Default', 'Sessions');
+    if (fs.existsSync(sessionsDir)) {
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+    }
+  } catch (_) {}
+
+  writeJsonFileSafe(path.join(userDataDir, 'Default', 'Preferences'), (prefs) => {
+    prefs.profile = {
+      ...(prefs.profile || {}),
+      exit_type: 'Normal',
+      exited_cleanly: true,
+    };
+    prefs.session = {
+      ...(prefs.session || {}),
+      restore_on_startup: 5,
+      startup_urls: [],
+    };
+    return prefs;
+  });
+
+  writeJsonFileSafe(path.join(userDataDir, 'Local State'), (state) => {
+    state.exited_cleanly = true;
+    return state;
+  });
+
+  cleanupStartupNoiseHistory(userDataDir);
 }
 
 function toNumber(value, fallback = 0) {
@@ -444,6 +563,115 @@ async function createSocks5HttpBridge(proxyData) {
       clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
       clientSocket.end();
     }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  return {
+    serverUrl: `http://127.0.0.1:${server.address().port}`,
+    close: () => new Promise((resolve) => {
+      if (closed) return resolve();
+      closed = true;
+      for (const socket of sockets) {
+        try { socket.destroy(); } catch (_) {}
+      }
+      try { server.close(() => resolve()); } catch (_) { resolve(); }
+    }),
+  };
+}
+
+async function createHttpProxyBridge(proxyData) {
+  const sockets = new Set();
+  let closed = false;
+  const server = http.createServer();
+
+  const proxyHost = String(proxyData.host || '').trim();
+  const proxyPort = toNumber(proxyData.port, 80);
+  const proxyAuthHeaders = buildProxyHeaders(proxyData);
+
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+
+  server.on('request', (req, res) => {
+    const headers = { ...req.headers, ...proxyAuthHeaders };
+    delete headers['proxy-connection'];
+
+    const upstream = http.request({
+      host: proxyHost,
+      port: proxyPort,
+      method: req.method,
+      path: req.url,
+      headers,
+    }, (upstreamRes) => {
+      res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+      upstreamRes.pipe(res);
+    });
+
+    sockets.add(upstream);
+    upstream.on('close', () => sockets.delete(upstream));
+    upstream.on('error', (err) => {
+      if (!res.headersSent) res.writeHead(502);
+      res.end(err.message || 'HTTP proxy bridge failed');
+    });
+    req.pipe(upstream);
+  });
+
+  server.on('connect', (req, clientSocket, head) => {
+    const upstream = net.createConnection({ host: proxyHost, port: proxyPort });
+    sockets.add(upstream);
+    upstream.on('close', () => sockets.delete(upstream));
+
+    let response = Buffer.alloc(0);
+    let connected = false;
+
+    const fail = () => {
+      try { clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n'); } catch (_) {}
+      try { clientSocket.destroy(); } catch (_) {}
+      try { upstream.destroy(); } catch (_) {}
+    };
+
+    upstream.on('connect', () => {
+      const authLine = proxyAuthHeaders['Proxy-Authorization']
+        ? `Proxy-Authorization: ${proxyAuthHeaders['Proxy-Authorization']}\r\n`
+        : '';
+      upstream.write(
+        `CONNECT ${req.url} HTTP/1.1\r\n` +
+        `Host: ${req.url}\r\n` +
+        authLine +
+        'Proxy-Connection: keep-alive\r\n' +
+        '\r\n'
+      );
+    });
+
+    upstream.on('data', (chunk) => {
+      if (connected) return;
+      response = Buffer.concat([response, chunk]);
+      const headerEnd = response.indexOf('\r\n\r\n');
+      if (headerEnd < 0) return;
+
+      const header = response.slice(0, headerEnd).toString('latin1');
+      const statusCode = Number(header.match(/^HTTP\/\d(?:\.\d)?\s+(\d+)/)?.[1] || 0);
+      if (statusCode < 200 || statusCode >= 300) {
+        fail();
+        return;
+      }
+
+      connected = true;
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      const rest = response.slice(headerEnd + 4);
+      if (rest.length) clientSocket.write(rest);
+      if (head?.length) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+    });
+
+    upstream.on('error', fail);
+    clientSocket.on('error', () => upstream.destroy());
   });
 
   await new Promise((resolve, reject) => {
@@ -738,11 +966,14 @@ async function launchProfile(profileId, mainWindow) {
   const fingerprint = JSON.parse(profile.fingerprint || '{}');
   const userDataDir = getUserDataDir(profileId);
   let proxyBridge = null;
+  const startAction = String(fingerprint.startAction || 'open-page');
 
   console.log(`[Launcher] Launching profile ${profileId}: ${profile.name}`);
   console.log(`[Launcher] User data dir: ${userDataDir}`);
 
   try {
+    disableChromeSessionRestore(userDataDir, startAction);
+
     // Cap viewport to reasonable desktop size (never larger than 1920x1080 for actual window)
     const viewportWidth = Math.min(fingerprint.screen?.width || 1280, 1440);
     const viewportHeight = Math.min(fingerprint.screen?.height || 900, 900);
@@ -760,6 +991,8 @@ async function launchProfile(profileId, mainWindow) {
         '--disable-infobars',
         '--no-first-run',
         '--no-default-browser-check',
+        '--disable-quic',
+        '--disable-features=AsyncDns,UseDnsHttpsSvcbAlpn',
         `--window-size=${viewportWidth},${viewportHeight}`,
       ],
     };
@@ -833,19 +1066,25 @@ async function launchProfile(profileId, mainWindow) {
           username: profile.proxy_username || '',
           password: profile.proxy_password || '',
         });
-        contextOptions.proxy = { server: proxyBridge.serverUrl };
+        launchOptions.args.push(`--proxy-server=${proxyBridge.serverUrl}`);
       } else {
         // Most providers label these as "HTTPS proxies", but Chrome expects an
         // HTTP proxy endpoint that uses CONNECT for HTTPS destinations.
         const chromeProxyType = profileProxyType === 'https' ? 'http' : profileProxyType;
-        contextOptions.proxy = {
-          server: `${chromeProxyType}://${profile.proxy_host}:${profile.proxy_port || 80}`,
-        };
+        if (profile.proxy_username) {
+          proxyBridge = await createHttpProxyBridge({
+            type: chromeProxyType,
+            host: profile.proxy_host,
+            port: profile.proxy_port || 80,
+            username: profile.proxy_username || '',
+            password: profile.proxy_password || '',
+          });
+          launchOptions.args.push(`--proxy-server=${proxyBridge.serverUrl}`);
+        } else {
+          launchOptions.args.push(`--proxy-server=${chromeProxyType}://${profile.proxy_host}:${profile.proxy_port || 80}`);
+        }
       }
-      if (profile.proxy_username && !isSocks5) {
-        contextOptions.proxy.username = profile.proxy_username;
-        contextOptions.proxy.password = profile.proxy_password || '';
-      }
+      launchOptions.args.push('--proxy-bypass-list=<-loopback>');
     }
 
     // Geolocation based on timezone
@@ -969,6 +1208,10 @@ async function launchProfile(profileId, mainWindow) {
 
     // Helper: navigate warmup + start page
     async function navigate(page) {
+      if (startAction === 'new-tab') {
+        await page.goto('about:blank').catch(() => {});
+        return;
+      }
       if (warmupUrl && !warmupUrl.startsWith('chrome://')) {
         await page.goto(warmupUrl).catch(() => {});
         await page.waitForTimeout(2500).catch(() => {});
@@ -1014,9 +1257,11 @@ async function launchProfile(profileId, mainWindow) {
         await importCookies(context);
       }
 
+      const cleanupStartupBlocker = await installStartupNoiseBlocker(context).catch(() => null);
       const page = await context.newPage();
       await navigate(page);
-      const autosave = startStateAutosave(profileId, context, page);
+      cleanupStartupBlocker?.();
+      const autosave = startStateAutosave(profileId, context);
 
       let finalized = false;
       let closeWatcher = null;
@@ -1063,6 +1308,7 @@ async function launchProfile(profileId, mainWindow) {
     if (!importedStorage) {
       await importCookies(context);
     }
+    const cleanupStartupBlocker = await installStartupNoiseBlocker(context).catch(() => null);
 
     // ── WARMUP (first-launch only) ─────────────────────────────────────────
     // If the profile has a warmup config and hasn't been warmed up yet,
@@ -1101,7 +1347,8 @@ async function launchProfile(profileId, mainWindow) {
     let page = context.pages()[0];
     if (!page) page = await context.newPage();
     await navigate(page);
-    const autosave = startStateAutosave(profileId, context, page);
+    cleanupStartupBlocker?.();
+    const autosave = startStateAutosave(profileId, context);
 
     let finalized = false;
     let closeWatcher = null;
