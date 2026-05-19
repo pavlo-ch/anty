@@ -11,6 +11,7 @@ let pendingProfiles = new Set(); // profiles being launched/stopped (prevents do
 let accountState = null;
 let mandatoryUpdateRequired = false;
 let mandatoryUpdateOpenInProgress = false;
+let availableUpdateInfo = null;
 let proxyLocaleBackfillRunning = false;
 let profileCloudSyncRunning = false;
 let autoSaveTimer = null;
@@ -64,7 +65,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const startupUpdate = await window.api.startupUpdateCheck();
     if (startupUpdate?.required) {
       showMandatoryUpdateModal(startupUpdate);
-      return;
     }
   } catch (err) {
     console.error('Startup update check failed:', err);
@@ -437,6 +437,10 @@ function setupEventListeners() {
   // Settings page buttons
   document.getElementById('btn-settings-check-update')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-settings-check-update');
+    if (availableUpdateInfo) {
+      showMandatoryUpdateModal(availableUpdateInfo);
+      return;
+    }
     btn.disabled = true;
     btn.textContent = 'Checking...';
     try {
@@ -448,7 +452,7 @@ function setupEventListeners() {
       console.error('[Update] check failed:', err);
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Check for updates';
+      renderSettingsUpdateButton();
     }
   });
   document.getElementById('btn-settings-open-data')?.addEventListener('click', async () => {
@@ -470,8 +474,8 @@ function setupEventListeners() {
 
   document.getElementById('btn-update-lock-install')?.addEventListener('click', handleMandatoryUpdatePrimaryAction);
   document.getElementById('btn-update-lock-restart')?.addEventListener('click', handleMandatoryRestartAction);
-  document.getElementById('btn-update-lock-exit')?.addEventListener('click', () => {
-    void window.api.quitApp();
+  document.getElementById('btn-update-lock-later')?.addEventListener('click', () => {
+    hideUpdateModal();
   });
 }
 
@@ -1827,8 +1831,8 @@ function setMandatoryUpdateButtonsBusy(isBusy) {
   if (updateInstallBtn) updateInstallBtn.disabled = isBusy;
   const updateRestartBtn = document.getElementById('btn-update-lock-restart');
   if (updateRestartBtn) updateRestartBtn.disabled = isBusy;
-  const updateExitBtn = document.getElementById('btn-update-lock-exit');
-  if (updateExitBtn) updateExitBtn.disabled = isBusy;
+  const updateLaterBtn = document.getElementById('btn-update-lock-later');
+  if (updateLaterBtn) updateLaterBtn.disabled = isBusy;
 }
 
 async function loadAccountStateUI() {
@@ -1850,6 +1854,20 @@ function renderAccountState(state) {
 
   const logoutBtn = document.getElementById('btn-account-logout');
   if (logoutBtn) logoutBtn.disabled = !isLoggedIn;
+}
+
+function renderSettingsUpdateButton() {
+  const btn = document.getElementById('btn-settings-check-update');
+  if (!btn) return;
+  if (availableUpdateInfo) {
+    btn.textContent = 'Update Now';
+    btn.classList.remove('btn-save');
+    btn.classList.add('btn-open');
+    return;
+  }
+  btn.textContent = 'Check for updates';
+  btn.classList.remove('btn-open');
+  btn.classList.add('btn-save');
 }
 
 async function loginAccount() {
@@ -1956,11 +1974,6 @@ function setLoginModalError(message) {
 }
 
 async function maybeShowLoginModal() {
-  if (mandatoryUpdateRequired) {
-    hideLoginModal();
-    return false;
-  }
-
   try {
     const state = await window.api.getAccountState();
     if (state?.isLoggedIn) {
@@ -1979,7 +1992,20 @@ async function maybeShowLoginModal() {
 function handleUpdateStatus(data) {
   if (!data || !data.state) return;
 
+  if (data.state === 'latest') {
+    availableUpdateInfo = null;
+    renderSettingsUpdateButton();
+    return;
+  }
+
   if (data.state === 'required') {
+    availableUpdateInfo = {
+      version: data.version || null,
+      currentVersion: data.currentVersion || null,
+      downloaded: Boolean(data.downloaded || data.localFilePath),
+      localFilePath: data.localFilePath || null,
+    };
+    renderSettingsUpdateButton();
     showMandatoryUpdateModal(data);
     return;
   }
@@ -2031,6 +2057,11 @@ function handleUpdateStatus(data) {
   }
 
   if (data.state === 'available' && data.version) {
+    availableUpdateInfo = {
+      version: data.version,
+      currentVersion: data.currentVersion || mandatoryUpdateFlow.currentVersion || null,
+    };
+    renderSettingsUpdateButton();
     showMandatoryUpdateModal({
       version: data.version,
       currentVersion: null
@@ -2040,8 +2071,14 @@ function handleUpdateStatus(data) {
 }
 
 function showMandatoryUpdateModal(data = {}) {
-  mandatoryUpdateRequired = true;
-  hideLoginModal();
+  mandatoryUpdateRequired = false;
+  availableUpdateInfo = {
+    version: data?.version || mandatoryUpdateFlow.version || null,
+    currentVersion: data?.currentVersion || mandatoryUpdateFlow.currentVersion || null,
+    downloaded: Boolean(data?.downloaded || data?.localFilePath || mandatoryUpdateFlow.downloaded),
+    localFilePath: data?.localFilePath || null,
+  };
+  renderSettingsUpdateButton();
 
   mandatoryUpdateFlow = {
     version: data?.version || mandatoryUpdateFlow.version || null,
@@ -2059,7 +2096,7 @@ function showMandatoryUpdateModal(data = {}) {
   const text = document.getElementById('update-lock-text');
   const versionEl = document.getElementById('update-lock-version');
   if (text) {
-    text.textContent = 'A new version is available. Update to continue using Anty Browser.';
+    text.textContent = 'A new version is available. You can update now or continue using this version.';
   }
   if (versionEl) {
     const nextVersion = mandatoryUpdateFlow.version ? `v${mandatoryUpdateFlow.version}` : '';
@@ -2073,6 +2110,12 @@ function showMandatoryUpdateModal(data = {}) {
   }
   if (modal) modal.classList.remove('hidden');
   renderMandatoryUpdateUi();
+}
+
+function hideUpdateModal() {
+  const modal = document.getElementById('update-lock-modal');
+  if (modal) modal.classList.add('hidden');
+  mandatoryUpdateRequired = false;
 }
 
 function formatBytes(bytes) {

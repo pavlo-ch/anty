@@ -853,10 +853,6 @@ function registerUpdater(window) {
 
     return { ok: true, action: 'quit_and_install', localFilePath: localPath };
   });
-
-  setTimeout(() => {
-    void runStartupUpdateFlow();
-  }, 2500);
 }
 
 module.exports = { registerUpdater, checkForUpdates };

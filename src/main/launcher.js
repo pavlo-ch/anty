@@ -253,6 +253,258 @@ function getUserDataDir(profileId) {
   return path.join(getDataDir(), 'profiles', `profile_${profileId}`);
 }
 
+function getSharedExtensionsDir() {
+  return path.join(getDataDir(), 'shared_extensions', 'Extensions');
+}
+
+function getSharedExtensionsStatePath() {
+  return path.join(getDataDir(), 'shared_extensions', 'extensions_state.json');
+}
+
+function readJsonFileSafe(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return raw ? JSON.parse(raw) : {};
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeJsonFileAtomic(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(value));
+  fs.renameSync(tmpPath, filePath);
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function copyDirectoryContents(sourceDir, targetDir) {
+  if (!fs.existsSync(sourceDir)) return;
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourcePath = path.join(sourceDir, entry.name);
+    const targetPath = path.join(targetDir, entry.name);
+    if (fs.existsSync(targetPath)) continue;
+    fs.cpSync(sourcePath, targetPath, { recursive: true, errorOnExist: false });
+  }
+}
+
+function copyLevelDbDirectoryContents(sourceDir, targetDir) {
+  if (!fs.existsSync(sourceDir)) return;
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    if (entry.name === 'LOCK') continue;
+    const sourcePath = path.join(sourceDir, entry.name);
+    const targetPath = path.join(targetDir, entry.name);
+    if (fs.existsSync(targetPath)) continue;
+    fs.cpSync(sourcePath, targetPath, { recursive: true, errorOnExist: false });
+  }
+}
+
+function replaceDirectoryContents(sourceDir, targetDir) {
+  if (!fs.existsSync(sourceDir)) return;
+  fs.rmSync(targetDir, { recursive: true, force: true });
+  fs.mkdirSync(targetDir, { recursive: true });
+  copyLevelDbDirectoryContents(sourceDir, targetDir);
+}
+
+function hasValidExtensionVersion(extensionDir) {
+  if (!fs.existsSync(extensionDir)) return false;
+  try {
+    return fs.readdirSync(extensionDir, { withFileTypes: true })
+      .some((entry) => entry.isDirectory() && fs.existsSync(path.join(extensionDir, entry.name, 'manifest.json')));
+  } catch (_) {
+    return false;
+  }
+}
+
+function getValidExtensionIds(extensionsRoot) {
+  if (!fs.existsSync(extensionsRoot)) return [];
+  try {
+    return fs.readdirSync(extensionsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name !== 'Temp')
+      .map((entry) => entry.name)
+      .filter((extensionId) => hasValidExtensionVersion(path.join(extensionsRoot, extensionId)));
+  } catch (_) {
+    return [];
+  }
+}
+
+function getLatestExtensionRelativePath(extensionsRoot, extensionId) {
+  const extensionDir = path.join(extensionsRoot, extensionId);
+  if (!fs.existsSync(extensionDir)) return null;
+
+  try {
+    const versions = fs.readdirSync(extensionDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((version) => fs.existsSync(path.join(extensionDir, version, 'manifest.json')))
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+    return versions[0] ? path.join(extensionId, versions[0]) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function removeInvalidExtensionDirs(extensionsRoot) {
+  if (!fs.existsSync(extensionsRoot)) return;
+  try {
+    for (const entry of fs.readdirSync(extensionsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === 'Temp') continue;
+      const extensionDir = path.join(extensionsRoot, entry.name);
+      if (!hasValidExtensionVersion(extensionDir)) {
+        fs.rmSync(extensionDir, { recursive: true, force: true });
+      }
+    }
+  } catch (_) {}
+}
+
+function copyValidExtensions(sourceRoot, targetRoot) {
+  if (!fs.existsSync(sourceRoot)) return;
+  fs.mkdirSync(targetRoot, { recursive: true });
+  removeInvalidExtensionDirs(sourceRoot);
+
+  for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === 'Temp') continue;
+    const sourceExtensionDir = path.join(sourceRoot, entry.name);
+    if (!hasValidExtensionVersion(sourceExtensionDir)) continue;
+    const targetExtensionDir = path.join(targetRoot, entry.name);
+    copyDirectoryContents(sourceExtensionDir, targetExtensionDir);
+  }
+}
+
+const EXTENSION_RUNTIME_DIRS = ['Extension Rules'];
+
+function copyExtensionRuntimeStores(sourceDefaultDir, targetRootDir, replace = false) {
+  for (const dirName of EXTENSION_RUNTIME_DIRS) {
+    const sourceDir = path.join(sourceDefaultDir, dirName);
+    const targetDir = path.join(targetRootDir, dirName);
+    if (!fs.existsSync(sourceDir)) continue;
+    if (replace) replaceDirectoryContents(sourceDir, targetDir);
+    else copyDirectoryContents(sourceDir, targetDir);
+  }
+}
+
+function syncExtensionSettingsToShared(userDataDir) {
+  const defaultDir = path.join(userDataDir, 'Default');
+  const profileExtensionsDir = path.join(defaultDir, 'Extensions');
+  const securePrefs = readJsonFileSafe(path.join(defaultDir, 'Secure Preferences'));
+  if (!securePrefs?.extensions?.settings) return;
+
+  const extensionIds = getValidExtensionIds(profileExtensionsDir);
+  if (extensionIds.length === 0) return;
+  copyExtensionRuntimeStores(defaultDir, path.join(getDataDir(), 'shared_extensions'), true);
+
+  const statePath = getSharedExtensionsStatePath();
+  const sharedState = readJsonFileSafe(statePath) || {};
+  sharedState.version = 1;
+  sharedState.settings = sharedState.settings || {};
+  sharedState.macs = sharedState.macs || {};
+
+  let changed = false;
+  for (const extensionId of extensionIds) {
+    const setting = securePrefs.extensions.settings[extensionId];
+    if (!setting) continue;
+
+    const nextSetting = cloneJson(setting);
+    const relativePath = getLatestExtensionRelativePath(profileExtensionsDir, extensionId);
+    if (relativePath) nextSetting.path = relativePath;
+
+    sharedState.settings[extensionId] = nextSetting;
+    const mac = securePrefs.protection?.macs?.extensions?.settings?.[extensionId];
+    if (mac) sharedState.macs[extensionId] = mac;
+    changed = true;
+  }
+
+  if (changed) writeJsonFileAtomic(statePath, sharedState);
+}
+
+function applySharedExtensionSettings(userDataDir) {
+  const sharedState = readJsonFileSafe(getSharedExtensionsStatePath());
+  if (!sharedState?.settings) return;
+
+  const defaultDir = path.join(userDataDir, 'Default');
+  const profileExtensionsDir = path.join(defaultDir, 'Extensions');
+  const securePrefsPath = path.join(defaultDir, 'Secure Preferences');
+  const securePrefs = readJsonFileSafe(securePrefsPath) || {};
+
+  securePrefs.extensions = securePrefs.extensions || {};
+  securePrefs.extensions.settings = securePrefs.extensions.settings || {};
+
+  let changed = false;
+  for (const [extensionId, setting] of Object.entries(sharedState.settings)) {
+    if (securePrefs.extensions.settings[extensionId]) continue;
+
+    const relativePath = getLatestExtensionRelativePath(profileExtensionsDir, extensionId);
+    if (!relativePath) continue;
+    copyExtensionRuntimeStores(path.join(getDataDir(), 'shared_extensions'), defaultDir, true);
+
+    const nextSetting = cloneJson(setting);
+    nextSetting.path = relativePath;
+    securePrefs.extensions.settings[extensionId] = nextSetting;
+
+    const mac = sharedState.macs?.[extensionId];
+    if (mac) {
+      securePrefs.protection = securePrefs.protection || {};
+      securePrefs.protection.macs = securePrefs.protection.macs || {};
+      securePrefs.protection.macs.extensions = securePrefs.protection.macs.extensions || {};
+      securePrefs.protection.macs.extensions.settings = securePrefs.protection.macs.extensions.settings || {};
+      securePrefs.protection.macs.extensions.settings[extensionId] = mac;
+    }
+    changed = true;
+  }
+
+  if (changed) writeJsonFileAtomic(securePrefsPath, securePrefs);
+}
+
+function ensureSharedExtensionsDir(userDataDir) {
+  const defaultDir = path.join(userDataDir, 'Default');
+  const profileExtensionsDir = path.join(defaultDir, 'Extensions');
+  const sharedExtensionsDir = getSharedExtensionsDir();
+
+  try {
+    fs.mkdirSync(defaultDir, { recursive: true });
+    fs.mkdirSync(sharedExtensionsDir, { recursive: true });
+
+    if (fs.existsSync(profileExtensionsDir)) {
+      const stat = fs.lstatSync(profileExtensionsDir);
+      if (stat.isSymbolicLink()) {
+        fs.rmSync(profileExtensionsDir, { recursive: true, force: true });
+      } else if (stat.isDirectory()) {
+        copyValidExtensions(profileExtensionsDir, sharedExtensionsDir);
+      } else {
+        fs.rmSync(profileExtensionsDir, { force: true });
+      }
+    }
+
+    fs.mkdirSync(profileExtensionsDir, { recursive: true });
+    removeInvalidExtensionDirs(profileExtensionsDir);
+    copyValidExtensions(sharedExtensionsDir, profileExtensionsDir);
+    applySharedExtensionSettings(userDataDir);
+  } catch (err) {
+    console.warn(`[Launcher] Shared extensions setup skipped: ${err.message}`);
+  }
+}
+
+function syncProfileExtensionsToShared(userDataDir) {
+  const profileExtensionsDir = path.join(userDataDir, 'Default', 'Extensions');
+  const sharedExtensionsDir = getSharedExtensionsDir();
+
+  try {
+    if (!fs.existsSync(profileExtensionsDir)) return;
+    if (fs.lstatSync(profileExtensionsDir).isSymbolicLink()) return;
+    fs.mkdirSync(sharedExtensionsDir, { recursive: true });
+    copyValidExtensions(profileExtensionsDir, sharedExtensionsDir);
+    syncExtensionSettingsToShared(userDataDir);
+  } catch (err) {
+    console.warn(`[Launcher] Shared extensions save skipped: ${err.message}`);
+  }
+}
+
 function writeJsonFileSafe(filePath, patcher) {
   try {
     if (!fs.existsSync(filePath)) return false;
@@ -972,6 +1224,7 @@ async function launchProfile(profileId, mainWindow) {
   console.log(`[Launcher] User data dir: ${userDataDir}`);
 
   try {
+    ensureSharedExtensionsDir(userDataDir);
     disableChromeSessionRestore(userDataDir, startAction);
 
     // Cap viewport to reasonable desktop size (never larger than 1920x1080 for actual window)
@@ -996,7 +1249,6 @@ async function launchProfile(profileId, mainWindow) {
         `--window-size=${viewportWidth},${viewportHeight}`,
       ],
     };
-
     // Find Chromium executable — try common paths per platform
     const isWin = process.platform === 'win32';
     const pf64 = process.env['ProgramW6432'] || process.env['PROGRAMFILES'] || 'C:\\Program Files';
@@ -1273,6 +1525,7 @@ async function launchProfile(profileId, mainWindow) {
         try { autosave.stop(); } catch (_) {}
         await saveCookies(context);
         await saveStorageState(context);
+        syncProfileExtensionsToShared(userDataDir);
         try { await proxyBridge?.close?.(); } catch (_) {}
         runningBrowsers.delete(profileId);
         const updated = updateProfile(profileId, { status: 'ready', running_on: '' });
@@ -1285,7 +1538,7 @@ async function launchProfile(profileId, mainWindow) {
       closeWatcher = watchAllPagesClosed(context, () => {
         context.close().catch(() => finalizeClose());
       });
-      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave });
+      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave, userDataDir });
       updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
       context.on('close', finalizeClose);
@@ -1300,7 +1553,12 @@ async function launchProfile(profileId, mainWindow) {
     const context = await chromium.launchPersistentContext(userDataDir, {
       ...launchOptions,
       ...contextOptions,
-      ignoreDefaultArgs: ['--enable-automation', '--no-sandbox'],
+      ignoreDefaultArgs: [
+        '--enable-automation',
+        '--no-sandbox',
+        '--disable-extensions',
+        '--disable-component-extensions-with-background-pages',
+      ],
     });
 
     await context.addInitScript(injectionScript);
@@ -1361,6 +1619,7 @@ async function launchProfile(profileId, mainWindow) {
       // Save cookies defensively — context may already be partially closed
       try { await saveCookies(context); } catch {}
       try { await saveStorageState(context); } catch {}
+      syncProfileExtensionsToShared(userDataDir);
       try { await proxyBridge?.close?.(); } catch (_) {}
       runningBrowsers.delete(profileId);
       try {
@@ -1378,7 +1637,7 @@ async function launchProfile(profileId, mainWindow) {
     closeWatcher = watchAllPagesClosed(context, () => {
       context.close().catch(() => finalizeClose());
     });
-    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave });
+    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave, userDataDir });
     updateProfile(profileId, { status: 'running', running_on: os.hostname() });
 
     if (mainWindow) {
@@ -1435,6 +1694,9 @@ async function stopProfile(profileId) {
     } catch {}
     await instance.context.close();
     if (instance.browserServer) await instance.browserServer.close().catch(() => {});
+    if (instance.userDataDir) {
+      syncProfileExtensionsToShared(instance.userDataDir);
+    }
     await instance.proxyBridge?.close?.();
     runningBrowsers.delete(profileId);
     const updated = updateProfile(profileId, { status: 'ready', running_on: '' });
