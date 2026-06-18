@@ -1,12 +1,12 @@
 {
-  "authUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/login",
-  "authStartUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/auth/start",
-  "authPollUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/auth/poll",
-  "refreshUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/refresh",
-  "deviceTokenUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/auth/device-token",
-  "logoutUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/logout",
-  "profilesPushUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/profiles/push",
-  "profilesPullUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/profiles/pull",
+  "authUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/login",
+  "authStartUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/auth/start",
+  "authPollUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/auth/poll",
+  "refreshUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/refresh",
+  "deviceTokenUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/auth/device-token",
+  "logoutUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/logout",
+  "profilesPushUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/profiles/push",
+  "profilesPullUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/profiles/pull",
   "cloudProfilesRequired": true,
-  "logUrl": "https://blackaffiliate.vercel.app/api/desktop/anty/logs"
+  "logUrl": "https://blackaffiliate.duckdns.org/api/desktop/anty/logs"
 }

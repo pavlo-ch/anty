@@ -769,18 +769,31 @@ async function createSocks5HttpBridge(proxyData) {
   let closed = false;
   const server = http.createServer();
 
+  const ignoreSocketReset = (socket) => {
+    socket.on('error', (err) => {
+      const code = String(err?.code || '').toUpperCase();
+      if (code && code !== 'ECONNRESET' && code !== 'EPIPE') {
+        console.warn(`[Launcher] Proxy bridge socket error ignored: ${err.message || code}`);
+      }
+    });
+  };
+
   server.on('connection', (socket) => {
     sockets.add(socket);
+    ignoreSocketReset(socket);
     socket.on('close', () => sockets.delete(socket));
   });
 
   server.on('request', async (req, res) => {
     let parsedUrl = null;
+    req.on('error', () => {});
+    res.on('error', () => {});
     try {
       parsedUrl = new URL(req.url);
       const targetPort = Number(parsedUrl.port) || 80;
       const upstream = await connectThroughSocks5(proxyData, parsedUrl.hostname, targetPort);
       sockets.add(upstream);
+      ignoreSocketReset(upstream);
       upstream.on('close', () => sockets.delete(upstream));
       const requestPath = `${parsedUrl.pathname}${parsedUrl.search}`;
       const headers = Object.entries(req.headers)
@@ -801,9 +814,11 @@ async function createSocks5HttpBridge(proxyData) {
   server.on('connect', async (req, clientSocket, head) => {
     const [targetHost, rawPort] = String(req.url || '').split(':');
     const targetPort = Number(rawPort) || 443;
+    ignoreSocketReset(clientSocket);
     try {
       const upstream = await connectThroughSocks5(proxyData, targetHost, targetPort);
       sockets.add(upstream);
+      ignoreSocketReset(upstream);
       upstream.on('close', () => sockets.delete(upstream));
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head?.length) upstream.write(head);
@@ -840,16 +855,28 @@ async function createHttpProxyBridge(proxyData) {
   let closed = false;
   const server = http.createServer();
 
+  const ignoreSocketReset = (socket) => {
+    socket.on('error', (err) => {
+      const code = String(err?.code || '').toUpperCase();
+      if (code && code !== 'ECONNRESET' && code !== 'EPIPE') {
+        console.warn(`[Launcher] Proxy bridge socket error ignored: ${err.message || code}`);
+      }
+    });
+  };
+
   const proxyHost = String(proxyData.host || '').trim();
   const proxyPort = toNumber(proxyData.port, 80);
   const proxyAuthHeaders = buildProxyHeaders(proxyData);
 
   server.on('connection', (socket) => {
     sockets.add(socket);
+    ignoreSocketReset(socket);
     socket.on('close', () => sockets.delete(socket));
   });
 
   server.on('request', (req, res) => {
+    req.on('error', () => {});
+    res.on('error', () => {});
     const headers = { ...req.headers, ...proxyAuthHeaders };
     delete headers['proxy-connection'];
 
@@ -876,6 +903,8 @@ async function createHttpProxyBridge(proxyData) {
   server.on('connect', (req, clientSocket, head) => {
     const upstream = net.createConnection({ host: proxyHost, port: proxyPort });
     sockets.add(upstream);
+    ignoreSocketReset(clientSocket);
+    ignoreSocketReset(upstream);
     upstream.on('close', () => sockets.delete(upstream));
 
     let response = Buffer.alloc(0);

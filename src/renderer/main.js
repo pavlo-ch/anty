@@ -21,6 +21,7 @@ let suppressAutoSave = false;
 let activePlatformTab = 'all';
 const DEFAULT_PLATFORM_STORAGE_KEY = 'anty.defaultPlatformTab';
 const SUPPORTED_PLATFORM_TABS = new Set(['all', 'instagram', 'linkedin', 'facebook']);
+const PROXY_LOCALE_REFRESH_INTERVAL_MS = 20 * 1000;
 let mandatoryUpdateFlow = {
   version: null,
   currentVersion: null,
@@ -89,6 +90,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(() => {
     void runProfileCloudSync({ silent: true });
   }, 60000);
+
+  // Keep country flag/timezone fresh when proxy IP rotation changes geolocation.
+  setInterval(() => {
+    void backfillProxyLocaleForExistingProfiles({ force: true });
+  }, PROXY_LOCALE_REFRESH_INTERVAL_MS);
 });
 
 function applyPlatformClass() {
@@ -1500,11 +1506,13 @@ function selectProfile(id) {
   loadProfileEditor(id);
 }
 
-async function backfillProxyLocaleForExistingProfiles() {
+async function backfillProxyLocaleForExistingProfiles(options = {}) {
   if (proxyLocaleBackfillRunning) return;
   proxyLocaleBackfillRunning = true;
   try {
+    const force = Boolean(options.force);
     const candidates = profiles.filter((p) => {
+      if (force) return true;
       let fp = {};
       try {
         fp = JSON.parse(p.fingerprint || '{}');
