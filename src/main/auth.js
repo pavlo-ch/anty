@@ -82,6 +82,34 @@ function getPlatformAuthPollUrl() {
   return deriveSiblingUrl(getPlatformAuthUrl(), 'auth/poll');
 }
 
+const NON_ROUTABLE_HOSTS = new Set(['0.0.0.0', '::', '0:0:0:0:0:0:0:0']);
+
+function isLocalHost(hostname) {
+  const h = String(hostname || '').toLowerCase();
+  return h === 'localhost' || h === '::1' || h.startsWith('127.') || NON_ROUTABLE_HOSTS.has(h);
+}
+
+// Some platform backends build the login URL from their internal bind address
+// (e.g. http://0.0.0.0:3000/...) instead of the public domain, so the opened tab
+// stays blank. The login must always land on the platform server, never on a
+// local host: whenever the returned host is local/non-routable, rewrite its
+// origin onto the reference (auth/start) URL, which points at the configured
+// platform domain.
+function normalizeAuthRedirectUrl(authUrl, referenceUrl) {
+  try {
+    const target = new URL(authUrl);
+    if (!isLocalHost(target.hostname)) return authUrl;
+
+    const ref = new URL(referenceUrl);
+    target.protocol = ref.protocol;
+    target.hostname = ref.hostname;
+    target.port = ref.port; // empty string clears the stale internal port
+    return target.toString();
+  } catch (_) {
+    return authUrl;
+  }
+}
+
 function deriveSiblingUrl(baseUrl, targetSegment) {
   if (!baseUrl) return '';
   try {
@@ -724,8 +752,17 @@ async function loginWithPlatformWeb(payload = {}) {
     throw new Error(msg);
   }
 
-  _pendingWebLoginUrl = authUrl;
-  await shell.openExternal(authUrl);
+  const openAuthUrl = normalizeAuthRedirectUrl(authUrl, startUrl);
+  if (openAuthUrl !== authUrl) {
+    insertAccountEvent('login_auth_url_rewritten', 'warn', 'Rewrote non-routable auth URL host to platform domain', {
+      mode: 'web',
+      from: authUrl,
+      to: openAuthUrl
+    });
+  }
+
+  _pendingWebLoginUrl = openAuthUrl;
+  await shell.openExternal(openAuthUrl);
   insertAccountEvent('login_browser_opened', 'info', 'Platform login page opened', { mode: 'web' });
   void sendPlatformLog('login_browser_opened', 'info', 'Platform login page opened', { mode: 'web' });
 
