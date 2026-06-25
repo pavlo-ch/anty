@@ -152,9 +152,9 @@ function getPlatformLogoutUrl() {
 function getPlatformProfilesPushUrl() {
   const staticConfig = loadStaticPlatformConfig();
   const configured = (
-    db.getSetting('platform_profiles_push_url')
-    || process.env.ANTY_PLATFORM_PROFILES_PUSH_URL
+    process.env.ANTY_PLATFORM_PROFILES_PUSH_URL
     || staticConfig.profilesPushUrl
+    || db.getSetting('platform_profiles_push_url')
   ).trim();
   if (configured) return configured;
   return deriveSiblingUrl(getPlatformAuthUrl(), 'profiles/push');
@@ -163,9 +163,9 @@ function getPlatformProfilesPushUrl() {
 function getPlatformProfilesPullUrl() {
   const staticConfig = loadStaticPlatformConfig();
   const configured = (
-    db.getSetting('platform_profiles_pull_url')
-    || process.env.ANTY_PLATFORM_PROFILES_PULL_URL
+    process.env.ANTY_PLATFORM_PROFILES_PULL_URL
     || staticConfig.profilesPullUrl
+    || db.getSetting('platform_profiles_pull_url')
   ).trim();
   if (configured) return configured;
   return deriveSiblingUrl(getPlatformAuthUrl(), 'profiles/pull');
