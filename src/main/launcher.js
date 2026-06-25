@@ -152,18 +152,21 @@ function startStateAutosave(profileId, context) {
     saving = true;
     try {
       const allCookies = await context.cookies();
+      let changed = false;
       if (allCookies.length > 0) {
-        updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+        const updated = updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+        changed = Boolean(updated?.__changed) || changed;
       }
 
       const state = await context.storageState();
       const cookieCount = Array.isArray(state?.cookies) ? state.cookies.length : 0;
       const originCount = Array.isArray(state?.origins) ? state.origins.length : 0;
       if (cookieCount > 0 || originCount > 0) {
-        updateProfile(profileId, { storage_state: JSON.stringify(state) });
+        const updated = updateProfile(profileId, { storage_state: JSON.stringify(state) });
+        changed = Boolean(updated?.__changed) || changed;
       }
 
-      if (allCookies.length > 0 || cookieCount > 0 || originCount > 0) {
+      if (changed) {
         enqueueProfileSync(profileId);
       }
     } catch (_) {
@@ -1465,9 +1468,11 @@ async function launchProfile(profileId, mainWindow) {
       try {
         const allCookies = await ctx.cookies();
         if (allCookies.length > 0) {
-          updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
-          enqueueProfileSync(profileId);
-          console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
+          const updated = updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+          if (updated?.__changed) {
+            enqueueProfileSync(profileId);
+            console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
+          }
         }
       } catch (e) {
         console.log(`[Launcher] Could not save cookies: ${e.message}`);
@@ -1478,9 +1483,11 @@ async function launchProfile(profileId, mainWindow) {
       try {
         const state = await ctx.storageState();
         if (state && (Array.isArray(state.cookies) || Array.isArray(state.origins))) {
-          updateProfile(profileId, { storage_state: JSON.stringify(state) });
-          enqueueProfileSync(profileId);
-          console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
+          const updated = updateProfile(profileId, { storage_state: JSON.stringify(state) });
+          if (updated?.__changed) {
+            enqueueProfileSync(profileId);
+            console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
+          }
         }
       } catch (e) {
         console.log(`[Launcher] Could not save storage_state: ${e.message}`);
@@ -1706,9 +1713,11 @@ async function stopProfile(profileId) {
     try {
       const allCookies = await instance.context.cookies();
       if (allCookies.length > 0) {
-        updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
-        enqueueProfileSync(profileId);
-        console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
+        const updated = updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
+        if (updated?.__changed) {
+          enqueueProfileSync(profileId);
+          console.log(`[Launcher] Saved ${allCookies.length} cookies for profile ${profileId}`);
+        }
       }
     } catch {}
     try {
@@ -1716,9 +1725,11 @@ async function stopProfile(profileId) {
       const cookieCount = Array.isArray(state?.cookies) ? state.cookies.length : 0;
       const originCount = Array.isArray(state?.origins) ? state.origins.length : 0;
       if (cookieCount > 0 || originCount > 0) {
-        updateProfile(profileId, { storage_state: JSON.stringify(state) });
-        enqueueProfileSync(profileId);
-        console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
+        const updated = updateProfile(profileId, { storage_state: JSON.stringify(state) });
+        if (updated?.__changed) {
+          enqueueProfileSync(profileId);
+          console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
+        }
       }
     } catch {}
     await instance.context.close();

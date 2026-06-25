@@ -206,8 +206,10 @@ route('PATCH', '/api/profiles/:id', async (req, res, { id }) => {
   }
 
   const updated = updateProfile(Number(id), body);
-  profileSync.onLocalProfileUpsert(updated);
-  profileSync.scheduleSync();
+  if (updated?.__changed) {
+    profileSync.onLocalProfileUpsert(updated);
+    profileSync.scheduleSync();
+  }
   ok(res, { profile: updated });
 });
 
@@ -226,8 +228,10 @@ route('PUT', '/api/profiles/:id/notes', async (req, res, { id }) => {
   }
 
   const updated = updateProfile(Number(id), { notes });
-  profileSync.onLocalProfileUpsert(updated);
-  profileSync.scheduleSync();
+  if (updated?.__changed) {
+    profileSync.onLocalProfileUpsert(updated);
+    profileSync.scheduleSync();
+  }
   ok(res, { id: Number(id), notes: updated.notes });
 });
 
@@ -244,8 +248,10 @@ route('PATCH', '/api/profiles/:id/proxy', async (req, res, { id }) => {
   // null / empty string → remove proxy
   if (!body.proxy) {
     const updated = updateProfile(Number(id), { proxy_id: null });
-    profileSync.onLocalProfileUpsert(updated);
-    profileSync.scheduleSync();
+    if (updated?.__changed) {
+      profileSync.onLocalProfileUpsert(updated);
+      profileSync.scheduleSync();
+    }
     return ok(res, { profile: updated });
   }
 
@@ -263,8 +269,10 @@ route('PATCH', '/api/profiles/:id/proxy', async (req, res, { id }) => {
   });
 
   const updated = updateProfile(Number(id), { proxy_id: proxy.id });
-  profileSync.onLocalProfileUpsert(updated);
-  profileSync.scheduleSync();
+  if (updated?.__changed) {
+    profileSync.onLocalProfileUpsert(updated);
+    profileSync.scheduleSync();
+  }
   ok(res, { profile: updated, proxy });
 });
 

@@ -151,6 +151,11 @@ function registerIpcHandlers() {
     const finalProfile = hasProxyField
       ? ((await launcher.syncProfileLocaleFromProxy(id))?.profile || updated)
       : updated;
+    const profileChanged = Boolean(updated?.__changed || finalProfile?.__changed);
+
+    if (!profileChanged) {
+      return finalProfile;
+    }
 
     if (cloudRequired && hasCloudFields) {
       const pushed = await profileSync.pushProfileUpsertNow(finalProfile);

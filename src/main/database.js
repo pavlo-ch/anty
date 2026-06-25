@@ -376,13 +376,91 @@ function createProfile(data) {
   return getProfile(result.lastInsertRowid);
 }
 
+const JSON_PROFILE_FIELDS = new Set(['fingerprint', 'cookies', 'storage_state']);
+const CONTENT_MODIFIED_FIELDS = new Set([
+  'name',
+  'folder_id',
+  'group_id',
+  'proxy_id',
+  'user_agent',
+  'fingerprint',
+  'notes',
+  'start_page',
+  'warmup_url',
+  'created_by',
+  'warmup_config'
+]);
+
+function stableStringify(value) {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+}
+
+function parseJsonValue(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return value;
+  }
+}
+
+function normalizeDbFieldValue(field, value, fkFields) {
+  if (fkFields.has(field)) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+  }
+  if (JSON_PROFILE_FIELDS.has(field) && value !== null && typeof value === 'object') {
+    return stableStringify(value);
+  }
+  return value !== null && typeof value === 'object' ? JSON.stringify(value) : value;
+}
+
+function fieldValuesEqual(field, currentValue, nextValue, fkFields) {
+  if (fkFields.has(field)) {
+    const currentNumeric = Number(currentValue);
+    const normalizedCurrent = Number.isFinite(currentNumeric) && currentNumeric > 0 ? currentNumeric : null;
+    return normalizedCurrent === nextValue;
+  }
+  if (JSON_PROFILE_FIELDS.has(field)) {
+    return stableStringify(parseJsonValue(currentValue || '')) === stableStringify(parseJsonValue(nextValue || ''));
+  }
+  return String(currentValue ?? '') === String(nextValue ?? '');
+}
+
+function normalizeTagsForCompare(input) {
+  return normalizeTagNames(input)
+    .map((name) => name.toLowerCase())
+    .sort();
+}
+
+function arraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+}
+
+function markProfileChangeState(profile, changed) {
+  if (profile && typeof profile === 'object') {
+    Object.defineProperty(profile, '__changed', {
+      value: Boolean(changed),
+      enumerable: false,
+      configurable: true
+    });
+  }
+  return profile;
+}
+
 function updateProfile(id, data) {
   const updateData = data || {};
-  if (!profileExists(id)) return null;
+  const current = getDb().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
+  if (!current) return null;
   const sets = [];
   const values = [];
   const hasTagsUpdate = Object.prototype.hasOwnProperty.call(updateData, 'tags');
   const fkFields = new Set(['folder_id', 'group_id', 'proxy_id']);
+  const changedFields = [];
   
   const allowedFields = [
     'name',
@@ -408,29 +486,37 @@ function updateProfile(id, data) {
   
   for (const field of allowedFields) {
     if (updateData[field] !== undefined) {
-      sets.push(`${field} = ?`);
-      let value = updateData[field];
-      if (fkFields.has(field)) {
-        const numeric = Number(value);
-        value = Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+      const value = normalizeDbFieldValue(field, updateData[field], fkFields);
+      if (!fieldValuesEqual(field, current[field], value, fkFields)) {
+        sets.push(`${field} = ?`);
+        values.push(value);
+        changedFields.push(field);
       }
-      values.push(value !== null && typeof value === 'object' ? JSON.stringify(value) : value);
     }
+  }
+
+  let tagsChanged = false;
+  if (hasTagsUpdate) {
+    const currentTags = getProfileTags(id).map((tag) => tag.name);
+    tagsChanged = !arraysEqual(normalizeTagsForCompare(currentTags), normalizeTagsForCompare(updateData.tags));
   }
   
   if (sets.length > 0) {
-    sets.push("modified_at = datetime('now')");
+    if (changedFields.some((field) => CONTENT_MODIFIED_FIELDS.has(field))) {
+      sets.push("modified_at = datetime('now')");
+    }
     values.push(id);
     getDb().prepare(`UPDATE profiles SET ${sets.join(', ')} WHERE id = ?`).run(...values);
   }
   
-  if (hasTagsUpdate) {
+  if (tagsChanged) {
     setProfileTags(id, updateData.tags);
-    getDb().prepare("UPDATE profiles SET modified_at = datetime('now') WHERE id = ?").run(id);
+    if (!changedFields.some((field) => CONTENT_MODIFIED_FIELDS.has(field))) {
+      getDb().prepare("UPDATE profiles SET modified_at = datetime('now') WHERE id = ?").run(id);
+    }
   }
 
-  if (sets.length === 0 && !hasTagsUpdate) return getProfile(id);
-  return getProfile(id);
+  return markProfileChangeState(getProfile(id), sets.length > 0 || tagsChanged);
 }
 
 function deleteProfile(id) {
