@@ -146,11 +146,14 @@ function enqueueProfileSync(profileId) {
 function startStateAutosave(profileId, context) {
   let stopped = false;
   let saving = false;
+  const openTabsTracker = createOpenTabsTracker(profileId, context);
 
   const flush = async () => {
     if (stopped || saving) return;
     saving = true;
     try {
+      await openTabsTracker.flush();
+
       const allCookies = await context.cookies();
       let changed = false;
       if (allCookies.length > 0) {
@@ -180,6 +183,7 @@ function startStateAutosave(profileId, context) {
     flush,
     stop() {
       stopped = true;
+      openTabsTracker.stop();
     }
   };
 }
@@ -1402,6 +1406,7 @@ async function launchProfile(profileId, mainWindow) {
     const injectionScript = buildInjectionScript(fingerprint);
     const warmupUrl = profile.warmup_url;
     const startPage = profile.start_page || 'https://whoer.net';
+    const savedOpenTabs = startAction === 'new-tab' ? [] : parseSavedOpenTabs(profile);
     const parsedStorageState = (() => {
       try {
         const raw = profile.storage_state ? JSON.parse(profile.storage_state) : null;
@@ -1509,6 +1514,31 @@ async function launchProfile(profileId, mainWindow) {
       }
     }
 
+    async function restoreSavedTabs(ctx, firstPage) {
+      if (savedOpenTabs.length === 0) {
+        await navigate(firstPage);
+        return firstPage;
+      }
+
+      let activePage = firstPage;
+      if (!activePage || activePage.isClosed()) activePage = await ctx.newPage();
+      await activePage.goto(savedOpenTabs[0]).catch(() => {});
+
+      for (const url of savedOpenTabs.slice(1)) {
+        const tab = await ctx.newPage();
+        await tab.goto(url).catch(() => {});
+      }
+
+      return activePage;
+    }
+
+    async function openInitialTabs(ctx, firstPage) {
+      if (startAction === 'continue-session' && getContextOpenTabUrls(ctx).length > 0) {
+        return firstPage;
+      }
+      return restoreSavedTabs(ctx, firstPage);
+    }
+
     // In Linux server mode under root, Chromium must keep --no-sandbox.
     const serverIgnoreDefaultArgs =
       process.platform === 'linux' && typeof process.getuid === 'function' && process.getuid() === 0
@@ -1546,8 +1576,8 @@ async function launchProfile(profileId, mainWindow) {
       }
 
       const cleanupStartupBlocker = await installStartupNoiseBlocker(context).catch(() => null);
-      const page = await context.newPage();
-      await navigate(page);
+      let page = await context.newPage();
+      page = await openInitialTabs(context, page);
       cleanupStartupBlocker?.();
       const autosave = startStateAutosave(profileId, context);
 
@@ -1640,7 +1670,7 @@ async function launchProfile(profileId, mainWindow) {
 
     let page = context.pages()[0];
     if (!page) page = await context.newPage();
-    await navigate(page);
+    page = await openInitialTabs(context, page);
     cleanupStartupBlocker?.();
     const autosave = startStateAutosave(profileId, context);
 
@@ -1785,6 +1815,161 @@ async function getStorageState(profileId) {
   const instance = runningBrowsers.get(profileId);
   if (!instance?.context) return null;
   return instance.context.storageState();
+}
+
+function normalizeRestorableTabUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeRestorableTabUrls(values, limit = 30) {
+  if (!Array.isArray(values)) return [];
+  const urls = [];
+  for (const value of values) {
+    const url = normalizeRestorableTabUrl(value);
+    if (!url) continue;
+    urls.push(url);
+    if (urls.length >= limit) break;
+  }
+  return urls;
+}
+
+function parseSavedOpenTabs(profile) {
+  try {
+    return normalizeRestorableTabUrls(JSON.parse(profile.last_open_tabs || '[]'));
+  } catch (_) {
+    return [];
+  }
+}
+
+function getContextOpenTabUrls(context) {
+  try {
+    return normalizeRestorableTabUrls(
+      context.pages()
+        .filter((page) => !page.isClosed())
+        .map((page) => page.url())
+    );
+  } catch (_) {
+    return [];
+  }
+}
+
+function createOpenTabsTracker(profileId, context) {
+  const trackedPages = new Set();
+  const knownPageUrls = new Map();
+  let stopped = false;
+  let saveTimer = null;
+  let lastTabs = getContextOpenTabUrls(context);
+
+  const capturePage = (page) => {
+    if (!page || page.isClosed()) return;
+    const url = normalizeRestorableTabUrl(page.url());
+    if (url) knownPageUrls.set(page, url);
+    else knownPageUrls.delete(page);
+  };
+
+  const readCurrentTabs = () => {
+    let openPages = [];
+    try {
+      openPages = context.pages().filter((page) => !page.isClosed());
+    } catch (_) {
+      openPages = [];
+    }
+
+    for (const page of openPages) capturePage(page);
+    const urls = normalizeRestorableTabUrls(
+      openPages.map((page) => knownPageUrls.get(page) || page.url())
+    );
+    if (urls.length > 0 || openPages.length > 0) lastTabs = urls;
+    return { urls, openPages };
+  };
+
+  const persist = (urls) => {
+    try {
+      updateProfile(profileId, { last_open_tabs: JSON.stringify(urls) });
+    } catch (_) {}
+  };
+
+  const flush = async () => {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    const { urls, openPages } = readCurrentTabs();
+    persist(openPages.length > 0 ? urls : lastTabs);
+  };
+
+  const scheduleFlush = () => {
+    if (stopped) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      void flush();
+    }, 800);
+    saveTimer.unref?.();
+  };
+
+  const trackPage = (page) => {
+    if (!page || trackedPages.has(page)) return;
+    trackedPages.add(page);
+    capturePage(page);
+
+    const onNavigated = (frame) => {
+      if (frame && frame !== page.mainFrame()) return;
+      capturePage(page);
+      scheduleFlush();
+    };
+    const onLoaded = () => {
+      capturePage(page);
+      scheduleFlush();
+    };
+    const onClose = () => {
+      setTimeout(() => {
+        if (stopped) return;
+        let openPages = [];
+        try {
+          openPages = context.pages().filter((candidate) => !candidate.isClosed());
+        } catch (_) {
+          openPages = [];
+        }
+        if (openPages.length > 0) knownPageUrls.delete(page);
+        void flush();
+      }, 250).unref?.();
+    };
+
+    page.on('framenavigated', onNavigated);
+    page.on('domcontentloaded', onLoaded);
+    page.on('load', onLoaded);
+    page.on('close', onClose);
+    page.__antyTabTrackerHandlers = { onNavigated, onLoaded, onClose };
+  };
+
+  context.pages().forEach(trackPage);
+  context.on('page', trackPage);
+
+  return {
+    trackPage,
+    flush,
+    stop() {
+      stopped = true;
+      clearTimeout(saveTimer);
+      try { context.off('page', trackPage); } catch (_) {}
+      for (const page of trackedPages) {
+        const handlers = page.__antyTabTrackerHandlers;
+        if (!handlers) continue;
+        try { page.off('framenavigated', handlers.onNavigated); } catch (_) {}
+        try { page.off('domcontentloaded', handlers.onLoaded); } catch (_) {}
+        try { page.off('load', handlers.onLoaded); } catch (_) {}
+        try { page.off('close', handlers.onClose); } catch (_) {}
+        try { delete page.__antyTabTrackerHandlers; } catch (_) {}
+      }
+      trackedPages.clear();
+      knownPageUrls.clear();
+    }
+  };
 }
 
 module.exports = {

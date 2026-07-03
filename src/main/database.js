@@ -100,6 +100,7 @@ function initDatabase() {
       fingerprint TEXT DEFAULT '{}',
       cookies TEXT DEFAULT '[]',
       storage_state TEXT DEFAULT '',
+      last_open_tabs TEXT DEFAULT '[]',
       notes TEXT DEFAULT '',
       start_page TEXT DEFAULT 'https://whoer.net',
       warmup_url TEXT DEFAULT '',
@@ -187,6 +188,7 @@ function initDatabase() {
   ensureColumn('profiles', 'warmup_url', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'running_on', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'storage_state', "TEXT DEFAULT ''");
+  ensureColumn('profiles', 'last_open_tabs', "TEXT DEFAULT '[]'");
   // When adding `warmup_completed` to an existing DB, mark all PRE-EXISTING
   // profiles as already warmed-up (skip=1). Only brand-new profiles created
   // AFTER this point will trigger the warmup dialog on first launch.
@@ -394,7 +396,7 @@ function createProfile(data = {}) {
   return getProfile(result.lastInsertRowid);
 }
 
-const JSON_PROFILE_FIELDS = new Set(['fingerprint', 'cookies', 'storage_state']);
+const JSON_PROFILE_FIELDS = new Set(['fingerprint', 'cookies', 'storage_state', 'last_open_tabs']);
 const CONTENT_MODIFIED_FIELDS = new Set([
   'name',
   'folder_id',
@@ -492,6 +494,7 @@ function updateProfile(id, data) {
     'fingerprint',
     'cookies',
     'storage_state',
+    'last_open_tabs',
     'notes',
     'start_page',
     'warmup_url',
