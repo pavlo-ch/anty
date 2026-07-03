@@ -340,10 +340,26 @@ function getProfile(id) {
   return attachTagsToProfiles([row])[0] || row;
 }
 
-function createProfile(data) {
-  const { generateFingerprint } = require('./fingerprint');
+function createProfile(data = {}) {
+  const { generateFingerprint, generateFingerprintFromUA } = require('./fingerprint');
   const { getAccountState } = require('./auth');
-  const fingerprint = generateFingerprint(data.user_agent);
+  const generateDefaultFingerprint = () => (
+    data.user_agent ? generateFingerprintFromUA(data.user_agent) : generateFingerprint()
+  );
+  const fingerprint = (() => {
+    if (!data.fingerprint) return generateDefaultFingerprint();
+    if (typeof data.fingerprint === 'string') {
+      try {
+        const parsed = JSON.parse(data.fingerprint);
+        return parsed && typeof parsed === 'object' ? parsed : generateDefaultFingerprint();
+      } catch (_) {
+        return generateDefaultFingerprint();
+      }
+    }
+    return typeof data.fingerprint === 'object' ? data.fingerprint : generateDefaultFingerprint();
+  })();
+  const userAgent = data.user_agent || fingerprint.userAgent || '';
+  if (userAgent) fingerprint.userAgent = userAgent;
 
   let createdBy = data.created_by || '';
   if (!createdBy) {
@@ -354,16 +370,18 @@ function createProfile(data) {
   }
 
   const result = getDb().prepare(`
-    INSERT INTO profiles (name, folder_id, group_id, proxy_id, user_agent, fingerprint, start_page, notes, created_by, storage_state)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO profiles (name, folder_id, group_id, proxy_id, user_agent, fingerprint, cookies, start_page, warmup_url, notes, created_by, storage_state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     data.name || 'New Profile',
     data.folder_id || null,
     data.group_id || null,
     data.proxy_id || null,
-    fingerprint.userAgent,
+    userAgent,
     JSON.stringify(fingerprint),
+    data.cookies ? (typeof data.cookies === 'string' ? data.cookies : JSON.stringify(data.cookies)) : '[]',
     data.start_page || 'https://whoer.net',
+    data.warmup_url || '',
     data.notes || '',
     createdBy,
     data.storage_state ? (typeof data.storage_state === 'string' ? data.storage_state : JSON.stringify(data.storage_state)) : ''

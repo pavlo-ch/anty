@@ -30,7 +30,6 @@ const {
 } = require('../main/database');
 
 const launcher = require('../main/launcher');
-const { generateFingerprint } = require('../main/fingerprint');
 const profileSync = require('../main/profile-sync');
 
 const PORT = Number(process.env.ANTY_API_PORT) || 3032;
@@ -156,17 +155,13 @@ route('POST', '/api/profiles', async (req, res, _params) => {
     }
   }
 
-  const { generateFingerprintFromUA } = require('../main/fingerprint');
-  const fingerprint = body.userAgent
-    ? generateFingerprintFromUA(body.userAgent)
-    : generateFingerprint();
-
+  const userAgent = body.userAgent || body.user_agent || '';
   const profile = createProfile({
     name,
-    fingerprint,
+    user_agent: userAgent,
     start_page: startPage,
     warmup_url: body.warmup_url || '',
-    cookies: body.cookies ? JSON.stringify(body.cookies) : '[]',
+    cookies: body.cookies || [],
     created_by: body.created_by || '',
     ...proxyFields,
   });
