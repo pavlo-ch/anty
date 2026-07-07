@@ -1,3 +1,11 @@
+// rebrowser-playwright-core (installed as the "playwright-core" alias) patches the
+// CDP `Runtime.enable` leak that Google BotGuard uses to block sign-in with the
+// "This browser or app may not be secure" screen. "addBinding" defers Runtime work
+// into an isolated world so it is never enabled on the main page context.
+// Must be set BEFORE requiring the module. See fingerprint.js for the JS-level stealth.
+if (!process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE) {
+  process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE = 'addBinding';
+}
 const { chromium } = require('playwright-core');
 const path = require('path');
 const os = require('os');

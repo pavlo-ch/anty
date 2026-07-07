@@ -1,6 +1,6 @@
 {
   "name": "anty-browser",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Anti-detect browser with fingerprint spoofing and profile isolation",
   "main": "src/main/main.js",
   "scripts": {
@@ -22,7 +22,7 @@
   "dependencies": {
     "better-sqlite3": "^11.7.0",
     "electron-updater": "^6.8.3",
-    "playwright-core": "^1.49.0"
+    "playwright-core": "npm:rebrowser-playwright-core@^1.52.0"
   },
   "devDependencies": {
     "electron": "33.4.11",
