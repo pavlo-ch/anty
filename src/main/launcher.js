@@ -1290,6 +1290,10 @@ async function launchProfile(profileId, mainWindow) {
         '--no-default-browser-check',
         '--disable-quic',
         '--disable-features=AsyncDns,UseDnsHttpsSvcbAlpn',
+        // Stop WebRTC from gathering real-IP ICE candidates (srflx/host) that
+        // bypass the HTTP proxy over UDP. Without this, STUN leaks the true
+        // public IPv4/IPv6 even when all HTTP traffic goes through the proxy.
+        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
         `--window-size=${viewportWidth},${viewportHeight}`,
       ],
     };
@@ -1562,6 +1566,7 @@ async function launchProfile(profileId, mainWindow) {
           '--disable-infobars',
           '--no-first-run',
           '--no-default-browser-check',
+          '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
           `--window-size=${viewportWidth},${viewportHeight}`,
         ],
         ignoreDefaultArgs: serverIgnoreDefaultArgs,

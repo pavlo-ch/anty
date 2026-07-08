@@ -422,9 +422,14 @@ function generateFingerprintFromUA(ua) {
   return fp;
 }
 
+// The app always launches on the real Google Chrome (Blink/V8) engine, so a
+// Firefox (Gecko) or Safari (WebKit) fingerprint is an engine-level lie that
+// CreepJS and antifraud detect instantly. Only Chromium-family UAs may be used.
+const CHROMIUM_BROWSERS = new Set(['Chrome', 'Edge']);
+
 function generateFingerprint(customUA, _profileOverride) {
-  // Pick a random fingerprint profile (excluding mobile for desktop browser)
-  const desktopProfiles = FINGERPRINT_PROFILES.filter(p => !p.mobile);
+  // Pick a random fingerprint profile (excluding mobile + non-Chromium engines)
+  const desktopProfiles = FINGERPRINT_PROFILES.filter(p => !p.mobile && CHROMIUM_BROWSERS.has(p.browser));
   const profile = _profileOverride
     ? _profileOverride
     : customUA
@@ -577,8 +582,37 @@ function buildInjectionScript(fingerprint) {
   const fp = ${JSON.stringify(fingerprint)};
   const uaData = ${JSON.stringify(userAgentData)};
 
+  // ===== UTIL: toString masking =====
+  // Overriding getters/functions leaks their source via fn.toString() AND via
+  // Function.prototype.toString.call(fn), which bypasses per-function toString.
+  // CreepJS / iphey / fp-collect read exactly this. We install one global
+  // Function.prototype.toString proxy and register each patched fn's fake source
+  // in a WeakMap, so every access path returns [native code].
+  const __nativeSrc = new WeakMap();
+  (function installToStringProxy() {
+    const origToString = Function.prototype.toString;
+    const proxy = new Proxy(origToString, {
+      apply(target, thisArg, args) {
+        if (__nativeSrc.has(thisArg)) return __nativeSrc.get(thisArg);
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    // toString of toString itself must still look native.
+    try { __nativeSrc.set(proxy, origToString.call(origToString)); } catch (e) {}
+    try { Function.prototype.toString = proxy; } catch (e) {}
+  })();
+  function markNativeFn(fn, name) {
+    try { __nativeSrc.set(fn, 'function ' + name + '() { [native code] }'); } catch (e) {}
+    return fn;
+  }
+  function markNativeGetter(getter, prop) {
+    try { __nativeSrc.set(getter, 'function get ' + prop + '() { [native code] }'); } catch (e) {}
+    return getter;
+  }
+
   // ===== UTIL: stealth property override on prototype =====
   function stealthOverride(obj, prop, getter) {
+    markNativeGetter(getter, prop);
     const proto = Object.getPrototypeOf(obj);
     if (proto && prop in proto) {
       Object.defineProperty(proto, prop, {
@@ -597,8 +631,7 @@ function buildInjectionScript(fingerprint) {
 
   // ===== UTIL: make function look native =====
   function makeNative(fn, name) {
-    const orig = fn.toString;
-    fn.toString = function() { return 'function ' + name + '() { [native code] }'; };
+    markNativeFn(fn, name);
     if (name) Object.defineProperty(fn, 'name', { value: name, configurable: true });
     return fn;
   }
@@ -814,9 +847,19 @@ function buildInjectionScript(fingerprint) {
   const fakeLocalIp = '192.168.' + (Math.floor(Math.abs(fp.canvas.noiseSeed * 255)) % 255) + '.' + (Math.floor(Math.abs(fp.canvas.noiseSeed * 12345)) % 254 + 1);
   if (window.RTCPeerConnection) {
     const OrigRTCPC = window.RTCPeerConnection;
+    // Returns a rewritten candidate, or null to DROP it entirely.
+    // - host candidates: keep, but rewrite the LAN IP to a stable fake.
+    // - srflx / prflx candidates: DROP. These carry the real PUBLIC IP obtained
+    //   via STUN over UDP, which bypasses an HTTP proxy and leaks the true IP
+    //   (BrowserLeaks: "WebRTC IP doesn't match your Remote IP"). A genuinely
+    //   proxied Chrome (--force-webrtc-ip-handling-policy=disable_non_proxied_udp)
+    //   emits no srflx anyway, so dropping matches real proxied behaviour.
     const rewriteCandidate = function(cand) {
       if (!cand || !cand.candidate) return cand;
       const c = cand.candidate;
+      if (c.indexOf('typ srflx') !== -1 || c.indexOf('typ prflx') !== -1) {
+        return null;
+      }
       if (c.indexOf('typ host') !== -1) {
         // Replace any local IPv4 / IPv6 with fake local IPv4
         const rewritten = c.replace(/(\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b)|([a-f0-9:]+:[a-f0-9:]+)/gi, fakeLocalIp);
@@ -841,6 +884,7 @@ function buildInjectionScript(fingerprint) {
           const wrapped = function(event) {
             if (event.candidate) {
               const rewritten = rewriteCandidate(event.candidate);
+              if (rewritten === null) return; // dropped srflx/prflx — do not leak public IP
               // Emit a synthetic event with the rewritten candidate
               const evt = Object.assign({}, event, { candidate: rewritten });
               listener.call(this, evt);
@@ -863,6 +907,7 @@ function buildInjectionScript(fingerprint) {
             origAddEventListener('icecandidate', function(event) {
               if (event.candidate) {
                 const rewritten = rewriteCandidate(event.candidate);
+                if (rewritten === null) return; // dropped srflx/prflx — do not leak public IP
                 const evt = Object.assign({}, event, { candidate: rewritten });
                 fn.call(pc, evt);
               } else {
@@ -884,6 +929,31 @@ function buildInjectionScript(fingerprint) {
           return offer;
         });
       };
+
+      // After ICE gathering, srflx/prflx candidate lines get baked into
+      // pc.localDescription.sdp — a detector reading the SDP directly would still
+      // see the real public IP even though we dropped the candidate events.
+      // Strip those lines from every *LocalDescription getter.
+      const stripSrflxSdp = function(sdp) {
+        return (typeof sdp === 'string')
+          ? sdp.replace(/a=candidate:[^\\r\\n]*typ (?:srflx|prflx)[^\\r\\n]*(?:\\r\\n|\\n)?/gi, '')
+          : sdp;
+      };
+      const wrapDesc = function(desc) {
+        if (!desc || typeof desc.sdp !== 'string') return desc;
+        try { return new RTCSessionDescription({ type: desc.type, sdp: stripSrflxSdp(desc.sdp) }); }
+        catch (e) { return desc; }
+      };
+      ['localDescription', 'currentLocalDescription', 'pendingLocalDescription'].forEach(function(prop) {
+        const orig = Object.getOwnPropertyDescriptor(OrigRTCPC.prototype, prop);
+        if (orig && typeof orig.get === 'function') {
+          Object.defineProperty(pc, prop, {
+            configurable: true,
+            enumerable: true,
+            get: markNativeGetter(function() { return wrapDesc(orig.get.call(pc)); }, prop),
+          });
+        }
+      });
 
       return pc;
     };
@@ -1061,7 +1131,7 @@ function buildInjectionScript(fingerprint) {
   stealthOverride(navigator, 'webdriver', () => false);
   // Also delete the instance property if Playwright set it
   try { delete navigator.webdriver; delete Object.getPrototypeOf(navigator).webdriver; } catch(e) {}
-  Object.defineProperty(Object.getPrototypeOf(navigator), 'webdriver', { get: () => false, configurable: true, enumerable: true });
+  Object.defineProperty(Object.getPrototypeOf(navigator), 'webdriver', { get: markNativeGetter(() => false, 'webdriver'), configurable: true, enumerable: true });
   stealthOverride(navigator, 'vendor', () => 'Google Inc.');
   stealthOverride(navigator, 'appName', () => 'Netscape');
   stealthOverride(navigator, 'appCodeName', () => 'Mozilla');
@@ -1237,6 +1307,36 @@ function buildInjectionScript(fingerprint) {
     makeNative(PatchedWorker, 'Worker');
     try { window.Worker = PatchedWorker; } catch(e) {}
   }
+
+  // ===== 15c. NATIVE toString SWEEP =====
+  // Direct prototype-method overrides above (canvas / WebGL / audio / rects /
+  // permissions / timezone) are assigned inline and bypass stealthOverride/makeNative,
+  // so their .toString() leaks the patched source. CreepJS / iphey read exactly this.
+  // Register each patched method with the global toString proxy so it reports native.
+  (function sweepNativeToString() {
+    const targets = [
+      [Date.prototype, 'getTimezoneOffset'],
+      [CanvasRenderingContext2D.prototype, 'getImageData'],
+      [HTMLCanvasElement.prototype, 'toDataURL'],
+      [HTMLCanvasElement.prototype, 'toBlob'],
+      [WebGLRenderingContext.prototype, 'getParameter'],
+      (typeof WebGL2RenderingContext !== 'undefined' ? [WebGL2RenderingContext.prototype, 'getParameter'] : null),
+      (typeof AnalyserNode !== 'undefined' ? [AnalyserNode.prototype, 'getFloatFrequencyData'] : null),
+      (typeof AnalyserNode !== 'undefined' ? [AnalyserNode.prototype, 'getFloatTimeDomainData'] : null),
+      (typeof OfflineAudioContext !== 'undefined' ? [OfflineAudioContext.prototype, 'startRendering'] : null),
+      [Element.prototype, 'getBoundingClientRect'],
+      [Element.prototype, 'getClientRects'],
+      (navigator.permissions ? [navigator.permissions, 'query'] : null),
+      (document.fonts ? [document.fonts, 'check'] : null),
+    ];
+    targets.forEach(function(t) {
+      if (!t) return;
+      try {
+        const fn = t[0][t[1]];
+        if (typeof fn === 'function') markNativeFn(fn, t[1]);
+      } catch (e) {}
+    });
+  })();
 
   // ===== 16. Remove Playwright/CDP traces =====
   delete window.__playwright;

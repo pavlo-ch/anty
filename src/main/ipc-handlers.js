@@ -346,7 +346,9 @@ function registerIpcHandlers() {
       p.browser === parsed.browser &&
       !p.mobile === !parsed.mobile
     );
-    const pool = candidates.length > 0 ? candidates : FINGERPRINT_PROFILES.filter(p => !p.mobile);
+    const pool = candidates.length > 0
+      ? candidates
+      : FINGERPRINT_PROFILES.filter(p => !p.mobile && (p.browser === 'Chrome' || p.browser === 'Edge'));
     const idx = Math.floor(Math.random() * pool.length);
     const profile = pool[idx];
     const screen = profile.screens[Math.floor(Math.random() * profile.screens.length)];
