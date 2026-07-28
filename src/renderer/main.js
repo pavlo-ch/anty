@@ -1452,7 +1452,9 @@ function renderProfilesList(searchTerm = '') {
     const isRunningByOther = !runningProfiles.has(p.id) && p.status === 'running';
     const isRunning = isRunningLocally || isRunningByOther;
     const isPending = pendingProfiles.has(p.id);
-    const time = formatTime(p.modified_at);
+    // last_launched_at, not modified_at — the latter also moves on edits and on
+    // every platform sync, which made never-opened profiles read as "just now".
+    const time = p.last_launched_at ? formatTime(p.last_launched_at) : 'never';
     const systemLabel = getProfileSystemLabel(fp);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';

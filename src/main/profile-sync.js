@@ -736,6 +736,13 @@ async function pullProfilesFromCloud(options = {}) {
     return { ok: false, pulled: 0, skipped: true, reason: 'pull_url_not_configured' };
   }
 
+  // Refuse to pull without a tenancy scope. Rows would be created with an empty
+  // owner_scope, invisible to every tenant, and the next pull would create them all
+  // over again because the scoped remote-id lookup cannot see them either.
+  if (!db.resolveActiveScope()) {
+    return { ok: false, pulled: 0, skipped: true, reason: 'no_active_scope' };
+  }
+
   const result = await fetchWithAuthRetry(pullUrl, {
     source: ANTY_SOURCE,
     appVersion: getAppVersion(),
@@ -748,9 +755,11 @@ async function pullProfilesFromCloud(options = {}) {
 
   const items = extractProfilesList(result.body);
   let pulled = 0;
+  const seenTeamIds = new Set();
   for (const item of items) {
     const cloud = normalizeCloudProfile(item);
     if (!cloud.remoteId) continue;
+    if (cloud.teamId) seenTeamIds.add(cloud.teamId);
     const existing = db.getProfileByRemoteId(cloud.remoteId);
 
     if (cloud.deleted) {
@@ -790,6 +799,20 @@ async function pullProfilesFromCloud(options = {}) {
     });
     db.updateProfile(created.id, cloud.data);
     pulled += 1;
+  }
+
+  // The platform just served these rows for this session's token, so a single team
+  // id across them identifies the local store's owner beyond doubt. That is a firmer
+  // basis than the login payload, which is not known to carry an id — and it moves
+  // the tenancy scope off the name-derived key, where a same-named team could
+  // otherwise collide. Skipped when the response mixes teams, since then it proves
+  // nothing about ownership.
+  if (seenTeamIds.size === 1) {
+    try {
+      db.promoteScopeToTeamId([...seenTeamIds][0]);
+    } catch (err) {
+      console.error('[Sync] Scope promotion failed:', err.message);
+    }
   }
 
   const cursor = extractCursor(result.body);

@@ -10,8 +10,9 @@ const { chromium } = require('playwright-core');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA } = require('./fingerprint');
-const { getProfile, updateProfile, deleteProfile: deleteProfileRow } = require('./database');
+const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA, alignUAToInstalledChrome } = require('./fingerprint');
+const { resolveChromeExecutable, candidatePaths } = require('./chrome-binary');
+const { getProfile, updateProfile, deleteProfile: deleteProfileRow, markProfileLaunched } = require('./database');
 const profileSync = require('./profile-sync');
 const warmup = require('./warmup');
 const http = require('http');
@@ -55,86 +56,50 @@ const STARTUP_NOISE_HOST_PATTERNS = [
 ];
 
 /**
- * Realistic Chrome patch versions per major version.
- * Google User-Agent reduction makes `navigator.userAgent` always report
- * "X.0.0.0", but Sec-CH-UA-Full-Version / Full-Version-List is supposed to
- * carry the REAL patch number. Setting "X.0.0.0" here is a strong bot signal.
+ * Render the profile's language list the way Chrome does: the primary tag bare,
+ * then each fallback with a descending q-weight ("en-US,en;q=0.9,de;q=0.8").
  */
-const CHROME_PATCH_VERSIONS = {
-  146: ['146.0.7103.113', '146.0.7103.92', '146.0.7103.49'],
-  145: ['145.0.7049.95', '145.0.7049.85', '145.0.7049.52'],
-  144: ['144.0.6991.101', '144.0.6991.52'],
-  143: ['143.0.6965.81', '143.0.6965.51'],
-  142: ['142.0.6908.103', '142.0.6908.52'],
-  141: ['141.0.6871.87', '141.0.6871.51'],
-  140: ['140.0.6849.99', '140.0.6849.62'],
-  139: ['139.0.6821.81', '139.0.6821.42'],
-  138: ['138.0.6770.111', '138.0.6770.60'],
-  137: ['137.0.6735.90', '137.0.6735.51'],
-  136: ['136.0.6706.95', '136.0.6706.52'],
-  135: ['135.0.6678.82', '135.0.6678.47'],
-};
-
-function pickPatchVersion(majorVersion, fingerprintSeed) {
-  const pool = CHROME_PATCH_VERSIONS[majorVersion];
-  if (!pool || pool.length === 0) return `${majorVersion}.0.0.0`;
-  // Deterministic pick per profile so the value is stable between launches.
-  const idx = Math.floor(Math.abs((fingerprintSeed || 0) * 1000)) % pool.length;
-  return pool[idx];
+function buildAcceptLanguage(fingerprint) {
+  const langs = Array.isArray(fingerprint.locale?.languages) && fingerprint.locale.languages.length
+    ? fingerprint.locale.languages
+    : [fingerprint.locale?.language || 'en-US'];
+  return langs
+    .map((lang, i) => (i === 0 ? lang : `${lang};q=${(1 - i * 0.1).toFixed(1)}`))
+    .join(',');
 }
 
 /**
- * Build Sec-CH-UA headers that match the fingerprint UA.
- * Without these, browsers expose the real Chromium version in CH headers
- * which contradicts the spoofed UA — easily detectable by antifraud.
+ * Align a profile's stored fingerprint with the Chrome binary that is about to run.
+ *
+ * Chrome auto-updates, so a version baked into a fingerprint at creation time goes
+ * stale on its own. Whenever it drifts, every request the profile makes carries a
+ * JA4/HTTP2 fingerprint from the real build alongside a UA claiming another one —
+ * measured to be the same JA4 whether or not anty's config is applied, so the UA is
+ * the only side that can move. Re-pins the UA and persists it, so the profile list,
+ * the platform sync, and the wire all agree.
+ *
+ * Returns the (possibly rewritten) fingerprint object.
  */
-function buildSecChUaHeaders(fingerprint) {
-  const ua = fingerprint.userAgent || '';
-  const parsed = parseUA(ua);
-  if (!parsed || !parsed.browser) return {};
+function alignFingerprintToChrome(profileId, fingerprint) {
+  const alignedUA = alignUAToInstalledChrome(fingerprint.userAgent || '');
+  if (!alignedUA || alignedUA === fingerprint.userAgent) return fingerprint;
 
-  const majorVersion = parseInt(parsed.version, 10) || 0;
-  const isMobile = fingerprint.hardware?.maxTouchPoints > 0;
+  const previousUA = fingerprint.userAgent;
+  fingerprint.userAgent = alignedUA;
+  fingerprint.browserVersion = parseUA(alignedUA)?.version || fingerprint.browserVersion;
+  console.log(`[Launcher] Re-pinned profile ${profileId} to installed Chrome: ${previousUA} -> ${alignedUA}`);
 
-  // Sec-CH-UA-Platform mapping
-  const platformMap = {
-    Win: 'Windows', Mac: 'macOS', Linux: 'Linux',
-    Android: 'Android', iOS: 'iOS',
-  };
-  const platform = platformMap[parsed.osShort] || 'Windows';
-
-  // Platform version — Windows always reports "10.0.0" for privacy
-  const platformVersionMap = {
-    Windows: '10.0.0', macOS: '10_15_7', Linux: '', Android: '10', iOS: '17.0.0',
-  };
-  const platformVersion = platformVersionMap[platform] || '';
-
-  // Not_A_Brand value varies by Chrome version
-  const brandVersion = majorVersion >= 130 ? '24' : majorVersion >= 100 ? '8' : '99';
-  const brandName = majorVersion >= 100 ? 'Not_A Brand' : 'Not;A=Brand';
-
-  if (parsed.browser === 'Chrome' || parsed.browser === 'Edge') {
-    const edgeBrand = parsed.browser === 'Edge' ? `, "Microsoft Edge";v="${majorVersion}"` : '';
-    const secCHUA = `"${brandName}";v="${brandVersion}", "Chromium";v="${majorVersion}", "Google Chrome";v="${majorVersion}"${edgeBrand}`;
-    const fullVer = pickPatchVersion(majorVersion, fingerprint.canvas?.noiseSeed);
-    return {
-      'Sec-CH-UA': secCHUA,
-      'Sec-CH-UA-Mobile': isMobile ? '?1' : '?0',
-      'Sec-CH-UA-Platform': `"${platform}"`,
-      'Sec-CH-UA-Platform-Version': `"${platformVersion}"`,
-      'Sec-CH-UA-Arch': isMobile ? '""' : (platform === 'macOS' && process.arch === 'arm64' ? '"arm"' : '"x86"'),
-      'Sec-CH-UA-Bitness': isMobile ? '""' : '"64"',
-      'Sec-CH-UA-Full-Version': `"${fullVer}"`,
-      'Sec-CH-UA-Full-Version-List': `"${brandName}";v="${brandVersion}.0.0.0", "Chromium";v="${fullVer}", "Google Chrome";v="${fullVer}"${edgeBrand}`,
-    };
+  try {
+    const updated = updateProfile(profileId, {
+      fingerprint: JSON.stringify(fingerprint),
+      user_agent: alignedUA,
+    });
+    if (updated?.__changed) enqueueProfileSync(profileId);
+  } catch (e) {
+    // A failed persist only means we re-align on the next launch — never block it.
+    console.error(`[Launcher] Could not persist re-pinned fingerprint: ${e.message}`);
   }
-
-  if (parsed.browser === 'Firefox') {
-    // Firefox doesn't send Sec-CH-UA at all
-    return {};
-  }
-
-  return {};
+  return fingerprint;
 }
 
 // Track running browser instances
@@ -1259,7 +1224,7 @@ async function launchProfile(profileId, mainWindow) {
     return { success: false, error: 'Profile not found' };
   }
 
-  const fingerprint = JSON.parse(profile.fingerprint || '{}');
+  const fingerprint = alignFingerprintToChrome(profileId, JSON.parse(profile.fingerprint || '{}'));
   const userDataDir = getUserDataDir(profileId);
   let proxyBridge = null;
   const startAction = String(fingerprint.startAction || 'open-page');
@@ -1294,56 +1259,45 @@ async function launchProfile(profileId, mainWindow) {
         // bypass the HTTP proxy over UDP. Without this, STUN leaks the true
         // public IPv4/IPv6 even when all HTTP traffic goes through the proxy.
         '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        // Language is set through Chrome's own flags rather than Playwright's
+        // `locale` option. Measured difference: the option makes Chrome emit
+        // accept-language 6th (right after user-agent), where real Chrome emits it
+        // second-to-last, and emits a bare "en-US" with no q-weights while
+        // navigator.languages still reported ["en-US","en"] — a header/JS
+        // contradiction. The flags reproduce real Chrome on all three counts.
+        `--accept-lang=${buildAcceptLanguage(fingerprint)}`,
+        `--lang=${fingerprint.locale?.language || 'en-US'}`,
         `--window-size=${viewportWidth},${viewportHeight}`,
       ],
     };
-    // Find Chromium executable — try common paths per platform
-    const isWin = process.platform === 'win32';
-    const pf64 = process.env['ProgramW6432'] || process.env['PROGRAMFILES'] || 'C:\\Program Files';
-    const pf86 = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
-    const local = process.env['LOCALAPPDATA'] || '';
-
-    const chromiumPaths = isWin
-      ? [
-          `${pf64}\\Google\\Chrome\\Application\\chrome.exe`,
-          `${pf86}\\Google\\Chrome\\Application\\chrome.exe`,
-          local ? `${local}\\Google\\Chrome\\Application\\chrome.exe` : '',
-          `${pf64}\\Chromium\\Application\\chrome.exe`,
-          `${pf86}\\Chromium\\Application\\chrome.exe`,
-        ].filter(Boolean)
-      : [
-          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-          '/Applications/Chromium.app/Contents/MacOS/Chromium',
-          '/usr/bin/chromium-browser',
-          '/usr/bin/google-chrome',
-        ];
-
-    let executablePath = null;
-    for (const p of chromiumPaths) {
-      if (fs.existsSync(p)) {
-        executablePath = p;
-        break;
-      }
-    }
-
+    // Find Chromium executable — shared with the version detection in chrome-binary.js
+    // so the binary we measure is always the binary we launch.
+    const executablePath = resolveChromeExecutable();
     if (executablePath) {
       launchOptions.executablePath = executablePath;
     } else {
-      const installHint = isWin
+      const installHint = process.platform === 'win32'
         ? 'Install Google Chrome from https://www.google.com/chrome and try again.'
         : 'Install Google Chrome and try again.';
       throw new Error(
         `Google Chrome or Chromium not found.\n${installHint}\n` +
-        'Expected paths:\n' + chromiumPaths.join('\n')
+        'Expected paths:\n' + candidatePaths().join('\n')
       );
     }
 
     // Context options — keep GUI viewport dynamic so fullscreen/window resize is real.
     // A fixed viewport pins page height and can clip sticky bottom buttons.
-    const secChHeaders = buildSecChUaHeaders(fingerprint);
+    //
+    // Sec-CH-UA headers are deliberately NOT set here. Chrome derives the whole
+    // client-hint set from the UA override itself, and — measured against a bare
+    // launch — gets it right: the correct three low-entropy hints on a first request,
+    // high-entropy ones only after the origin sends Accept-CH, in native header
+    // order, with the build's real GREASE brand. Injecting them via extraHTTPHeaders
+    // instead appended five headers (including the deprecated Sec-CH-UA-Full-Version)
+    // to EVERY request, in a position no real Chrome uses — a deterministic bot tell
+    // on exactly the first-contact request that Cloudflare challenges.
     const contextOptions = {
       userAgent: fingerprint.userAgent,
-      locale: fingerprint.locale?.language || 'en-US',
       timezoneId: fingerprint.locale?.timezone || 'America/New_York',
       viewport: null,
       screen: {
@@ -1351,7 +1305,6 @@ async function launchProfile(profileId, mainWindow) {
         height: fingerprint.screen?.height || 1080,
       },
       colorScheme: 'no-preference',
-      ...(Object.keys(secChHeaders).length > 0 ? { extraHTTPHeaders: secChHeaders } : {}),
     };
 
     // Add proxy if configured
@@ -1619,6 +1572,7 @@ async function launchProfile(profileId, mainWindow) {
       });
       runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave, userDataDir });
       updateProfile(profileId, { status: 'running', running_on: os.hostname() });
+      markProfileLaunched(profileId);
 
       context.on('close', finalizeClose);
 
@@ -1718,6 +1672,7 @@ async function launchProfile(profileId, mainWindow) {
     });
     runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave, userDataDir });
     updateProfile(profileId, { status: 'running', running_on: os.hostname() });
+    markProfileLaunched(profileId);
 
     if (mainWindow) {
       mainWindow.webContents.send('browser:status', { profileId, status: 'running' });

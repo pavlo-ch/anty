@@ -1,6 +1,34 @@
 // Fingerprint generation and injection scripts for anti-detect browser
 // Based on real-world browser fingerprint data
 
+const { getInstalledChromeVersion } = require('./chrome-binary');
+
+/**
+ * Rewrite the Chrome major version inside a UA string to match the binary that
+ * will actually run.
+ *
+ * The version in a preset is the one thing in a fingerprint that CANNOT be freely
+ * chosen: TLS (JA4) and HTTP/2 fingerprints are emitted by the binary and were
+ * measured to be byte-identical between a bare and a fully-configured launch. A UA
+ * claiming a different version than the binary is therefore a self-contradiction
+ * visible on every single request. Chrome's desktop UA has used the reduced
+ * `Chrome/<major>.0.0.0` form for years, so only the major needs substituting.
+ *
+ * Every version-bearing Chromium token is rewritten, not just the first: an Edge UA
+ * carries both `Chrome/X` and `Edg/X` and real Edge keeps the two majors in lockstep,
+ * so rewriting only one produces a UA that contradicts itself.
+ *
+ * Returns the UA unchanged when the installed version can't be read, or for
+ * non-Chromium UAs (which the generator already refuses to emit anyway).
+ */
+function alignUAToInstalledChrome(ua) {
+  const installed = getInstalledChromeVersion();
+  if (!installed || !ua) return ua;
+  return ua.replace(/\b(Chrome|CriOS|Edg|EdgA|EdgiOS)\/(\d+)(\.[\d.]+)?/g, (m, brand, major, rest) =>
+    String(installed.major) === major ? m : `${brand}/${installed.major}${rest || ''}`
+  );
+}
+
 // ===== FINGERPRINT PROFILES =====
 // Each profile ties OS + Browser + UA + WebGL + Screen together realistically
 const FINGERPRINT_PROFILES = [
@@ -377,7 +405,13 @@ function parseUA(ua) {
  * Finds the best matching profile (same OS + browser + version), overrides the UA.
  * For unknown Chrome versions — generates a realistic synthetic hardware profile.
  */
-function generateFingerprintFromUA(ua) {
+function generateFingerprintFromUA(requestedUA) {
+  // A hand-supplied UA is honoured for OS/brand but not for the Chrome version:
+  // the version has to track the real binary or JA4 contradicts it on every request.
+  const ua = alignUAToInstalledChrome(requestedUA);
+  if (ua !== requestedUA) {
+    console.log(`[Fingerprint] UA version realigned to installed Chrome: ${requestedUA} -> ${ua}`);
+  }
   const parsed = parseUA(ua);
   if (!parsed) return generateFingerprint();
 
@@ -452,13 +486,19 @@ function generateFingerprint(customUA, _profileOverride) {
   const maxTouchPoints = profile.mobile ? randomItem([1, 5, 10]) : 0;
   const noiseSeed = Math.random();
 
+  // Pin the claimed version to the binary that will run this profile — see
+  // alignUAToInstalledChrome(). Existing profiles get the same treatment at
+  // launch time, since Chrome auto-updates out from under a stored fingerprint.
+  const userAgent = alignUAToInstalledChrome(profile.ua);
+  const alignedVersion = parseUA(userAgent)?.version || profile.browserVersion;
+
   return {
-    userAgent: profile.ua,
+    userAgent,
     platform: profile.platform,
     osName: profile.os,
     osShort: profile.osShort,
     browserName: profile.browser,
-    browserVersion: profile.browserVersion,
+    browserVersion: alignedVersion,
     screen: {
       width: screen.width,
       height: screen.height,
@@ -524,63 +564,16 @@ function generateFingerprint(customUA, _profileOverride) {
 }
 
 function buildInjectionScript(fingerprint) {
-  const parsedUA = parseUA(fingerprint.userAgent || '') || {};
-  const majorVersion = parseInt(parsedUA.version, 10) || 0;
-  const brandVersion = majorVersion >= 130 ? '24' : majorVersion >= 100 ? '8' : '99';
-  const brandName = majorVersion >= 100 ? 'Not_A Brand' : 'Not;A=Brand';
-  const chromePatchVersions = {
-    146: ['146.0.7103.113', '146.0.7103.92', '146.0.7103.49'],
-    145: ['145.0.7049.95', '145.0.7049.85', '145.0.7049.52'],
-    144: ['144.0.6991.101', '144.0.6991.52'],
-    143: ['143.0.6965.81', '143.0.6965.51'],
-    142: ['142.0.6908.103', '142.0.6908.52'],
-    141: ['141.0.6871.87', '141.0.6871.51'],
-    140: ['140.0.6849.99', '140.0.6849.62'],
-    139: ['139.0.6821.81', '139.0.6821.42'],
-    138: ['138.0.6770.111', '138.0.6770.60'],
-    137: ['137.0.6735.90', '137.0.6735.51'],
-    136: ['136.0.6706.95', '136.0.6706.52'],
-    135: ['135.0.6678.82', '135.0.6678.47'],
-  };
-  const patchPool = chromePatchVersions[majorVersion] || [];
-  const patchIndex = Math.floor(Math.abs((fingerprint.canvas?.noiseSeed || 0) * 1000)) % Math.max(patchPool.length, 1);
-  const fullVersion = patchPool[patchIndex] || `${majorVersion}.0.0.0`;
-  const uaPlatformMap = { Win: 'Windows', Mac: 'macOS', Linux: 'Linux', Android: 'Android', iOS: 'iOS' };
-  const uaPlatform = uaPlatformMap[parsedUA.osShort] || 'Windows';
-  const uaPlatformVersionMap = {
-    Windows: '10.0.0',
-    macOS: '10_15_7',
-    Linux: '',
-    Android: '10',
-    iOS: '17.0.0',
-  };
-  const userAgentData = {
-    brands: [
-      { brand: brandName, version: String(brandVersion) },
-      { brand: 'Chromium', version: String(majorVersion) },
-      { brand: 'Google Chrome', version: String(majorVersion) },
-    ],
-    mobile: Boolean(parsedUA.mobile || fingerprint.hardware?.maxTouchPoints > 0),
-    platform: uaPlatform,
-    architecture: uaPlatform === 'macOS' && process.arch === 'arm64' ? 'arm' : 'x86',
-    bitness: '64',
-    model: '',
-    platformVersion: uaPlatformVersionMap[uaPlatform] || '',
-    uaFullVersion: fullVersion,
-    fullVersionList: [
-      { brand: brandName, version: `${brandVersion}.0.0.0` },
-      { brand: 'Chromium', version: fullVersion },
-      { brand: 'Google Chrome', version: fullVersion },
-    ],
-    wow64: false,
-  };
+  // No client-hint / userAgentData payload is built here any more: Chrome derives
+  // the whole set from the overridden UA string correctly on its own, including
+  // the build's real GREASE brand and full version. See the userAgentData note in
+  // section 1 below.
 
   return `
 (function() {
   'use strict';
-  
+
   const fp = ${JSON.stringify(fingerprint)};
-  const uaData = ${JSON.stringify(userAgentData)};
 
   // ===== UTIL: toString masking =====
   // Overriding getters/functions leaks their source via fn.toString() AND via
@@ -640,43 +633,16 @@ function buildInjectionScript(fingerprint) {
   stealthOverride(navigator, 'userAgent', () => fp.userAgent);
   stealthOverride(navigator, 'platform', () => fp.platform);
   stealthOverride(navigator, 'appVersion', () => fp.userAgent.replace('Mozilla/', ''));
-  try {
-    const userAgentData = {
-      brands: Object.freeze(uaData.brands.map((item) => Object.freeze({ ...item }))),
-      mobile: uaData.mobile,
-      platform: uaData.platform,
-      getHighEntropyValues: makeNative(function(hints) {
-        const result = {
-          brands: this.brands,
-          mobile: this.mobile,
-          platform: this.platform,
-        };
-        const values = {
-          architecture: uaData.architecture,
-          bitness: uaData.bitness,
-          model: uaData.model,
-          platformVersion: uaData.platformVersion,
-          uaFullVersion: uaData.uaFullVersion,
-          fullVersionList: Object.freeze(uaData.fullVersionList.map((item) => Object.freeze({ ...item }))),
-          wow64: uaData.wow64,
-        };
-        for (const hint of Array.isArray(hints) ? hints : []) {
-          if (Object.prototype.hasOwnProperty.call(values, hint)) result[hint] = values[hint];
-        }
-        return Promise.resolve(result);
-      }, 'getHighEntropyValues'),
-      toJSON: makeNative(function() {
-        return {
-          brands: this.brands,
-          mobile: this.mobile,
-          platform: this.platform,
-        };
-      }, 'toJSON'),
-    };
-    Object.freeze(userAgentData);
-    stealthOverride(navigator, 'userAgentData', () => userAgentData);
-  } catch(e) {}
-  
+  // navigator.userAgentData is deliberately NOT overridden.
+  //
+  // Chrome derives its whole client-hint set from the overridden UA string on its
+  // own: measured on a macOS host with a Windows UA pinned to the installed Chrome,
+  // it reported platform "Windows", arch "x64", and the binary's true full version —
+  // i.e. exactly what we want, natively, with the correct GREASE brand (which the
+  // old hardcoded "Not_A Brand";v="24" got wrong for this build). Re-declaring it
+  // here would only re-introduce a detectable prototype override and risk
+  // contradicting the headers Chrome actually sends.
+
   // ===== 2. HARDWARE =====
   stealthOverride(navigator, 'hardwareConcurrency', () => fp.hardware.cpuCores);
   stealthOverride(navigator, 'deviceMemory', () => fp.hardware.memoryGb);
@@ -1342,10 +1308,24 @@ function buildInjectionScript(fingerprint) {
   delete window.__playwright;
   delete window.__pw_manual;
   delete window.__pwInitScripts;
-  // Remove ALL Playwright/CDP binding markers (not just the first)
-  try {
-    Object.keys(window).filter(k => k.startsWith('__playwright') || k.startsWith('__pw_')).forEach(k => { try { delete window[k]; } catch(e) {} });
-  } catch(e) {}
+  // Remove ALL Playwright/CDP binding markers. Use getOwnPropertyNames (not
+  // Object.keys) — markers like __playwright_builtins__ are NON-ENUMERABLE and
+  // slip past an Object.keys filter, staying visible to antifraud (Google BotGuard
+  // reads window.__playwright_builtins__ as an automation tell).
+  const isPwMarker = (k) => /^__(playwright|pw[_A-Z]|PW_)/.test(k) || k === '__playwright_builtins__';
+  const scrubPwMarkers = () => {
+    try {
+      Object.getOwnPropertyNames(window).forEach((k) => {
+        if (isPwMarker(k)) { try { delete window[k]; } catch (e) {} }
+      });
+    } catch (e) {}
+  };
+  scrubPwMarkers();
+  // NOTE: Playwright/rebrowser re-adds __playwright_builtins__ / __pwInitScripts to
+  // the MAIN world via CDP (Runtime.addBinding) on every page.evaluate, AFTER this
+  // init script runs — JS cannot reliably remove them. The real fix is running the
+  // browser in rebrowser "alwaysIsolated" mode (launcher.js) so page.evaluate happens
+  // in an isolated world and never pollutes the main world antifraud inspects.
   // Remove CDP-specific markers
   try { delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array; } catch(e) {}
   try { delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise; } catch(e) {}
@@ -1372,6 +1352,7 @@ module.exports = {
   generateFingerprint,
   generateFingerprintFromUA,
   parseUA,
+  alignUAToInstalledChrome,
   buildInjectionScript,
   FINGERPRINT_PROFILES,
   getLocaleByCountry,

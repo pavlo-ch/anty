@@ -281,7 +281,8 @@ function updateState(fields) {
     'is_logged_in',
     'last_login_at',
     'last_logout_at',
-    'team_name'
+    'team_name',
+    'team_id'
   ];
 
   for (const field of allowedFields) {
@@ -376,12 +377,17 @@ function normalizeLoginPayload(payload, fallbackEmail) {
   const displayName = user.name || user.full_name || user.fullName || user.username || nested.name || nested.full_name || '';
   const userId = user.id || user.user_id || user.userId || nested.user_id || nested.userId || nested.id || '';
   const teamName = user.team_name || user.teamName || nested.team_name || nested.teamName || root.team_name || root.teamName || '';
+  // Read a team id if the platform sends one — it is the correct tenancy key, and
+  // team_name is only a display string that can collide or be renamed. Harmless
+  // when absent; resolveActiveScope() falls back through name then account id.
+  const teamId = user.team_id || user.teamId || nested.team_id || nested.teamId || root.team_id || root.teamId || '';
 
   return {
     email: String(email || ''),
     displayName: String(displayName || ''),
     userId: String(userId || ''),
     teamName: String(teamName || ''),
+    teamId: String(teamId || ''),
     accessToken: String(accessToken || ''),
     refreshToken: String(refreshToken || ''),
     tokenExpiresAt: String(tokenExpiresAt || '')
@@ -601,6 +607,7 @@ function saveLoggedInState(normalized, options = {}) {
     display_name: normalized.displayName,
     platform_user_id: normalized.userId,
     team_name: normalized.teamName || '',
+    team_id: normalized.teamId || '',
     access_token: encryptSecret(normalized.accessToken),
     refresh_token: encryptSecret(normalized.refreshToken),
     token_expires_at: normalized.tokenExpiresAt,
@@ -609,6 +616,17 @@ function saveLoggedInState(normalized, options = {}) {
     is_logged_in: 1,
     last_login_at: new Date().toISOString()
   });
+
+  // The tenancy scope only exists once account_state carries the team, so these run
+  // here rather than at initDatabase() time. Rename reconciliation goes first, so the
+  // adoption check below sees rows already sitting under the current key.
+  try {
+    const scope = db.resolveActiveScope();
+    db.reconcileScopeRename(scope, normalized.teamId || '');
+    db.adoptLegacyProfilesIntoScope(scope, normalized.teamId || '');
+  } catch (err) {
+    console.error('[Auth] Profile scope reconciliation failed:', err.message);
+  }
 
   const state = getAccountState();
   return state;

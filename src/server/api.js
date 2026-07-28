@@ -7,7 +7,10 @@
  * Env vars:
  *   ANTY_DATA_DIR   — path to profile data / DB  (default: ~/.anty)
  *   ANTY_API_PORT   — port to listen on           (default: 3032)
- *   ANTY_API_HOST   — host to bind to             (default: 127.0.0.1)
+ *
+ * Unauthenticated by design and therefore loopback-only and CORS-free — it is a
+ * local automation surface, not a remote one. Anything reachable here can read and
+ * modify every profile in the database.
  */
 
 const http = require('http');
@@ -33,7 +36,16 @@ const launcher = require('../main/launcher');
 const profileSync = require('../main/profile-sync');
 
 const PORT = Number(process.env.ANTY_API_PORT) || 3032;
-const HOST = process.env.ANTY_API_HOST || '127.0.0.1';
+
+// Loopback only, and not overridable by env.
+//
+// This API has no authentication: every route operates on any profile id, PATCH
+// /api/profiles/:id writes straight through to updateProfile (team_id included),
+// and POST /api/sync/run pushes to the platform using the stored tokens. Binding
+// it to anything but loopback publishes all of that to the network, so the knob
+// is removed rather than left as a footgun. Put it behind a reverse proxy that
+// does the authenticating if remote access is genuinely needed.
+const HOST = '127.0.0.1';
 
 // ── Mini router ─────────────────────────────────────────────────────────────
 
@@ -72,12 +84,18 @@ function readBody(req) {
   });
 }
 
+// No Access-Control-Allow-Origin header at all.
+//
+// It used to be '*', which meant any page the user happened to have open could
+// call this unauthenticated API on localhost and read the response — list every
+// profile, retag them to another team, or trigger a platform sync. Server-to-server
+// clients (curl, scripts, the automation tooling this API exists for) do not
+// enforce CORS, so dropping the header costs them nothing and shuts browsers out.
 function send(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(payload),
-    'Access-Control-Allow-Origin': '*',
   });
   res.end(payload);
 }
@@ -431,8 +449,10 @@ function parseProxyString(str) {
 
 const server = http.createServer(async (req, res) => {
   // CORS preflight
+  // Preflight is answered without CORS headers, so the browser rejects the actual
+  // request. See the note on send() — this API is for local scripts, not pages.
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' });
+    res.writeHead(204);
     return res.end();
   }
 
