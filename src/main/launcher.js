@@ -55,6 +55,81 @@ const STARTUP_NOISE_HOST_PATTERNS = [
   'wp.pl',
 ];
 
+function detectAccessChallenge(url, title, bodyText) {
+  let parsed;
+  try { parsed = new URL(url); } catch (_) { return null; }
+  const host = parsed.hostname.toLowerCase();
+  const pathAndText = `${parsed.pathname} ${title} ${bodyText}`.toLowerCase();
+
+  if (
+    host.includes('google.') && (
+      parsed.pathname === '/sorry/' ||
+      pathAndText.includes('unusual traffic') ||
+      pathAndText.includes('not a robot')
+    )
+  ) return 'Google';
+
+  if (
+    pathAndText.includes('just a moment') ||
+    pathAndText.includes('verify you are human') ||
+    pathAndText.includes('cf-chl-') ||
+    pathAndText.includes('challenge-platform')
+  ) return 'Cloudflare';
+
+  return null;
+}
+
+function installAccessChallengeMonitor(context, profileId, mainWindow) {
+  const pages = new Set();
+  const reported = new Set();
+  let stopped = false;
+
+  const inspect = async (page) => {
+    if (stopped || !page || page.isClosed()) return;
+    try {
+      const url = page.url();
+      const title = await page.title().catch(() => '');
+      const bodyText = await page.locator('body').innerText({ timeout: 1500 }).catch(() => '');
+      const provider = detectAccessChallenge(url, title, bodyText.slice(0, 12000));
+      if (!provider) return;
+      const key = `${provider}:${url}`;
+      if (reported.has(key)) return;
+      reported.add(key);
+      const event = { profileId, provider, url, manualActionRequired: true };
+      console.warn(`[Launcher] ${provider} access challenge detected for profile ${profileId}: ${url}`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('browser:challenge', event);
+      }
+    } catch (_) {}
+  };
+
+  const track = (page) => {
+    if (!page || pages.has(page)) return;
+    pages.add(page);
+    const inspectPage = () => { void inspect(page); };
+    page.on('domcontentloaded', inspectPage);
+    page.on('load', inspectPage);
+    page.__antyChallengeMonitorHandlers = { inspectPage };
+    void inspect(page);
+  };
+
+  context.pages().forEach(track);
+  context.on('page', track);
+
+  return () => {
+    stopped = true;
+    try { context.off('page', track); } catch (_) {}
+    for (const page of pages) {
+      const handlers = page.__antyChallengeMonitorHandlers;
+      if (!handlers) continue;
+      try { page.off('domcontentloaded', handlers.inspectPage); } catch (_) {}
+      try { page.off('load', handlers.inspectPage); } catch (_) {}
+      try { delete page.__antyChallengeMonitorHandlers; } catch (_) {}
+    }
+    pages.clear();
+  };
+}
+
 /**
  * Render the profile's language list the way Chrome does: the primary tag bare,
  * then each fallback with a descending q-weight ("en-US,en;q=0.9,de;q=0.8").
@@ -1545,6 +1620,7 @@ async function launchProfile(profileId, mainWindow) {
       let page = await context.newPage();
       page = await openInitialTabs(context, page);
       cleanupStartupBlocker?.();
+      const stopAccessChallengeMonitor = installAccessChallengeMonitor(context, profileId, mainWindow);
       const autosave = startStateAutosave(profileId, context);
 
       let finalized = false;
@@ -1553,6 +1629,7 @@ async function launchProfile(profileId, mainWindow) {
         if (finalized) return;
         finalized = true;
         try { closeWatcher?.stop?.(); } catch (_) {}
+        try { stopAccessChallengeMonitor(); } catch (_) {}
         try { await autosave.flush(); } catch (_) {}
         try { autosave.stop(); } catch (_) {}
         await saveCookies(context);
@@ -1570,7 +1647,7 @@ async function launchProfile(profileId, mainWindow) {
       closeWatcher = watchAllPagesClosed(context, () => {
         context.close().catch(() => finalizeClose());
       });
-      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave, userDataDir });
+      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor });
       updateProfile(profileId, { status: 'running', running_on: os.hostname() });
       markProfileLaunched(profileId);
 
@@ -1639,6 +1716,7 @@ async function launchProfile(profileId, mainWindow) {
     if (!page) page = await context.newPage();
     page = await openInitialTabs(context, page);
     cleanupStartupBlocker?.();
+    const stopAccessChallengeMonitor = installAccessChallengeMonitor(context, profileId, mainWindow);
     const autosave = startStateAutosave(profileId, context);
 
     let finalized = false;
@@ -1647,6 +1725,7 @@ async function launchProfile(profileId, mainWindow) {
       if (finalized) return;
       finalized = true;
       try { closeWatcher?.stop?.(); } catch (_) {}
+      try { stopAccessChallengeMonitor(); } catch (_) {}
       try { await autosave.flush(); } catch (_) {}
       try { autosave.stop(); } catch (_) {}
       // Save cookies defensively — context may already be partially closed
@@ -1670,7 +1749,7 @@ async function launchProfile(profileId, mainWindow) {
     closeWatcher = watchAllPagesClosed(context, () => {
       context.close().catch(() => finalizeClose());
     });
-    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave, userDataDir });
+    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor });
     updateProfile(profileId, { status: 'running', running_on: os.hostname() });
     markProfileLaunched(profileId);
 
@@ -1704,6 +1783,7 @@ async function stopProfile(profileId) {
 
   try {
     try { instance.closeWatcher?.stop?.(); } catch {}
+    try { instance.stopAccessChallengeMonitor?.(); } catch {}
     try {
       await instance.autosave?.flush?.();
       instance.autosave?.stop?.();

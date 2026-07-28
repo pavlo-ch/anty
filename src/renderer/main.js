@@ -1023,7 +1023,7 @@ function bindWarmupEvents() {
     }
   });
 
-  window.api.onWarmupProgress(({ index, total, url, status: itemStatus }) => {
+window.api.onWarmupProgress(({ index, total, url, status: itemStatus }) => {
     if (!fill || !status) return;
     const pct = (index - 1 + (itemStatus === 'done' ? 1 : 0.3)) / total * 100;
     fill.style.width = pct + '%';
@@ -1033,7 +1033,11 @@ function bindWarmupEvents() {
     } catch {
       status.textContent = `${index}/${total}`;
     }
-  });
+});
+
+window.api.onAccessChallenge(({ provider }) => {
+  showToast(`${provider}: потрібна ручна перевірка у відкритій вкладці`, 'error');
+});
 }
 bindWarmupEvents();
 

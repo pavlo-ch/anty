@@ -81,6 +81,9 @@ contextBridge.exposeInMainWorld('api', {
   onProfileStatus: (callback) => {
     ipcRenderer.on('browser:status', (_, data) => callback(data));
   },
+  onAccessChallenge: (callback) => {
+    ipcRenderer.on('browser:challenge', (_, data) => callback(data));
+  },
   onUpdateStatus: (callback) => {
     ipcRenderer.on('app:update-status', (_, data) => callback(data));
   }
