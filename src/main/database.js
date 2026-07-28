@@ -53,11 +53,57 @@ function getDbPath() {
   return path.join(getDataDir(), 'anty_browser.db');
 }
 
-function initDatabase() {
+function isCorruptDatabaseError(err) {
+  return /database disk image is malformed|database corruption|malformed database/i.test(String(err?.message || err));
+}
+
+function findHealthyDatabaseBackup(dbPath) {
+  const dataDir = path.dirname(dbPath);
+  const backupNames = fs.readdirSync(dataDir)
+    .filter((name) => new RegExp(`^${path.basename(dbPath)}\\.bak-[^/]+$`).test(name))
+    .sort()
+    .reverse();
+
+  for (const name of backupNames) {
+    const backupPath = path.join(dataDir, name);
+    let candidate;
+    try {
+      candidate = new Database(backupPath, { readonly: true });
+      const result = candidate.pragma('integrity_check', { simple: true });
+      if (result === 'ok') return backupPath;
+    } catch (_) {
+      // Try the next backup; a damaged backup must never replace the active DB.
+    } finally {
+      if (candidate) candidate.close();
+    }
+  }
+  return null;
+}
+
+function recoverCorruptDatabase(dbPath) {
+  const backupPath = findHealthyDatabaseBackup(dbPath);
+  if (!backupPath) return false;
+
+  const corruptPath = `${dbPath}.corrupt-${Date.now()}`;
+  fs.copyFileSync(dbPath, corruptPath);
+  if (db) {
+    try { db.close(); } catch (_) {}
+    db = null;
+  }
+  for (const suffix of ['-wal', '-shm']) {
+    try { fs.unlinkSync(`${dbPath}${suffix}`); } catch (_) {}
+  }
+  fs.copyFileSync(backupPath, dbPath);
+  console.warn(`[DB] Recovered malformed database from ${backupPath}; original saved as ${corruptPath}`);
+  return true;
+}
+
+function initDatabase(recoveryAttempted = false) {
   const dbPath = getDbPath();
   console.log('[DB] Initializing database at:', dbPath);
-  
-  db = new Database(dbPath);
+
+  try {
+    db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
@@ -263,6 +309,12 @@ function initDatabase() {
 
   console.log('[DB] Database initialized successfully');
   return db;
+  } catch (err) {
+    if (!recoveryAttempted && isCorruptDatabaseError(err) && recoverCorruptDatabase(dbPath)) {
+      return initDatabase(true);
+    }
+    throw err;
+  }
 }
 
 function getDb() {
