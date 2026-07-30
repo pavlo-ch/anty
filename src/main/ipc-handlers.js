@@ -278,6 +278,20 @@ function registerIpcHandlers() {
     }
     return result;
   });
+  ipcMain.handle('browser:manual-login', async (_, id, opts) => {
+    requireLoggedIn();
+    // Opens a no-CDP Chrome window so the user can sign in to sites that block
+    // automation (Google). Resolves when they close the window; the saved session
+    // is then reused by normal launches.
+    const profile = db.getProfile(id);
+    if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id)) {
+      return { success: false, error: 'This profile is already running on another team device' };
+    }
+    const result = await launcher.openProfileForManualLogin(id, opts || {});
+    const updated = db.getProfile(id);
+    if (updated) { profileSync.onLocalProfileUpsert(updated); profileSync.scheduleSync(); }
+    return result;
+  });
   ipcMain.handle('browser:stop', async (_, id) => {
     requireLoggedIn();
     const result = await launcher.stopProfile(id);

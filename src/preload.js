@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Browser
   launchProfile: (id) => ipcRenderer.invoke('browser:launch', id),
+  manualLoginProfile: (id, opts) => ipcRenderer.invoke('browser:manual-login', id, opts),
   stopProfile: (id) => ipcRenderer.invoke('browser:stop', id),
   getRunningProfiles: () => ipcRenderer.invoke('browser:running'),
 

@@ -1294,6 +1294,10 @@ async function launchProfile(profileId, mainWindow) {
     return { success: false, error: 'Profile is already running' };
   }
 
+  if (manualLoginSessions.has(Number(profileId))) {
+    return { success: false, error: 'A manual-login window is open for this profile. Close it first.' };
+  }
+
   const profile = getProfile(profileId);
   if (!profile) {
     return { success: false, error: 'Profile not found' };
@@ -2020,8 +2024,125 @@ function createOpenTabsTracker(profileId, context) {
   };
 }
 
+// Profiles currently open in a no-CDP manual-login window. Keyed by id so a normal
+// CDP launch can refuse while one is open (they share a user-data-dir, which Chrome
+// locks to a single process).
+const manualLoginSessions = new Set();
+
+/**
+ * Open a profile in a plain Chrome window with NO CDP attached, for the user to sign
+ * in to sites that block automation — Google's "This browser or app may not be
+ * secure" being the motivating case.
+ *
+ * Why this exists: measured live, Google's sign-in rejects the CDP-driven browser at
+ * the identifier step (redirects to /signin/rejected) no matter the fingerprint,
+ * version, or IP — the trigger is the CDP attachment itself, which JS and launch
+ * flags cannot hide. A plain Chrome subprocess on the same profile dir has no CDP, so
+ * it reaches the password field like any normal browser. Cookies land in the profile
+ * dir, and every later anty launch reuses that session — the block only gates the
+ * sign-in action, not the use of an existing session.
+ *
+ * Deliberately a fully-consistent REAL Chrome during login — no UA/canvas spoofing.
+ * The proven-good path (importing a session captured in a real browser) works
+ * precisely because the sign-in happens in a coherent browser; layering a Windows UA
+ * over a Mac's real WebGL/canvas would reintroduce an inconsistency for no benefit,
+ * since the block is about automation, not identity. The one thing that must match is
+ * the egress, so the same proxy is applied — Google records the same IP it will later
+ * see. Locale is passed for correct language. The resulting session is the trust
+ * anchor; the login-vs-use fingerprint gap is the same one the existing cookie/storage
+ * import already accepts, and which is known to work.
+ *
+ * Resolves when the user closes the window; the caller can then launch normally.
+ */
+async function openProfileForManualLogin(profileId, options = {}) {
+  const { spawn } = require('child_process');
+  const numericId = Number(profileId);
+
+  if (runningBrowsers.has(numericId)) {
+    return { success: false, error: 'Profile is already running. Close it first, then use manual login.' };
+  }
+  if (manualLoginSessions.has(numericId)) {
+    return { success: false, error: 'A login window for this profile is already open.' };
+  }
+
+  const profile = getProfile(numericId);
+  if (!profile) return { success: false, error: 'Profile not found' };
+
+  const executablePath = resolveChromeExecutable();
+  if (!executablePath) return { success: false, error: 'Google Chrome not found' };
+
+  const fingerprint = alignFingerprintToChrome(numericId, JSON.parse(profile.fingerprint || '{}'));
+  const userDataDir = getUserDataDir(numericId);
+  const startUrl = options.url || 'https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn';
+
+  let proxyBridge = null;
+  const args = [
+    `--user-data-dir=${userDataDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-infobars',
+    '--disable-quic',
+    '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+  ];
+  const lang = fingerprint.locale?.language || 'en-US';
+  args.push(`--lang=${lang}`, `--accept-lang=${buildAcceptLanguage(fingerprint)}`);
+
+  try {
+    ensureSharedExtensionsDir(userDataDir);
+    disableChromeSessionRestore(userDataDir, 'open-page');
+
+    if (profile.proxy_host) {
+      const proxyType = String(profile.proxy_type || 'http').toLowerCase();
+      const isSocks5 = proxyType === 'socks5' || proxyType === 'sock5';
+      if (isSocks5) {
+        proxyBridge = await createSocks5HttpBridge({
+          type: 'socks5', host: profile.proxy_host, port: profile.proxy_port || 1080,
+          username: profile.proxy_username || '', password: profile.proxy_password || '',
+        });
+        args.push(`--proxy-server=${proxyBridge.serverUrl}`);
+      } else if (profile.proxy_username) {
+        proxyBridge = await createHttpProxyBridge({
+          type: proxyType === 'https' ? 'http' : proxyType, host: profile.proxy_host,
+          port: profile.proxy_port || 80, username: profile.proxy_username || '', password: profile.proxy_password || '',
+        });
+        args.push(`--proxy-server=${proxyBridge.serverUrl}`);
+      } else {
+        const chromeProxyType = proxyType === 'https' ? 'http' : proxyType;
+        args.push(`--proxy-server=${chromeProxyType}://${profile.proxy_host}:${profile.proxy_port || 80}`);
+      }
+      args.push('--proxy-bypass-list=<-loopback>');
+    }
+
+    args.push(startUrl);
+
+    manualLoginSessions.add(numericId);
+    updateProfile(numericId, { status: 'running', running_on: os.hostname() });
+    markProfileLaunched(numericId);
+    console.log(`[Launcher] Manual-login (no CDP) window for profile ${numericId}`);
+
+    const child = spawn(executablePath, args, { detached: false, stdio: 'ignore' });
+
+    await new Promise((resolve) => {
+      child.on('exit', resolve);
+      child.on('error', (err) => { console.error('[Launcher] Manual-login Chrome error:', err.message); resolve(); });
+    });
+
+    return { success: true };
+  } catch (err) {
+    console.error('[Launcher] Manual-login failed:', err.message);
+    return { success: false, error: err.message };
+  } finally {
+    manualLoginSessions.delete(numericId);
+    if (proxyBridge && typeof proxyBridge.close === 'function') {
+      try { proxyBridge.close(); } catch (_) {}
+    }
+    updateProfile(numericId, { status: 'ready', running_on: '' });
+  }
+}
+
 module.exports = {
   launchProfile,
+  openProfileForManualLogin,
   stopProfile,
   stopAllProfiles,
   getRunningProfiles,

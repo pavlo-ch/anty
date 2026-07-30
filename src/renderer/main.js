@@ -272,6 +272,26 @@ function setupEventListeners() {
     }
   });
 
+  // Google / secure sign-in — open a no-CDP window so Google doesn't reject it
+  document.getElementById('btn-google-login')?.addEventListener('click', async () => {
+    if (!selectedProfileId) return;
+    const btn = document.getElementById('btn-google-login');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Sign-in window open — close it when done…';
+    showToast('Opening a plain Chrome window. Sign in, then close it.', 'info');
+    try {
+      const result = await window.api.manualLoginProfile(selectedProfileId, {});
+      if (result?.success) showToast('Sign-in window closed. Session saved to this profile.', 'success');
+      else showToast(result?.error || 'Could not open sign-in window', 'error');
+    } catch (err) {
+      showToast('Sign-in failed: ' + err.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
   // Cookies — browse files click
   document.getElementById('cookies-browse-btn')?.addEventListener('click', () => {
     document.getElementById('cookies-file-input')?.click();
