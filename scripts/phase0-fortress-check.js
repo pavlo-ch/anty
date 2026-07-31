@@ -1,0 +1,138 @@
+/**
+ * Phase 0 — validate a patched Fortress Chromium against the sites that block anty
+ * today, WITH CDP attached (the whole question). See docs/patched-chromium-plan.md.
+ *
+ * Run on WINDOWS (Fortress ships native Win/Linux binaries; macOS is Docker-only):
+ *
+ *   set ANTY_FORTRESS_PATH=C:\path\to\tilion.exe
+ *   node scripts/phase0-fortress-check.js
+ *
+ * It drives Fortress exactly the way anty would — headed, over CDP, with the profile
+ * persona pushed down as --uxr-* flags and NO JS injection — then reports per target.
+ *
+ * Optional: REBROWSER=0 to launch without rebrowser's addBinding patch, to see whether
+ * Fortress's engine-level stealth alone is enough (anty defaults to addBinding).
+ */
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+// Match anty's stack unless told otherwise. Fortress patches CDP leaks in the engine,
+// so it's worth comparing with and without this.
+if (process.env.REBROWSER !== '0') {
+  process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE = process.env.REBROWSER_PATCHES_RUNTIME_FIX_MODE || 'addBinding';
+}
+
+const ROOT = path.join(__dirname, '..');
+const { chromium } = require(path.join(ROOT, 'node_modules', 'playwright-core'));
+const { generateFingerprint } = require(path.join(ROOT, 'src', 'main', 'fingerprint'));
+const { buildFortressFlags } = require(path.join(ROOT, 'src', 'main', 'engine'));
+
+const FORTRESS = String(process.env.ANTY_FORTRESS_PATH || '').trim();
+const OUT = path.join(ROOT, 'phase0-out');
+
+const CHALLENGE_RE = /verify you are human|just a moment|checking your browser|performing security verification|attention required|unusual traffic|couldn.?t sign you in|browser or app may not be secure/i;
+
+function ensureOut() {
+  try { fs.mkdirSync(OUT, { recursive: true }); } catch (_) {}
+}
+
+async function shot(page, name) {
+  const p = path.join(OUT, `${name}.png`);
+  await page.screenshot({ path: p, fullPage: false }).catch(() => {});
+  return p;
+}
+
+async function run() {
+  if (!FORTRESS || !fs.existsSync(FORTRESS)) {
+    console.error('ANTY_FORTRESS_PATH is unset or does not point at a file. Set it to the Fortress binary.');
+    process.exit(2);
+  }
+  ensureOut();
+
+  // Coherent persona for THIS host. On Windows use a Windows persona so UA and the
+  // engine's TLS agree. (On a Mac host a Windows persona is fine here because Fortress
+  // spoofs TLS too — but Fortress has no native mac build yet, so this runs on Windows.)
+  let fp;
+  do { fp = generateFingerprint(); } while (!/Windows/.test(fp.userAgent));
+  const uxr = buildFortressFlags(fp);
+
+  console.log('Fortress:', FORTRESS);
+  console.log('rebrowser addBinding:', process.env.REBROWSER === '0' ? 'OFF' : 'ON');
+  console.log('persona UA:', fp.userAgent);
+  console.log('--uxr flags:', uxr.length);
+  uxr.forEach((f) => console.log('   ', f));
+  console.log('');
+
+  const userDataDir = path.join(os.tmpdir(), `phase0-${Date.now()}`);
+  const ctx = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    executablePath: FORTRESS,
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: [
+      '--disable-infobars', '--no-first-run', '--no-default-browser-check',
+      '--disable-quic', '--disable-features=AsyncDns,UseDnsHttpsSvcbAlpn',
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+      '--accept-lang=en-US,en;q=0.9', '--lang=en-US', '--window-size=1280,860',
+      ...uxr,
+    ],
+    viewport: null,
+    // NO addInitScript / userAgent override — Fortress owns the persona.
+  });
+
+  const results = [];
+  const page = ctx.pages()[0] || await ctx.newPage();
+
+  // --- 1. CreepJS: fingerprint coherence / stealth ---
+  try {
+    await page.goto('https://abrahamjuliot.github.io/creepjs/', { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await page.waitForTimeout(15000);
+    const txt = (await page.evaluate(() => document.body.innerText).catch(() => '')).replace(/\s+/g, ' ');
+    const trust = (txt.match(/([\d.]+)\s*%\s*trust/i) || [])[1];
+    const lies = (txt.match(/(\d+)\s*lies/i) || [])[1];
+    results.push({ target: 'CreepJS', signal: `trust=${trust ?? '?'}% lies=${lies ?? '?'}`, verdict: 'INSPECT SCREENSHOT', file: await shot(page, '1-creepjs') });
+  } catch (e) { results.push({ target: 'CreepJS', signal: 'error: ' + e.message.split('\n')[0], verdict: 'ERROR' }); }
+
+  // --- 2. blackhatworld: Cloudflare ---
+  try {
+    await page.goto('https://www.blackhatworld.com', { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {});
+    await page.waitForTimeout(15000);
+    const title = await page.title().catch(() => '');
+    const body = (await page.evaluate(() => document.body?.innerText || '').catch(() => ''));
+    const blocked = CHALLENGE_RE.test(title) || CHALLENGE_RE.test(body);
+    const home = /BlackHatWorld|Latest posts|Forums/i.test(body) || /Home \| BlackHatWorld/i.test(title);
+    results.push({ target: 'blackhatworld', signal: `title="${title.slice(0, 40)}"`, verdict: blocked ? 'BLOCKED' : home ? 'PASS' : 'UNCLEAR', file: await shot(page, '2-blackhatworld') });
+  } catch (e) { results.push({ target: 'blackhatworld', signal: 'error: ' + e.message.split('\n')[0], verdict: 'ERROR' }); }
+
+  // --- 3. Google sign-in: does it reach the password step? ---
+  try {
+    await page.goto('https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn&hl=en', { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await page.waitForTimeout(4000);
+    const box = await page.waitForSelector('input#identifierId, input[name="identifier"], input[type="email"], input[type="text"]', { timeout: 15000 }).catch(() => null);
+    if (box) {
+      await box.fill(process.env.GTEST_EMAIL || 'antyprobe.nouser.9271@gmail.com');
+      await page.click('#identifierNext button, #identifierNext, button:has-text("Next")').catch(async () => { await page.keyboard.press('Enter'); });
+      await page.waitForTimeout(8000);
+    }
+    const url = page.url();
+    const body = (await page.evaluate(() => document.body?.innerText || '').catch(() => ''));
+    const hasPw = await page.$('input[type="password"]');
+    const blocked = /rejected/i.test(url) || CHALLENGE_RE.test(body);
+    const reachedPw = Boolean(hasPw) || /Enter your password|Wrong password|Couldn.?t find your Google Account/i.test(body);
+    results.push({ target: 'Google sign-in', signal: `url=${/rejected/.test(url) ? 'REJECTED' : 'ok'} pw=${Boolean(hasPw)}`, verdict: blocked ? 'BLOCKED' : reachedPw ? 'PASS (reached identifier/password gate)' : 'UNCLEAR', file: await shot(page, '3-google') });
+  } catch (e) { results.push({ target: 'Google sign-in', signal: 'error: ' + e.message.split('\n')[0], verdict: 'ERROR' }); }
+
+  console.log('\n=== PHASE 0 RESULT ===');
+  for (const r of results) {
+    console.log(`${String(r.verdict).padEnd(38)} ${r.target.padEnd(16)} ${r.signal}`);
+    if (r.file) console.log(`   screenshot: ${r.file}`);
+  }
+  console.log(`\nScreenshots in: ${OUT}`);
+  console.log('Verdict guide: blackhatworld/Google must say PASS (not BLOCKED) — that is the whole point.');
+  console.log('Compare a run with REBROWSER=0 to decide if addBinding is still needed.');
+
+  await ctx.close().catch(() => {});
+  try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch (_) {}
+}
+
+run().catch((e) => { console.error('FATAL', e); process.exit(1); });

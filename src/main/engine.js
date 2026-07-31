@@ -61,15 +61,19 @@ const NAV_PLATFORM = { Win: 'Win32', Mac: 'MacIntel', Linux: 'Linux x86_64' };
  *
  * Every value comes from the profile's own fingerprint, so the persona the engine
  * presents is the same one anty already assigns — just enforced in C++ instead of JS.
- * Flag NAMES follow Fortress's documented set; any that differ get corrected once
- * Phase 0 confirms them against the real binary.
+ *
+ * Only the persona-defining surfaces are set here; OS platform-version, the browser
+ * version, the exact Client-Hints and the TLS/JA4 shape are deliberately left to
+ * Fortress's coherence engine, which derives them consistently from `ua-platform`.
+ * Over-specifying those risks the very incoherence this move is meant to remove.
+ * Flag names below are Fortress's documented `--uxr-*` set; the last confirmation is
+ * a Phase 0 run against the real binary. (Notably NO `--uxr-ua-version` — the browser
+ * version is fixed by which Fortress build ships, not a flag.)
  */
 function buildFortressFlags(fingerprint) {
   const fp = fingerprint || {};
-  const ua = fp.userAgent || '';
-  const parsed = parseUA(ua) || {};
+  const parsed = parseUA(fp.userAgent || '') || {};
   const osShort = parsed.osShort || 'Win';
-  const major = String(parseInt(parsed.version, 10) || '').trim();
   const isArm = UA_PLATFORM[osShort] === 'macOS' ? /arm/i.test(fp.platform || '') : false;
 
   const flags = [];
@@ -77,14 +81,12 @@ function buildFortressFlags(fingerprint) {
     if (value !== undefined && value !== null && value !== '') flags.push(`--uxr-${name}=${value}`);
   };
 
-  // Identity / UA-CH
-  add('ua-platform', UA_PLATFORM[osShort]);
-  add('ua-os', fp.osName);
+  // Identity — high-level persona; Fortress derives coherent CH/version/TLS from it.
+  add('ua-platform', UA_PLATFORM[osShort]);       // Sec-CH-UA-Platform: Windows/macOS/Linux
   add('ua-arch', isArm ? 'arm' : 'x86');
   add('ua-bitness', '64');
   add('ua-brand', parsed.browser === 'Edge' ? 'Microsoft Edge' : 'Google Chrome');
-  add('ua-version', major);
-  add('platform', NAV_PLATFORM[osShort]);
+  add('platform', NAV_PLATFORM[osShort]);          // navigator.platform: Win32/MacIntel/…
 
   // Hardware
   add('hw-concurrency', fp.hardware?.cpuCores);
@@ -104,7 +106,7 @@ function buildFortressFlags(fingerprint) {
   add('languages', Array.isArray(fp.locale?.languages) ? fp.locale.languages.join(',') : fp.locale?.language);
   add('screen-width', fp.screen?.width);
   add('screen-height', fp.screen?.height);
-  add('webrtc-policy', 'disable-non-proxied-udp');
+  add('webrtc-policy', 'disable_non_proxied_udp');  // underscores — Fortress's documented form
 
   return flags;
 }

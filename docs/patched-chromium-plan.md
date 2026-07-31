@@ -82,7 +82,7 @@ not a rewrite):
 
 | anty fingerprint field | Fortress flag |
 |---|---|
-| `userAgent` / platform | `--uxr-ua-platform` `--uxr-ua-os` `--uxr-ua-arch` `--uxr-ua-bitness` `--uxr-ua-brand` `--uxr-ua-version`, `--uxr-platform` |
+| `userAgent` / platform | `--uxr-ua-platform` `--uxr-ua-arch` `--uxr-ua-bitness` `--uxr-ua-brand`, `--uxr-platform` |
 | `hardware.cpuCores` | `--uxr-hw-concurrency` |
 | `hardware.memoryGb` | `--uxr-device-memory` |
 | `webgl.vendor` / `renderer` | `--uxr-webgl-vendor` / `--uxr-webgl-renderer` |
@@ -90,9 +90,31 @@ not a rewrite):
 | `audio.noiseSeed` | `--uxr-audio-seed` |
 | `locale.timezone` | `--uxr-timezone` |
 | `locale.languages` | `--uxr-languages` |
-| `screen.*` | `--uxr-screen-*` |
-| `webrtc` | `--uxr-webrtc-policy` |
-| TLS/JA4 | automatic (engine-level, coherent — no anty work) |
+| `screen.*` | `--uxr-screen-width` / `--uxr-screen-height` |
+| `webrtc` | `--uxr-webrtc-policy=disable_non_proxied_udp` |
+| browser version, OS platform-version, TLS/JA4 | left to Fortress's coherence engine (no anty flag) |
+
+Implemented in `src/main/engine.js#buildFortressFlags` (16 flags). Deliberately NO
+`--uxr-ua-version` — the browser version is whatever Fortress build ships, not a flag.
+
+## Phase 0 — how to run the check (Windows)
+
+A ready runner is committed at `scripts/phase0-fortress-check.js`. On a Windows box:
+
+```
+# 1. get a Fortress binary (build from source per github.com/tiliondev/fortress,
+#    or a release) and note its path, e.g. C:\fortress\tilion.exe
+# 2. from the anty repo:
+set ANTY_FORTRESS_PATH=C:\fortress\tilion.exe
+node scripts/phase0-fortress-check.js
+```
+
+It launches Fortress **headed, driven over CDP by Playwright** (the exact thing that
+gets blocked today), applies a coherent Windows persona via `buildFortressFlags`, and
+visits CreepJS, blackhatworld, and Google sign-in — printing PASS/FAIL and saving a
+screenshot per target. The question it answers: does CDP + engine-spoof actually get
+in? Also try it once with `REBROWSER=0` (env) to see whether rebrowser's addBinding is
+still needed or Fortress alone suffices.
 
 This retires `buildInjectionScript` entirely and moves spoofing into the engine,
 where a page can't catch it — and where JA4 finally matches the UA (fixing the
