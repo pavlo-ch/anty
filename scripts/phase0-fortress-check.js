@@ -149,6 +149,18 @@ async function run() {
   console.log('Verdict guide: blackhatworld/Google must say PASS (not BLOCKED) — that is the whole point.');
   console.log('Compare a run with REBROWSER=0 to decide if addBinding is still needed.');
 
+  // Cloudflare shows an INTERACTIVE checkbox that this script does not click. anty is
+  // a human-driven browser, so the realistic test is a manual click: with PHASE0_HOLD=1
+  // the browser stays open on the last page so you can click "Verify you are human"
+  // and watch whether the forum actually loads.
+  if (process.env.PHASE0_HOLD) {
+    try { await page.goto('https://www.blackhatworld.com', { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (_) {}
+    console.log('\nPHASE0_HOLD set — browser kept open on blackhatworld.');
+    console.log('Click the "Verify you are human" checkbox by hand and see if the forum loads.');
+    console.log('Ctrl+C here when done (the temp profile is left for you to inspect).');
+    await new Promise(() => {}); // hold until Ctrl+C
+  }
+
   await ctx.close().catch(() => {});
   try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch (_) {}
 }
