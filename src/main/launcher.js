@@ -12,6 +12,7 @@ const os = require('os');
 const fs = require('fs');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA, alignUAToInstalledChrome } = require('./fingerprint');
 const { resolveChromeExecutable, candidatePaths } = require('./chrome-binary');
+const { resolveEngineExecutable, engineUsesJsInjection, buildFortressFlags } = require('./engine');
 const { getProfile, updateProfile, deleteProfile: deleteProfileRow, markProfileLaunched } = require('./database');
 const profileSync = require('./profile-sync');
 const warmup = require('./warmup');
@@ -1349,9 +1350,16 @@ async function launchProfile(profileId, mainWindow) {
         `--window-size=${viewportWidth},${viewportHeight}`,
       ],
     };
-    // Find Chromium executable — shared with the version detection in chrome-binary.js
-    // so the binary we measure is always the binary we launch.
-    const executablePath = resolveChromeExecutable();
+    // Find the executable. resolveEngineExecutable honours the ANTY_ENGINE flag:
+    // stock Chrome by default, or a patched Fortress binary when opted in. With the
+    // flag off this returns exactly what resolveChromeExecutable() did before.
+    const { engine, executablePath } = resolveEngineExecutable();
+    if (engine === 'fortress') {
+      // Engine-level spoofing replaces anty's JS injection and its Sec-CH-UA work:
+      // push the per-profile fingerprint down as --uxr-* switches instead.
+      launchOptions.args.push(...buildFortressFlags(fingerprint));
+      console.log(`[Launcher] Engine: Fortress (${buildFortressFlags(fingerprint).length} --uxr flags)`);
+    }
     if (executablePath) {
       launchOptions.executablePath = executablePath;
     } else {
@@ -1447,7 +1455,10 @@ async function launchProfile(profileId, mainWindow) {
       contextOptions.permissions = ['geolocation'];
     }
 
-    const injectionScript = buildInjectionScript(fingerprint);
+    // Under Fortress the persona is enforced in the engine, so the JS injection is
+    // skipped — running it would re-add the very prototype-override layer we're moving
+    // away from. null here makes both addInitScript sites below no-op.
+    const injectionScript = engineUsesJsInjection(engine) ? buildInjectionScript(fingerprint) : null;
     const warmupUrl = profile.warmup_url;
     const startPage = profile.start_page || 'https://whoer.net';
     const savedOpenTabs = startAction === 'new-tab' ? [] : parseSavedOpenTabs(profile);
@@ -1615,7 +1626,7 @@ async function launchProfile(profileId, mainWindow) {
         ? await browser.newContext({ ...serverContextOptions, storageState: parsedStorageState })
         : await browser.newContext({ ...serverContextOptions });
 
-      await context.addInitScript(injectionScript);
+      if (injectionScript) await context.addInitScript(injectionScript);
       if (!parsedStorageState) {
         await importCookies(context);
       }
@@ -1675,7 +1686,7 @@ async function launchProfile(profileId, mainWindow) {
       ],
     });
 
-    await context.addInitScript(injectionScript);
+    if (injectionScript) await context.addInitScript(injectionScript);
     const importedStorage = await importStorageState(context);
     if (!importedStorage) {
       await importCookies(context);
