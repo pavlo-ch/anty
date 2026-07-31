@@ -1,0 +1,165 @@
+name: Build Fortress Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      fortress_ref:
+        description: "Fortress git ref to build"
+        required: true
+        default: "main"
+      work_dir:
+        description: "Persistent Chromium work directory on the runner"
+        required: true
+        default: "D:\\fortress-build"
+      sign:
+        description: "Authenticode sign with FORTRESS_SIGNING_PFX_BASE64 and FORTRESS_SIGNING_PASSWORD"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fortress-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-fortress-windows:
+    name: Build Windows x64
+    runs-on: [self-hosted, Windows, X64, fortress]
+    timeout-minutes: 720
+
+    env:
+      FORTRESS_REPO: https://github.com/tiliondev/fortress.git
+      FORTRESS_REF: ${{ inputs.fortress_ref }}
+      FORTRESS_WORK_DIR: ${{ inputs.work_dir }}
+      DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
+
+    steps:
+      - name: Checkout Anty
+        uses: actions/checkout@v4
+
+      - name: Check Windows build prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $required = @("git", "python", "pwsh")
+          foreach ($cmd in $required) {
+            if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
+              throw "Missing required command on runner: $cmd"
+            }
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "Visual Studio 2022 is required. Install Desktop development with C++ and Windows 11 SDK."
+          }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Workload.NativeDesktop -property installationPath
+          if (-not $vs) {
+            throw "Visual Studio Desktop development with C++ workload was not found."
+          }
+          Write-Host "Visual Studio: $vs"
+          New-Item -ItemType Directory -Force -Path "$env:FORTRESS_WORK_DIR" | Out-Null
+          $drive = (Get-Item "$env:FORTRESS_WORK_DIR").PSDrive
+          if ($drive.Free -lt 120GB) {
+            throw "Fortress build needs at least 120GB free. $($drive.Name): has $([math]::Round($drive.Free / 1GB, 1))GB."
+          }
+
+      - name: Clone or update Fortress source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = Join-Path $env:FORTRESS_WORK_DIR "fortress"
+          if (-not (Test-Path "$src\.git")) {
+            git clone $env:FORTRESS_REPO $src
+          }
+          Push-Location $src
+          git fetch --tags --prune origin
+          git checkout --force $env:FORTRESS_REF
+          git reset --hard HEAD
+          git clean -fdx
+          $sha = git rev-parse HEAD
+          "FORTRESS_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "FORTRESS_SHA=$sha" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "FORTRESS_CHROMIUM_VERSION=$((Get-Content "$src\CHROMIUM_VERSION").Trim())" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Pop-Location
+
+      - name: Build Fortress Chromium
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location $env:FORTRESS_SRC
+          pwsh build\windows\build.ps1 -WorkDir $env:FORTRESS_WORK_DIR
+          Pop-Location
+
+      - name: Sign Fortress binaries
+        if: ${{ inputs.sign }}
+        shell: pwsh
+        env:
+          FORTRESS_SIGNING_PFX_BASE64: ${{ secrets.FORTRESS_SIGNING_PFX_BASE64 }}
+          FORTRESS_SIGNING_PASSWORD: ${{ secrets.FORTRESS_SIGNING_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not $env:FORTRESS_SIGNING_PFX_BASE64 -or -not $env:FORTRESS_SIGNING_PASSWORD) {
+            throw "Signing requested, but FORTRESS_SIGNING_PFX_BASE64 or FORTRESS_SIGNING_PASSWORD is missing."
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "fortress-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:FORTRESS_SIGNING_PFX_BASE64))
+          $out = Join-Path $env:FORTRESS_WORK_DIR "chromium\src\out\Fortress"
+          pwsh "$env:FORTRESS_SRC\build\windows\sign.ps1" -ExeDir $out -Pfx $pfx -Password $env:FORTRESS_SIGNING_PASSWORD
+
+      - name: Package shippable runtime
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = Join-Path $env:FORTRESS_WORK_DIR "chromium\src\out\Fortress"
+          if (-not (Test-Path "$out\chrome.exe")) {
+            throw "Build output is missing chrome.exe at $out"
+          }
+
+          $stageRoot = Join-Path $env:RUNNER_TEMP "fortress-package"
+          $stage = Join-Path $stageRoot "tilion-fortress-win-x64"
+          Remove-Item -Recurse -Force $stageRoot -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $patterns = @("*.exe", "*.dll", "*.pak", "*.bin", "*.dat", "*.json")
+          foreach ($pattern in $patterns) {
+            Get-ChildItem -Path $out -File -Filter $pattern | Copy-Item -Destination $stage -Force
+          }
+          foreach ($dir in @("locales", "swiftshader", "MEIPreload")) {
+            if (Test-Path "$out\$dir") {
+              Copy-Item "$out\$dir" "$stage\$dir" -Recurse -Force
+            }
+          }
+
+          $readme = @"
+          Fortress Windows x64 runtime for Anty
+          Fortress source: $env:FORTRESS_REPO
+          Fortress ref: $env:FORTRESS_REF
+          Fortress commit: $env:FORTRESS_SHA
+          Chromium version: $env:FORTRESS_CHROMIUM_VERSION
+          Built by: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          Entrypoint: chrome.exe
+          "@
+          $readme.Trim() | Set-Content -Path "$stage\README.txt" -Encoding UTF8
+
+          $zip = Join-Path $env:RUNNER_TEMP "tilion-fortress-win-x64-$env:FORTRESS_CHROMIUM_VERSION-$($env:FORTRESS_SHA.Substring(0, 12)).zip"
+          Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $zip -Leaf)" | Set-Content -Path "$zip.sha256" -Encoding ASCII
+          "zip_path=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "sha256_path=$zip.sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "artifact_name=$(Split-Path $zip -LeafBase)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "ZIP: $zip"
+          Write-Host "SHA256: $hash"
+
+      - name: Upload Fortress artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: |
+            ${{ steps.package.outputs.zip_path }}
+            ${{ steps.package.outputs.sha256_path }}
+          if-no-files-found: error
+          retention-days: 14
