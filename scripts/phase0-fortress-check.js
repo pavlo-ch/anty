@@ -1,17 +1,23 @@
 /**
- * Phase 0 — validate a patched Fortress Chromium against the sites that block anty
+ * Phase 0 — validate a patched stealth Chromium against the sites that block anty
  * today, WITH CDP attached (the whole question). See docs/patched-chromium-plan.md.
  *
- * Run on WINDOWS (Fortress ships native Win/Linux binaries; macOS is Docker-only):
+ * Works with either engine — pick by where you can run a native binary:
  *
- *   set ANTY_FORTRESS_PATH=C:\path\to\tilion.exe
- *   node scripts/phase0-fortress-check.js
+ *   Fortress (Windows/Linux, free BSD-3):
+ *     set ANTY_FORTRESS_PATH=C:\path\to\tilion.exe
+ *     node scripts/phase0-fortress-check.js
  *
- * It drives Fortress exactly the way anty would — headed, over CDP, with the profile
- * persona pushed down as --uxr-* flags and NO JS injection — then reports per target.
+ *   CloakBrowser (native macOS arm64 — run this on the Mac):
+ *     PHASE0_ENGINE=cloak PHASE0_BINARY=/path/to/cloak-chromium \
+ *       node scripts/phase0-fortress-check.js
+ *
+ * It drives the binary exactly the way anty would — headed, over CDP, NO JS injection.
+ * For Fortress it pushes the persona down as --uxr-* flags; CloakBrowser spoofs at the
+ * engine level on its own (a stable seed is passed via --fingerprint).
  *
  * Optional: REBROWSER=0 to launch without rebrowser's addBinding patch, to see whether
- * Fortress's engine-level stealth alone is enough (anty defaults to addBinding).
+ * the engine's stealth alone is enough (anty defaults to addBinding).
  */
 const path = require('path');
 const fs = require('fs');
@@ -28,7 +34,8 @@ const { chromium } = require(path.join(ROOT, 'node_modules', 'playwright-core'))
 const { generateFingerprint } = require(path.join(ROOT, 'src', 'main', 'fingerprint'));
 const { buildFortressFlags } = require(path.join(ROOT, 'src', 'main', 'engine'));
 
-const FORTRESS = String(process.env.ANTY_FORTRESS_PATH || '').trim();
+const ENGINE = String(process.env.PHASE0_ENGINE || 'fortress').trim().toLowerCase();
+const BINARY = String(process.env.PHASE0_BINARY || process.env.ANTY_FORTRESS_PATH || '').trim();
 const OUT = path.join(ROOT, 'phase0-out');
 
 const CHALLENGE_RE = /verify you are human|just a moment|checking your browser|performing security verification|attention required|unusual traffic|couldn.?t sign you in|browser or app may not be secure/i;
@@ -44,40 +51,51 @@ async function shot(page, name) {
 }
 
 async function run() {
-  if (!FORTRESS || !fs.existsSync(FORTRESS)) {
-    console.error('ANTY_FORTRESS_PATH is unset or does not point at a file. Set it to the Fortress binary.');
+  if (!BINARY || !fs.existsSync(BINARY)) {
+    console.error('No binary. Set ANTY_FORTRESS_PATH (Fortress) or PHASE0_BINARY (+ PHASE0_ENGINE=cloak).');
     process.exit(2);
   }
   ensureOut();
 
-  // Coherent persona for THIS host. On Windows use a Windows persona so UA and the
-  // engine's TLS agree. (On a Mac host a Windows persona is fine here because Fortress
-  // spoofs TLS too — but Fortress has no native mac build yet, so this runs on Windows.)
-  let fp;
-  do { fp = generateFingerprint(); } while (!/Windows/.test(fp.userAgent));
-  const uxr = buildFortressFlags(fp);
+  // Persona. For Fortress force a Windows persona (its native builds are Win/Linux)
+  // and push it down as --uxr flags. For CloakBrowser on a Mac, let the engine present
+  // its own coherent (mac-native) persona; just pin a stable seed so the identity is
+  // reproducible across launches, mirroring how anty keeps a fixed per-profile seed.
+  const engineFlags = [];
+  let personaNote;
+  if (ENGINE === 'fortress') {
+    let fp;
+    do { fp = generateFingerprint(); } while (!/Windows/.test(fp.userAgent));
+    engineFlags.push(...buildFortressFlags(fp));
+    personaNote = fp.userAgent;
+  } else {
+    const seed = String(generateFingerprint().canvas?.noiseSeed || '0.42');
+    engineFlags.push(`--fingerprint=${seed}`);
+    personaNote = `CloakBrowser auto persona, seed=${seed}`;
+  }
 
-  console.log('Fortress:', FORTRESS);
+  console.log('engine:', ENGINE);
+  console.log('binary:', BINARY);
   console.log('rebrowser addBinding:', process.env.REBROWSER === '0' ? 'OFF' : 'ON');
-  console.log('persona UA:', fp.userAgent);
-  console.log('--uxr flags:', uxr.length);
-  uxr.forEach((f) => console.log('   ', f));
+  console.log('persona:', personaNote);
+  console.log('engine flags:', engineFlags.length);
+  engineFlags.forEach((f) => console.log('   ', f));
   console.log('');
 
   const userDataDir = path.join(os.tmpdir(), `phase0-${Date.now()}`);
   const ctx = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
-    executablePath: FORTRESS,
+    executablePath: BINARY,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--disable-infobars', '--no-first-run', '--no-default-browser-check',
       '--disable-quic', '--disable-features=AsyncDns,UseDnsHttpsSvcbAlpn',
       '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
       '--accept-lang=en-US,en;q=0.9', '--lang=en-US', '--window-size=1280,860',
-      ...uxr,
+      ...engineFlags,
     ],
     viewport: null,
-    // NO addInitScript / userAgent override — Fortress owns the persona.
+    // NO addInitScript / userAgent override — the engine owns the persona.
   });
 
   const results = [];
