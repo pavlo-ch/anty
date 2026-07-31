@@ -1238,11 +1238,15 @@ async function copyProfileInfo() {
 }
 
 // ===== SORT & FILTER =====
-let currentSortKey = 'modified_at';
+// Default matches the time shown on each row (last_launched_at), so the visible
+// times read top-to-bottom in order. Sorting by modified_at while displaying
+// last-launched made the column look unsorted ("never" rows above "just now").
+let currentSortKey = 'last_launched_at';
 let currentSortDir = 'desc';
 let activeFilter = null;
 
 const SORT_OPTIONS = [
+  { key: 'last_launched_at', dir: 'desc', label: 'Last launched' },
   { key: 'modified_at', dir: 'desc', label: 'Last modified' },
   { key: 'created_at', dir: 'desc', label: 'Date created' },
   { key: 'name', dir: 'asc', label: 'Name A–Z' },
