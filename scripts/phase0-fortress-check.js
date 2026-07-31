@@ -36,6 +36,10 @@ const { buildFortressFlags } = require(path.join(ROOT, 'src', 'main', 'engine'))
 
 const ENGINE = String(process.env.PHASE0_ENGINE || 'fortress').trim().toLowerCase();
 const BINARY = String(process.env.PHASE0_BINARY || process.env.ANTY_FORTRESS_PATH || '').trim();
+// Attach to an already-running engine over CDP instead of launching a binary — this
+// is how Fortress's Docker image is used on a Mac (docker exposes CDP on :9222), so
+// Fortress can be validated without a native Windows build.
+const CDP_URL = String(process.env.PHASE0_CDP_URL || '').trim();
 const OUT = path.join(ROOT, 'phase0-out');
 
 const CHALLENGE_RE = /verify you are human|just a moment|checking your browser|performing security verification|attention required|unusual traffic|couldn.?t sign you in|browser or app may not be secure/i;
@@ -51,8 +55,9 @@ async function shot(page, name) {
 }
 
 async function run() {
-  if (!BINARY || !fs.existsSync(BINARY)) {
-    console.error('No binary. Set ANTY_FORTRESS_PATH (Fortress) or PHASE0_BINARY (+ PHASE0_ENGINE=cloak).');
+  if (!CDP_URL && (!BINARY || !fs.existsSync(BINARY))) {
+    console.error('No target. Set ANTY_FORTRESS_PATH / PHASE0_BINARY (launch a binary),');
+    console.error('or PHASE0_CDP_URL=http://localhost:9222 (attach to a running engine, e.g. Fortress Docker).');
     process.exit(2);
   }
   ensureOut();
@@ -75,28 +80,36 @@ async function run() {
   }
 
   console.log('engine:', ENGINE);
-  console.log('binary:', BINARY);
+  console.log('mode:', CDP_URL ? `connectOverCDP ${CDP_URL}` : `launch ${BINARY}`);
   console.log('rebrowser addBinding:', process.env.REBROWSER === '0' ? 'OFF' : 'ON');
-  console.log('persona:', personaNote);
-  console.log('engine flags:', engineFlags.length);
-  engineFlags.forEach((f) => console.log('   ', f));
+  console.log('persona:', CDP_URL ? "engine's own (set on the running instance)" : personaNote);
+  if (!CDP_URL) { console.log('engine flags:', engineFlags.length); engineFlags.forEach((f) => console.log('   ', f)); }
   console.log('');
 
+  let browser = null;
+  let ctx;
   const userDataDir = path.join(os.tmpdir(), `phase0-${Date.now()}`);
-  const ctx = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
-    executablePath: BINARY,
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: [
-      '--disable-infobars', '--no-first-run', '--no-default-browser-check',
-      '--disable-quic', '--disable-features=AsyncDns,UseDnsHttpsSvcbAlpn',
-      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-      '--accept-lang=en-US,en;q=0.9', '--lang=en-US', '--window-size=1280,860',
-      ...engineFlags,
-    ],
-    viewport: null,
-    // NO addInitScript / userAgent override — the engine owns the persona.
-  });
+  if (CDP_URL) {
+    // Attach to a running engine (Fortress Docker/server). It already owns the persona,
+    // so no --uxr flags here; just drive whatever it exposes.
+    browser = await chromium.connectOverCDP(CDP_URL);
+    ctx = browser.contexts()[0] || await browser.newContext();
+  } else {
+    ctx = await chromium.launchPersistentContext(userDataDir, {
+      headless: false,
+      executablePath: BINARY,
+      ignoreDefaultArgs: ['--enable-automation'],
+      args: [
+        '--disable-infobars', '--no-first-run', '--no-default-browser-check',
+        '--disable-quic', '--disable-features=AsyncDns,UseDnsHttpsSvcbAlpn',
+        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        '--accept-lang=en-US,en;q=0.9', '--lang=en-US', '--window-size=1280,860',
+        ...engineFlags,
+      ],
+      viewport: null,
+      // NO addInitScript / userAgent override — the engine owns the persona.
+    });
+  }
 
   const results = [];
   const page = ctx.pages()[0] || await ctx.newPage();
@@ -161,8 +174,8 @@ async function run() {
     await new Promise(() => {}); // hold until Ctrl+C
   }
 
-  await ctx.close().catch(() => {});
-  try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch (_) {}
+  if (browser) { await browser.close().catch(() => {}); }
+  else { await ctx.close().catch(() => {}); try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch (_) {} }
 }
 
 run().catch((e) => { console.error('FATAL', e); process.exit(1); });
