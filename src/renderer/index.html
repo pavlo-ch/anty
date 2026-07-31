@@ -231,10 +231,10 @@
                 </select>
               </div>
 
-              <!-- Google / secure sign-in -->
+              <!-- No-automation window for sites that block CDP -->
               <div class="editor-section">
-                <label class="editor-label">Sign in to Google <span class="info-icon" title="Google blocks sign-in in the automated browser (‘browser may not be secure’). This opens a plain Chrome window with no automation, on this profile's proxy and identity, so you can sign in. Uses this profile's proxy so the IP matches. Afterwards the saved session works in the normal browser.">ⓘ</span></label>
-                <button id="btn-google-login" class="editor-btn-sm" style="width:100%;padding:8px;">Open sign-in window (no automation)</button>
+                <label class="editor-label">Open without automation <span class="info-icon" title="Some sites block the automated browser: Google sign-in ('browser may not be secure') and Cloudflare sites like blackhatworld (endless 'Verify you are human'). This opens the profile's Start page in a plain Chrome window with no automation, on the same proxy. Google keeps you signed in afterwards in the normal browser; Cloudflare sites must be browsed here — a normal launch is re-challenged even with the pass cookie.">ⓘ</span></label>
+                <button id="btn-google-login" class="editor-btn-sm" style="width:100%;padding:8px;">Open Start page without automation</button>
               </div>
             </div>
 

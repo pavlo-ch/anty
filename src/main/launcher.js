@@ -2073,7 +2073,16 @@ async function openProfileForManualLogin(profileId, options = {}) {
 
   const fingerprint = alignFingerprintToChrome(numericId, JSON.parse(profile.fingerprint || '{}'));
   const userDataDir = getUserDataDir(numericId);
-  const startUrl = options.url || 'https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn';
+  // Caller-supplied URL wins; otherwise the profile's start page; else Google sign-in.
+  // This window is the only way into sites that block CDP outright — not just Google
+  // sign-in but Cloudflare-gated sites (e.g. blackhatworld): proven that a CDP launch
+  // is re-challenged even when it carries a cf_clearance obtained here, because
+  // Cloudflare re-runs its check and detects the automation. Such sites can only be
+  // used in this no-CDP window, so it needs to open them, not just the login page.
+  const startUrl =
+    (options.url && String(options.url).trim()) ||
+    (profile.start_page && String(profile.start_page).trim()) ||
+    'https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn';
 
   let proxyBridge = null;
   const args = [
