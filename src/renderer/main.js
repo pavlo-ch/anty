@@ -874,6 +874,16 @@ async function launchProfile(id) {
     const result = await window.api.launchProfile(id);
     if (result.success) {
       showToast('Profile launched', 'success');
+      // Pull the fresh row so the just-set last_launched_at lands in the in-memory
+      // list — otherwise the launched profile keeps showing "never" and stays where
+      // it was until a full reload, instead of jumping to the top of the sort.
+      try {
+        const fresh = await window.api.getProfile(id);
+        if (fresh) {
+          const idx = profiles.findIndex((p) => p.id === id);
+          if (idx !== -1) profiles[idx] = fresh;
+        }
+      } catch (_) {}
     } else {
       showToast(result.error || 'Launch failed', 'error');
     }
@@ -882,6 +892,24 @@ async function launchProfile(id) {
   } finally {
     pendingProfiles.delete(id);
     renderProfilesList(document.getElementById('search-input')?.value || '');
+  }
+}
+
+// Open a profile in a no-CDP Chrome window (address bar included) for sites that
+// block the automated browser. The normal green launch cannot reach these — Google
+// sign-in rejects it and Cloudflare sites (blackhatworld) loop the challenge — and
+// no fingerprint or cookie works around it, so this is the only path in.
+async function openNoAutomation(id) {
+  if (pendingProfiles.has(id) || runningProfiles.has(id)) {
+    showToast('Stop the profile first, then open it without automation.', 'error');
+    return;
+  }
+  showToast('Opening a plain Chrome window (no automation). Use its address bar to browse.', 'info');
+  try {
+    const result = await window.api.manualLoginProfile(id, {});
+    if (!result?.success) showToast(result?.error || 'Could not open the window', 'error');
+  } catch (err) {
+    showToast('Failed: ' + err.message, 'error');
   }
 }
 
@@ -1501,6 +1529,11 @@ function renderProfilesList(searchTerm = '') {
                     title="Delete profile">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>
             </button>
+            ${isRunning ? '' : `<button class="profile-delete-btn"
+                    onclick="event.stopPropagation(); openNoAutomation(${p.id})"
+                    title="Open without automation — for sites that block the automated browser (Google sign-in, Cloudflare sites like blackhatworld). Opens a plain Chrome window with an address bar.">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20"/></svg>
+            </button>`}
             <button class="profile-launch-btn ${isRunningLocally ? 'running' : isRunningByOther ? 'other-running' : ''} ${isPending ? 'pending' : ''}"
                     onclick="event.stopPropagation(); ${isPending ? '' : isRunningByOther ? `forceStopProfile(${p.id})` : isRunningLocally ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
                     title="${isPending ? 'Please wait...' : isRunningByOther ? 'Force stop (running on ' + escapeHtml(p.running_on || 'another device') + ')' : isRunningLocally ? 'Stop' : 'Launch'}"
