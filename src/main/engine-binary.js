@@ -139,18 +139,34 @@ function findChromeExe(dir) {
   return null;
 }
 
+// Memoised: findChromeExe walks an entire extracted Chromium tree (thousands of
+// files), and this is consulted on every profile launch — twice, via getActiveEngine
+// and again to resolve the path. Re-walking that per launch is pure latency. The
+// install path clears the cache, and a stale hit is self-correcting because the
+// cached path is existence-checked before use.
+let cachedEnginePath;
+
 /** Path to an already-installed engine, or null. */
 function resolveInstalledEngine() {
+  if (cachedEnginePath !== undefined) {
+    if (cachedEnginePath === null || fs.existsSync(cachedEnginePath)) return cachedEnginePath;
+    cachedEnginePath = undefined; // binary vanished — fall through and re-scan
+  }
   const root = getEnginesRoot();
-  if (!fs.existsSync(root)) return null;
+  if (!fs.existsSync(root)) { cachedEnginePath = null; return null; }
   let versions;
-  try { versions = fs.readdirSync(root).filter((d) => fs.statSync(path.join(root, d)).isDirectory()); } catch (_) { return null; }
+  try { versions = fs.readdirSync(root).filter((d) => fs.statSync(path.join(root, d)).isDirectory()); } catch (_) { cachedEnginePath = null; return null; }
   versions.sort().reverse();
   for (const v of versions) {
     const exe = findChromeExe(path.join(root, v));
-    if (exe) return exe;
+    if (exe) { cachedEnginePath = exe; return exe; }
   }
+  cachedEnginePath = null;
   return null;
+}
+
+function clearEngineCache() {
+  cachedEnginePath = undefined;
 }
 
 function getInstallStatus() {
@@ -218,6 +234,7 @@ async function installEngine(onProgress = () => {}) {
     fs.writeFileSync(tmpZip, zip);
     extractZip(tmpZip, destDir);
 
+    clearEngineCache();
     const exe = findChromeExe(destDir);
     if (!exe) {
       try { fs.rmSync(destDir, { recursive: true, force: true }); } catch (_) {}
@@ -236,6 +253,7 @@ module.exports = {
   isSupportedPlatform,
   getEnginesRoot,
   resolveInstalledEngine,
+  clearEngineCache,
   getInstallStatus,
   installEngine,
   pickWindowsRelease,
