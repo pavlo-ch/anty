@@ -27,14 +27,36 @@ const { parseUA } = require('./fingerprint');
 
 const SUPPORTED = new Set(['fortress', 'cloak']);
 
+/**
+ * Which engine to drive.
+ *
+ * ANTY_ENGINE wins when set — including `ANTY_ENGINE=chrome`, which is the documented
+ * way to turn the engine back off without uninstalling it.
+ *
+ * Otherwise: if a managed Fortress install is present, use it. Installing is an
+ * explicit click in Settings, so having installed it IS the opt-in; making the user
+ * also set an env var would mean the button appears to do nothing.
+ */
 function getActiveEngine() {
   const e = String(process.env.ANTY_ENGINE || '').trim().toLowerCase();
-  return SUPPORTED.has(e) ? e : 'chrome';
+  if (e === 'chrome') return 'chrome';
+  if (SUPPORTED.has(e)) return e;
+  try {
+    if (require('./engine-binary').resolveInstalledEngine()) return 'fortress';
+  } catch (_) { /* fall through to stock Chrome */ }
+  return 'chrome';
 }
 
-function resolveEngineBinary() {
+function resolveEngineBinary(engine) {
+  // Explicit path wins — that is the developer/testing escape hatch.
   const p = String(process.env.ANTY_ENGINE_PATH || process.env.ANTY_FORTRESS_PATH || '').trim();
-  return p && fs.existsSync(p) ? p : null;
+  if (p && fs.existsSync(p)) return p;
+  // Otherwise use the copy anty manages itself, which is how it works for real users
+  // (downloaded + checksum-verified on demand — see engine-binary.js).
+  if (engine === 'fortress') {
+    try { return require('./engine-binary').resolveInstalledEngine(); } catch (_) { return null; }
+  }
+  return null;
 }
 
 /**
@@ -45,9 +67,9 @@ function resolveEngineBinary() {
 function resolveEngineExecutable() {
   const engine = getActiveEngine();
   if (engine !== 'chrome') {
-    const bin = resolveEngineBinary();
+    const bin = resolveEngineBinary(engine);
     if (bin) return { engine, executablePath: bin };
-    console.warn(`[Engine] ANTY_ENGINE=${engine} but ANTY_ENGINE_PATH is unset or missing — using stock Chrome`);
+    console.warn(`[Engine] ANTY_ENGINE=${engine} selected but no engine binary is installed — using stock Chrome`);
   }
   return { engine: 'chrome', executablePath: resolveChromeExecutable() };
 }

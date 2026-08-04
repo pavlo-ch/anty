@@ -76,6 +76,21 @@ function registerIpcHandlers() {
       return { ok: false, reason: 'open_failed', message: err.message };
     }
   });
+  // ---- ANTI-DETECT ENGINE (Fortress) ----
+  // Only enables Google sign-in in the normal CDP launch; Cloudflare sites still need
+  // the no-CDP window. Windows-only, since Fortress has no free native macOS build.
+  ipcMain.handle('engine:status', () => {
+    const { getInstallStatus } = require('./engine-binary');
+    return getInstallStatus();
+  });
+  ipcMain.handle('engine:install', async (event) => {
+    const { installEngine } = require('./engine-binary');
+    const sender = event.sender;
+    return installEngine((stage, detail) => {
+      try { sender.send('engine:progress', { stage, detail }); } catch (_) {}
+    });
+  });
+
   ipcMain.handle('app:restart', () => {
     app.relaunch();
     app.exit(0);

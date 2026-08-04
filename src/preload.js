@@ -46,6 +46,11 @@ contextBridge.exposeInMainWorld('api', {
   saveWarmupConfig: (profileId, config) => ipcRenderer.invoke('warmup:save-config', profileId, config),
   skipWarmup: (profileId) => ipcRenderer.invoke('warmup:skip', profileId),
   resetWarmup: (profileId) => ipcRenderer.invoke('warmup:reset', profileId),
+  // Anti-detect engine (Fortress) — Windows-only download/install
+  getEngineStatus: () => ipcRenderer.invoke('engine:status'),
+  installEngine: () => ipcRenderer.invoke('engine:install'),
+  onEngineProgress: (cb) => ipcRenderer.on('engine:progress', (_, d) => cb(d)),
+
   onWarmupStatus: (cb) => ipcRenderer.on('warmup:status', (_, d) => cb(d)),
   onWarmupProgress: (cb) => ipcRenderer.on('warmup:progress', (_, d) => cb(d)),
 

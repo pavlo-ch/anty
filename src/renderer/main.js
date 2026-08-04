@@ -294,6 +294,46 @@ function setupEventListeners() {
     }
   });
 
+  // Anti-detect engine (Fortress): download on demand, Windows only.
+  // Solves Google sign-in inside the normal browser; Cloudflare sites still need the
+  // no-CDP window, so the copy here deliberately does not promise otherwise.
+  const engineBtn = document.getElementById('settings-engine-btn');
+  const engineSub = document.getElementById('settings-engine-sub');
+  const renderEngineStatus = (st) => {
+    if (!engineBtn || !engineSub) return;
+    if (!st?.supported) {
+      engineSub.textContent = st?.reason || 'Not supported on this platform.';
+      engineBtn.style.display = 'none';
+      return;
+    }
+    engineBtn.style.display = '';
+    if (st.installed) {
+      engineSub.textContent = 'Installed — Google sign-in works in the normal browser.';
+      engineBtn.textContent = 'Installed';
+      engineBtn.disabled = true;
+    } else {
+      engineSub.textContent = 'Not installed. Downloads ~235 MB, checksum-verified.';
+      engineBtn.textContent = 'Install';
+      engineBtn.disabled = false;
+    }
+  };
+  window.api?.onEngineProgress?.(({ stage, detail }) => {
+    if (engineSub && stage !== 'done') engineSub.textContent = detail || stage;
+  });
+  engineBtn?.addEventListener('click', async () => {
+    engineBtn.disabled = true;
+    engineBtn.textContent = 'Installing…';
+    try {
+      const res = await window.api.installEngine();
+      if (res?.ok) showToast('Anti-detect engine installed', 'success');
+      else showToast(res?.error || 'Install failed', 'error');
+    } catch (err) {
+      showToast('Install failed: ' + err.message, 'error');
+    }
+    renderEngineStatus(await window.api.getEngineStatus().catch(() => null));
+  });
+  window.api?.getEngineStatus?.().then(renderEngineStatus).catch(() => {});
+
   // Cookies — browse files click
   document.getElementById('cookies-browse-btn')?.addEventListener('click', () => {
     document.getElementById('cookies-file-input')?.click();
