@@ -12,7 +12,7 @@ const os = require('os');
 const fs = require('fs');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA, alignUAToInstalledChrome } = require('./fingerprint');
 const { resolveChromeExecutable, candidatePaths } = require('./chrome-binary');
-const { resolveEngineExecutable, engineUsesJsInjection, buildFortressFlags } = require('./engine');
+const { resolveEngineExecutable, engineUsesJsInjection, buildEngineFlags } = require('./engine');
 const { getProfile, updateProfile, deleteProfile: deleteProfileRow, markProfileLaunched } = require('./database');
 const profileSync = require('./profile-sync');
 const warmup = require('./warmup');
@@ -1354,11 +1354,13 @@ async function launchProfile(profileId, mainWindow) {
     // stock Chrome by default, or a patched Fortress binary when opted in. With the
     // flag off this returns exactly what resolveChromeExecutable() did before.
     const { engine, executablePath } = resolveEngineExecutable();
-    if (engine === 'fortress') {
-      // Engine-level spoofing replaces anty's JS injection and its Sec-CH-UA work:
-      // push the per-profile fingerprint down as --uxr-* switches instead.
-      launchOptions.args.push(...buildFortressFlags(fingerprint));
-      console.log(`[Launcher] Engine: Fortress (${buildFortressFlags(fingerprint).length} --uxr flags)`);
+    if (engine !== 'chrome') {
+      // Engine-level spoofing replaces anty's JS injection: push the per-profile
+      // persona down as engine switches instead. Solves the Google sign-in block;
+      // does NOT get past Cloudflare (that needs the no-CDP window) — see engine.js.
+      const engineArgs = buildEngineFlags(engine, fingerprint);
+      launchOptions.args.push(...engineArgs);
+      console.log(`[Launcher] Engine: ${engine} (${engineArgs.length} flags, JS injection off)`);
     }
     if (executablePath) {
       launchOptions.executablePath = executablePath;

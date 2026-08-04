@@ -1,55 +1,82 @@
 /**
  * Feature-flagged support for driving a patched, engine-level anti-detect Chromium
- * (Fortress — github.com/tiliondev/fortress) instead of the user's stock Chrome.
+ * instead of the user's stock Chrome. Supports Fortress (github.com/tiliondev/fortress,
+ * free BSD-3, native Win/Linux) and CloakBrowser (native macOS arm64).
  *
- * WHY: stock Chrome + Playwright cannot hide the CDP attachment, so Cloudflare and
- * Google block it no matter the JS fingerprint (proven live — see
- * docs/patched-chromium-plan.md). Fortress corrects the fingerprint in Chromium's C++
- * — including a coherent JA3/JA4 TLS stack — so a page can't catch it and the JA4
- * finally matches the spoofed UA (which also fixes a Windows profile on a macOS host).
+ * WHY, and what it does and does not buy (all measured — docs/patched-chromium-plan.md):
+ *
+ *  - GOOGLE SIGN-IN: solved. Stock Chrome + CDP is always bounced to /signin/rejected
+ *    ("browser may not be secure"). With a patched engine the same CDP-driven browser
+ *    reaches the password gate normally. This is the reason the feature exists.
+ *
+ *  - CLOUDFLARE (blackhatworld): NOT solved, and not solvable this way. Same IP, same
+ *    hour: plain Chrome without CDP clears it, while a patched engine — headed, with
+ *    engine-level spoofing, and a real human clicking the checkbox — is still blocked.
+ *    Cloudflare detects the CDP attachment itself, which no fingerprint patch hides.
+ *    Cloudflare-gated sites therefore stay on the no-CDP window (launcher's
+ *    openProfileForManualLogin), regardless of which engine is selected here.
  *
  * STATUS: OFF by default and fully inert until BOTH are set:
- *   ANTY_ENGINE=fortress           — selects the engine
- *   ANTY_FORTRESS_PATH=/path/bin   — points at the Fortress Chromium binary
- * With the flag off, none of this runs and launches behave exactly as before. The
- * exact --uxr-* flag spellings below still need confirming against Fortress during
- * the Phase 0 evaluation before this is switched on for anyone.
+ *   ANTY_ENGINE=fortress|cloak     — selects the engine
+ *   ANTY_ENGINE_PATH=/path/to/bin  — the engine binary (ANTY_FORTRESS_PATH still works)
+ * With the flag off, launches behave exactly as before.
  */
 const fs = require('fs');
 const { resolveChromeExecutable } = require('./chrome-binary');
 const { parseUA } = require('./fingerprint');
 
+const SUPPORTED = new Set(['fortress', 'cloak']);
+
 function getActiveEngine() {
-  return String(process.env.ANTY_ENGINE || '').trim().toLowerCase() === 'fortress' ? 'fortress' : 'chrome';
+  const e = String(process.env.ANTY_ENGINE || '').trim().toLowerCase();
+  return SUPPORTED.has(e) ? e : 'chrome';
 }
 
-function resolveFortressExecutable() {
-  const p = String(process.env.ANTY_FORTRESS_PATH || '').trim();
+function resolveEngineBinary() {
+  const p = String(process.env.ANTY_ENGINE_PATH || process.env.ANTY_FORTRESS_PATH || '').trim();
   return p && fs.existsSync(p) ? p : null;
 }
 
 /**
  * The executable to launch for a profile, honouring the engine flag. Falls back to
- * stock Chrome (with a warning) when Fortress is selected but its binary is missing,
+ * stock Chrome (with a warning) when an engine is selected but its binary is missing,
  * so a half-configured flag can never brick launches.
  */
 function resolveEngineExecutable() {
-  if (getActiveEngine() === 'fortress') {
-    const fortress = resolveFortressExecutable();
-    if (fortress) return { engine: 'fortress', executablePath: fortress };
-    console.warn('[Engine] ANTY_ENGINE=fortress but ANTY_FORTRESS_PATH is unset or missing — using stock Chrome');
+  const engine = getActiveEngine();
+  if (engine !== 'chrome') {
+    const bin = resolveEngineBinary();
+    if (bin) return { engine, executablePath: bin };
+    console.warn(`[Engine] ANTY_ENGINE=${engine} but ANTY_ENGINE_PATH is unset or missing — using stock Chrome`);
   }
   return { engine: 'chrome', executablePath: resolveChromeExecutable() };
 }
 
 /**
  * Whether anty should still inject its JS fingerprint (buildInjectionScript).
- * Fortress spoofs at the engine level, so JS injection is both redundant and harmful
+ * A patched engine spoofs in C++, so JS injection is both redundant and harmful
  * (it would re-introduce the detectable prototype-override layer this whole move is
- * meant to retire) — skip it under Fortress.
+ * meant to retire) — skip it for any engine other than stock Chrome.
  */
 function engineUsesJsInjection(engine) {
-  return engine !== 'fortress';
+  return engine === 'chrome';
+}
+
+/**
+ * Per-profile switches for the selected engine.
+ *
+ * Fortress takes an explicit persona (--uxr-*, mapped from anty's fingerprint).
+ * CloakBrowser generates a coherent persona from a single seed instead, so it gets
+ * anty's stable per-profile canvas seed — which keeps the identity fixed across
+ * launches exactly as anty's own fingerprint does.
+ */
+function buildEngineFlags(engine, fingerprint) {
+  if (engine === 'fortress') return buildFortressFlags(fingerprint);
+  if (engine === 'cloak') {
+    const seed = fingerprint?.canvas?.noiseSeed;
+    return seed ? [`--fingerprint=${seed}`] : [];
+  }
+  return [];
 }
 
 const UA_PLATFORM = { Win: 'Windows', Mac: 'macOS', Linux: 'Linux', Android: 'Android', iOS: 'iOS' };
@@ -116,4 +143,5 @@ module.exports = {
   resolveEngineExecutable,
   engineUsesJsInjection,
   buildFortressFlags,
+  buildEngineFlags,
 };
