@@ -762,6 +762,7 @@ function updateProfile(id, data) {
     'cookies',
     'storage_state',
     'last_open_tabs',
+    'last_launched_at',
     'notes',
     'start_page',
     'warmup_url',
@@ -817,6 +818,7 @@ function updateProfile(id, data) {
  */
 function markProfileLaunched(id) {
   getDb().prepare("UPDATE profiles SET last_launched_at = datetime('now') WHERE id = ?").run(id);
+  return getProfile(id);
 }
 
 function deleteProfile(id) {

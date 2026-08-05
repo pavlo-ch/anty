@@ -1667,6 +1667,7 @@ async function launchProfile(profileId, mainWindow) {
       runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor });
       updateProfile(profileId, { status: 'running', running_on: os.hostname() });
       markProfileLaunched(profileId);
+      enqueueProfileSync(profileId);
 
       context.on('close', finalizeClose);
 
@@ -1769,6 +1770,7 @@ async function launchProfile(profileId, mainWindow) {
     runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor });
     updateProfile(profileId, { status: 'running', running_on: os.hostname() });
     markProfileLaunched(profileId);
+    enqueueProfileSync(profileId);
 
     if (mainWindow) {
       mainWindow.webContents.send('browser:status', { profileId, status: 'running' });
@@ -2140,6 +2142,7 @@ async function openProfileForManualLogin(profileId, options = {}) {
     manualLoginSessions.add(numericId);
     updateProfile(numericId, { status: 'running', running_on: os.hostname() });
     markProfileLaunched(numericId);
+    enqueueProfileSync(numericId);
     console.log(`[Launcher] Manual-login (no CDP) window for profile ${numericId}`);
 
     const child = spawn(executablePath, args, { detached: false, stdio: 'ignore' });

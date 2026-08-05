@@ -410,6 +410,7 @@ function normalizeProfileForPayload(profile) {
     warmupUrl: profile.warmup_url || '',
     createdAt: profile.created_at || '',
     modifiedAt: profile.modified_at || '',
+    lastLaunchedAt: profile.last_launched_at || '',
     cloudUpdatedAt: profile.cloud_updated_at || '',
     // Pass creator name so server preserves it (e.g. when created via API with custom created_by)
     createdByName: profile.created_by || '',
@@ -429,6 +430,13 @@ function normalizeProfileForPayload(profile) {
 
 function normalizeCloudProfile(item) {
   const root = item && typeof item === 'object' ? item : {};
+  const lastLaunchedAt = String(
+    root.lastLaunchedAt ||
+    root.last_launched_at ||
+    root.data?.lastLaunchedAt ||
+    root.data?.last_launched_at ||
+    ''
+  ).trim();
 
   // Parse proxy object sent from cloud (may be null if profile has no proxy)
   const rawProxy = root.proxy && typeof root.proxy === 'object' ? root.proxy : null;
@@ -459,6 +467,7 @@ function normalizeCloudProfile(item) {
       tags: normalizeTagNames(root.tags || root.data?.tags || []),
       start_page: String(root.startPage || root.start_page || 'https://whoer.net'),
       warmup_url: String(root.warmupUrl || root.warmup_url || '').trim(),
+      last_launched_at: lastLaunchedAt || undefined,
       remote_id: String(root.remoteId || root.id || '').trim(),
       team_id: String(root.teamId || '').trim(),
       cloud_updated_at: String(root.updatedAt || root.cloudUpdatedAt || '').trim(),
