@@ -1452,9 +1452,13 @@ async function launchProfile(profileId, mainWindow) {
     };
     
     const geo = geoMap[fingerprint.locale?.timezone];
+    // The permission list replaces the context's whole grant set, so a bare
+    // ['geolocation'] left camera/mic denied outright — getUserMedia then fails without
+    // ever prompting, which sites report as "we couldn't access your camera".
+    contextOptions.permissions = ['camera', 'microphone'];
     if (geo) {
       contextOptions.geolocation = geo;
-      contextOptions.permissions = ['geolocation'];
+      contextOptions.permissions.push('geolocation');
     }
 
     // Under Fortress the persona is enforced in the engine, so the JS injection is

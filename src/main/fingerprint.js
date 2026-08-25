@@ -544,7 +544,9 @@ function generateFingerprint(customUA, _profileOverride) {
       mode: 'emulate',
       audioInputs: randomInt(1, 3),
       audioOutputs: randomInt(1, 2),
-      videoInputs: randomInt(0, 2),
+      // At least one camera: real laptops always have one, and a profile claiming
+      // zero video inputs both fails camera flows and stands out as a bot signal.
+      videoInputs: randomInt(1, 2),
     },
     clientRects: {
       mode: 'noise',
@@ -1000,7 +1002,17 @@ function buildInjectionScript(fingerprint) {
     // Before permission: deviceId='' (real Chrome behavior). We keep IDs empty
     // so unconsented fingerprinting can't uniquely identify the profile through
     // enumerateDevices — which is EXACTLY what real Chrome does.
+    const origEnumerateDevices = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
     navigator.mediaDevices.enumerateDevices = async function() {
+      // Once the user grants camera/mic access Chrome fills in real labels. Hand the
+      // real list through from that point on: getUserMedia is not spoofed, so a made-up
+      // list would keep advertising devices that cannot actually be opened.
+      try {
+        const real = await origEnumerateDevices();
+        if (real.some((d) => d.label)) return real;
+      } catch (_) {
+        // Fall through to the emulated list.
+      }
       const devices = [];
       for (let i = 0; i < fp.mediaDevices.audioInputs; i++) {
         devices.push({ deviceId: '', kind: 'audioinput', label: '', groupId: '',
