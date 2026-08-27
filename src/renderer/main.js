@@ -185,6 +185,9 @@ function setupEventListeners() {
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
       const pageEl = document.getElementById(`page-${page}`);
       if (pageEl) pageEl.classList.add('active');
+      if (page === 'proxy') {
+        void renderProxyList();
+      }
       if (page === 'account') {
         refreshAccountPage();
       }
@@ -2661,3 +2664,259 @@ window.launchProfile = launchProfile;
 window.stopProfile = stopProfile;
 window.deleteProfile = deleteProfile;
 window.confirmDeleteProfile = confirmDeleteProfile;
+
+// ===== PROXY MANAGER =====
+// The proxy IPC surface (list/create/update/delete/usage-count/check) already existed;
+// this is the UI that finally uses it. Check results are written back through
+// updateProxy so a status survives leaving the tab.
+let proxiesCache = [];
+let proxyUsageCache = {};
+let proxySearchTerm = '';
+const proxyChecking = new Set();
+
+function proxyLabel(p) {
+  return `${p.host || '?'}:${p.port || 0}`;
+}
+
+function utcStamp() {
+  return new Date().toISOString().slice(0, 19).replace('T', ' ');
+}
+
+async function renderProxyList() {
+  const listEl = document.getElementById('proxy-list');
+  if (!listEl) return;
+  try {
+    proxiesCache = (await window.api.getProxies()) || [];
+  } catch (err) {
+    listEl.innerHTML = `<div class="empty-state visible"><p>Could not load proxies: ${escapeHtml(err.message || 'unknown error')}</p></div>`;
+    return;
+  }
+  const counts = await Promise.all(
+    proxiesCache.map((p) => window.api.getProxyUsageCount(p.id).catch(() => 0))
+  );
+  proxyUsageCache = {};
+  proxiesCache.forEach((p, i) => { proxyUsageCache[p.id] = counts[i] || 0; });
+  paintProxyList();
+}
+
+function paintProxyList() {
+  const listEl = document.getElementById('proxy-list');
+  const countEl = document.getElementById('proxy-count');
+  if (!listEl) return;
+
+  const term = proxySearchTerm.trim().toLowerCase();
+  const rows = term
+    ? proxiesCache.filter((p) => `${p.host} ${p.port} ${p.name} ${p.username}`.toLowerCase().includes(term))
+    : proxiesCache;
+
+  if (countEl) {
+    countEl.textContent = term
+      ? `${rows.length} of ${proxiesCache.length}`
+      : `${proxiesCache.length} ${proxiesCache.length === 1 ? 'proxy' : 'proxies'}`;
+  }
+
+  if (!rows.length) {
+    listEl.innerHTML = proxiesCache.length
+      ? '<div class="empty-state visible"><p>Nothing matches that search.</p></div>'
+      : '<div class="empty-state visible"><p>No proxies yet. Paste one above to get started.</p></div>';
+    return;
+  }
+
+  listEl.innerHTML = rows.map((p) => {
+    const used = proxyUsageCache[p.id] || 0;
+    const checking = proxyChecking.has(p.id);
+    const status = checking ? 'checking' : (p.last_check_status === 'ok' ? 'ok' : (p.last_check_status === 'fail' ? 'fail' : ''));
+
+    // Imported proxies get name = host, which would just repeat the address.
+    const showName = p.name && p.name !== p.host && p.name !== proxyLabel(p);
+    const meta = [String(p.type || 'http').toUpperCase()];
+    if (p.username) meta.push(escapeHtml(p.username));
+    if (checking) {
+      meta.push('checking...');
+    } else if (p.last_check_status === 'ok') {
+      if (p.last_check_ip) meta.push(escapeHtml(p.last_check_ip));
+      if (p.last_check_country) meta.push(escapeHtml(p.last_check_country));
+      if (p.last_check_at) meta.push(`checked ${escapeHtml(formatTime(p.last_check_at))}`);
+    } else if (p.last_check_status === 'fail') {
+      meta.push(`<span class="fail-text">${escapeHtml(p.last_check_error || 'check failed')}</span>`);
+    } else {
+      meta.push('not checked');
+    }
+
+    return `
+      <div class="proxy-row">
+        <span class="proxy-dot ${status}"></span>
+        <div class="proxy-main">
+          <div class="proxy-host">${escapeHtml(proxyLabel(p))}${showName ? `<span class="proxy-name">${escapeHtml(p.name)}</span>` : ''}</div>
+          <div class="proxy-meta">${meta.join(' · ')}</div>
+        </div>
+        <span class="proxy-usage ${used ? '' : 'unused'}">${used ? `used by ${used} profile${used === 1 ? '' : 's'}` : 'unused'}</span>
+        <div class="proxy-actions">
+          ${p.ip_change_link ? `<button class="icon-btn" title="Open IP change link" onclick="proxyRotate(${p.id})">&#8635;</button>` : ''}
+          <button class="icon-btn" title="Check proxy" onclick="proxyCheck(${p.id})" ${checking ? 'disabled' : ''}>&#10003;</button>
+          <button class="icon-btn" title="Edit" onclick="proxyEdit(${p.id})">&#9998;</button>
+          <button class="icon-btn btn-delete" title="Delete" onclick="proxyDelete(${p.id})">&#128465;</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function addProxiesFromInput() {
+  const valueEl = document.getElementById('proxy-add-value');
+  const typeEl = document.getElementById('proxy-add-type');
+  const raw = (valueEl?.value || '').trim();
+  if (!raw) return;
+
+  // One proxy per line, so a whole list can be pasted in at once.
+  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  let added = 0;
+  const failed = [];
+
+  for (const line of lines) {
+    const parsed = parseProxyInput(line, typeEl?.value || 'http');
+    if (!parsed || !parsed.host || !parsed.port) { failed.push(line); continue; }
+    try {
+      await window.api.createProxy(parsed);
+      added += 1;
+    } catch (_) {
+      failed.push(line);
+    }
+  }
+
+  if (added) valueEl.value = failed.join('\n');
+  window.__proxyAddAutoGrow?.();
+  await renderProxyList();
+
+  if (added && !failed.length) showToast(`Added ${added} ${added === 1 ? 'proxy' : 'proxies'}`, 'success');
+  else if (added && failed.length) showToast(`Added ${added}, could not parse ${failed.length}`, 'error');
+  else showToast('Could not parse that proxy — expected host:port:user:pass', 'error');
+}
+
+async function proxyCheck(id) {
+  const proxy = proxiesCache.find((p) => p.id === id);
+  if (!proxy || proxyChecking.has(id)) return;
+
+  proxyChecking.add(id);
+  paintProxyList();
+  try {
+    const res = await window.api.checkProxy({
+      type: proxy.type, host: proxy.host, port: proxy.port,
+      username: proxy.username, password: proxy.password,
+    });
+    const patch = res?.success
+      ? { last_check_status: 'ok', last_check_ip: res.ip || '', last_check_country: res.country || '', last_check_error: '', last_check_at: utcStamp() }
+      : { last_check_status: 'fail', last_check_ip: '', last_check_country: '', last_check_error: res?.error || 'Proxy check failed', last_check_at: utcStamp() };
+    await window.api.updateProxy(id, patch);
+    Object.assign(proxy, patch);
+    return res?.success === true;
+  } catch (err) {
+    showToast(`Check failed: ${err.message || 'unknown error'}`, 'error');
+    return false;
+  } finally {
+    proxyChecking.delete(id);
+    paintProxyList();
+  }
+}
+
+async function proxyCheckAll() {
+  const btn = document.getElementById('btn-proxy-check-all');
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking...'; }
+  // Sequential on purpose: firing every proxy at once makes slow providers time out.
+  let ok = 0;
+  for (const p of [...proxiesCache]) {
+    if (await proxyCheck(p.id)) ok += 1;
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Check all'; }
+  showToast(`${ok} of ${proxiesCache.length} proxies working`, ok === proxiesCache.length ? 'success' : 'error');
+}
+
+function proxyRotate(id) {
+  const proxy = proxiesCache.find((p) => p.id === id);
+  if (proxy?.ip_change_link) void window.api.openExternal(proxy.ip_change_link);
+}
+
+function proxyEdit(id) {
+  const proxy = proxiesCache.find((p) => p.id === id);
+  if (!proxy) return;
+  document.getElementById('proxy-edit-id').value = String(id);
+  document.getElementById('proxy-edit-name').value = proxy.name || '';
+  document.getElementById('proxy-edit-type').value = proxy.type || 'http';
+  document.getElementById('proxy-edit-value').value = proxy.username
+    ? `${proxy.host}:${proxy.port}:${proxy.username}:${proxy.password || ''}`
+    : `${proxy.host}:${proxy.port}`;
+  document.getElementById('proxy-edit-rotate').value = proxy.ip_change_link || '';
+  const errEl = document.getElementById('proxy-edit-error');
+  if (errEl) errEl.style.display = 'none';
+  document.getElementById('proxy-edit-modal').style.display = 'flex';
+}
+
+function proxyEditClose() {
+  const modal = document.getElementById('proxy-edit-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function proxyEditSave() {
+  const id = Number(document.getElementById('proxy-edit-id').value);
+  const errEl = document.getElementById('proxy-edit-error');
+  const parsed = parseProxyInput(
+    document.getElementById('proxy-edit-value').value,
+    document.getElementById('proxy-edit-type').value
+  );
+  if (!parsed || !parsed.host || !parsed.port) {
+    if (errEl) { errEl.textContent = 'Expected host:port:user:pass'; errEl.style.display = 'block'; }
+    return;
+  }
+  // Connection details changed, so the stored verdict no longer describes this proxy.
+  await window.api.updateProxy(id, {
+    ...parsed,
+    name: document.getElementById('proxy-edit-name').value.trim(),
+    ip_change_link: document.getElementById('proxy-edit-rotate').value.trim(),
+    last_check_status: '', last_check_ip: '', last_check_country: '', last_check_error: '', last_check_at: '',
+  });
+  proxyEditClose();
+  await renderProxyList();
+  showToast('Proxy saved', 'success');
+}
+
+async function proxyDelete(id) {
+  const proxy = proxiesCache.find((p) => p.id === id);
+  if (!proxy) return;
+  const used = proxyUsageCache[id] || 0;
+  const warn = used
+    ? `${proxyLabel(proxy)} is used by ${used} profile${used === 1 ? '' : 's'}. They will be left without a proxy. Delete anyway?`
+    : `Delete proxy ${proxyLabel(proxy)}?`;
+  if (!window.confirm(warn)) return;
+  await window.api.deleteProxy(id);
+  await renderProxyList();
+  showToast('Proxy deleted', 'success');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('btn-proxy-add')?.addEventListener('click', () => void addProxiesFromInput());
+  const addField = document.getElementById('proxy-add-value');
+  // Grow to fit a pasted list, then snap back once it is submitted.
+  const autoGrow = () => {
+    if (!addField) return;
+    addField.style.height = 'auto';
+    addField.style.height = `${Math.min(addField.scrollHeight, 160)}px`;
+  };
+  addField?.addEventListener('input', autoGrow);
+  addField?.addEventListener('paste', () => setTimeout(autoGrow, 0));
+  window.__proxyAddAutoGrow = autoGrow;
+  document.getElementById('proxy-add-value')?.addEventListener('keydown', (e) => {
+    // Enter submits, Shift+Enter keeps building a multi-line list.
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void addProxiesFromInput(); }
+  });
+  document.getElementById('proxy-search')?.addEventListener('input', (e) => {
+    proxySearchTerm = e.target.value || '';
+    paintProxyList();
+  });
+  document.getElementById('btn-proxy-check-all')?.addEventListener('click', () => void proxyCheckAll());
+  document.getElementById('btn-proxy-edit-save')?.addEventListener('click', () => void proxyEditSave());
+  document.getElementById('btn-proxy-edit-cancel')?.addEventListener('click', proxyEditClose);
+});
+
+window.proxyCheck = proxyCheck;
+window.proxyEdit = proxyEdit;
+window.proxyDelete = proxyDelete;
+window.proxyRotate = proxyRotate;

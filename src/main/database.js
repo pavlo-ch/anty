@@ -248,6 +248,15 @@ function initDatabase(recoveryAttempted = false) {
   if (warmupColumnIsNew) {
     db.prepare('UPDATE profiles SET warmup_completed = 1').run();
   }
+  // Proxy check results are persisted so the Proxy tab can show a status without
+  // re-probing every proxy each time the page is opened. Local-only: proxies travel
+  // to the platform inside the profile payload, which carries no check metadata.
+  ensureColumn('proxies', 'last_check_status', "TEXT DEFAULT ''");
+  ensureColumn('proxies', 'last_check_ip', "TEXT DEFAULT ''");
+  ensureColumn('proxies', 'last_check_country', "TEXT DEFAULT ''");
+  ensureColumn('proxies', 'last_check_error', "TEXT DEFAULT ''");
+  ensureColumn('proxies', 'last_check_at', "TEXT DEFAULT ''");
+
   ensureColumn('account_state', 'team_name', "TEXT DEFAULT ''");
   ensureColumn('account_state', 'team_id', "TEXT DEFAULT ''");
 
@@ -917,7 +926,8 @@ function createProxy(data) {
 function updateProxy(id, data) {
   const sets = [];
   const values = [];
-  for (const field of ['name', 'type', 'host', 'port', 'username', 'password', 'ip_change_link']) {
+  for (const field of ['name', 'type', 'host', 'port', 'username', 'password', 'ip_change_link',
+                       'last_check_status', 'last_check_ip', 'last_check_country', 'last_check_error', 'last_check_at']) {
     if (data[field] !== undefined) {
       sets.push(`${field} = ?`);
       values.push(data[field]);

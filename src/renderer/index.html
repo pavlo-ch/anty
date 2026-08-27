@@ -38,7 +38,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
           <span>Profiles</span>
         </button>
-        <button class="nav-btn disabled" data-page="proxy" data-disabled="true" data-soon="Coming soon">
+        <button class="nav-btn" data-page="proxy" title="Proxy">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21a9 9 0 100-18 9 9 0 000 18z"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M12 3a15 15 0 014 18M12 3a15 15 0 00-4 18"/></svg>
           <span>Proxy</span>
         </button>
@@ -420,10 +420,52 @@
 
       <!-- Proxy Page (placeholder) -->
       <div class="page" id="page-proxy">
-        <div class="placeholder-page">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#4a4a6a" stroke-width="1" width="64" height="64"><path d="M12 21a9 9 0 100-18 9 9 0 000 18z"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M12 3a15 15 0 014 18M12 3a15 15 0 00-4 18"/></svg>
-          <h2>Proxy Manager</h2>
-          <p>Manage your proxy connections from here</p>
+        <div class="proxy-page">
+          <div class="proxy-add-bar">
+            <select id="proxy-add-type" class="editor-select small-select">
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+              <option value="socks5">SOCKS5</option>
+              <option value="socks4">SOCKS4</option>
+            </select>
+            <textarea id="proxy-add-value" class="editor-input flex-1 proxy-add-input" rows="1"
+                      placeholder="host:port:user:pass  ·  http://user:pass@host:port  ·  one per line for bulk"></textarea>
+            <button class="btn btn-save" id="btn-proxy-add">Add</button>
+          </div>
+
+          <div class="proxy-toolbar">
+            <input type="text" id="proxy-search" class="editor-input" placeholder="Search host, name or user..." />
+            <span class="proxy-count" id="proxy-count"></span>
+            <button class="btn" id="btn-proxy-check-all">Check all</button>
+          </div>
+
+          <div class="proxy-list" id="proxy-list"></div>
+        </div>
+      </div>
+
+      <div class="login-modal" id="proxy-edit-modal" style="display:none;">
+        <div class="login-modal-card proxy-edit-card">
+          <h2>Edit proxy</h2>
+          <input type="hidden" id="proxy-edit-id" />
+          <label class="editor-label">Name</label>
+          <input type="text" id="proxy-edit-name" class="editor-input" placeholder="Optional label" />
+          <label class="editor-label">Connection</label>
+          <div class="proxy-add-bar">
+            <select id="proxy-edit-type" class="editor-select small-select">
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
+              <option value="socks5">SOCKS5</option>
+              <option value="socks4">SOCKS4</option>
+            </select>
+            <input type="text" id="proxy-edit-value" class="editor-input flex-1" placeholder="host:port:user:pass" />
+          </div>
+          <label class="editor-label">IP change link <span class="info-icon" title="Optional rotation URL your provider gives you. Opened in your normal browser.">&#9432;</span></label>
+          <input type="text" id="proxy-edit-rotate" class="editor-input" placeholder="https://..." />
+          <div class="login-modal-error" id="proxy-edit-error" style="display:none;"></div>
+          <div class="proxy-edit-actions">
+            <button class="btn" id="btn-proxy-edit-cancel">Cancel</button>
+            <button class="btn btn-save" id="btn-proxy-edit-save">Save</button>
+          </div>
         </div>
       </div>
 
