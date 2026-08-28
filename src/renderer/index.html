@@ -42,11 +42,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21a9 9 0 100-18 9 9 0 000 18z"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M12 3a15 15 0 014 18M12 3a15 15 0 00-4 18"/></svg>
           <span>Proxy</span>
         </button>
-        <button class="nav-btn disabled" data-page="configs" data-disabled="true" data-soon="Coming soon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
-          <span>Configs</span>
-        </button>
-        <button class="nav-btn disabled" data-page="extensions" data-disabled="true" data-soon="Coming soon">
+        <button class="nav-btn" data-page="extensions" title="Extensions">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
           <span>Extensions</span>
         </button>
@@ -480,19 +476,21 @@
       </div>
 
       <!-- Other pages (placeholders) -->
-      <div class="page" id="page-configs">
-        <div class="placeholder-page">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#4a4a6a" stroke-width="1" width="64" height="64"><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
-          <h2>Configurations</h2>
-          <p>Manage browser configurations</p>
-        </div>
-      </div>
 
       <div class="page" id="page-extensions">
-        <div class="placeholder-page">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#4a4a6a" stroke-width="1" width="64" height="64"><path d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z"/></svg>
-          <h2>Extensions</h2>
-          <p>Manage browser extensions</p>
+        <div class="ext-page">
+          <div class="ext-note">
+            <strong>Extensions are shared by every profile.</strong>
+            Install one from the Chrome Web Store inside a launched profile — once you close that
+            profile it is copied here, and every profile you open afterwards gets it too.
+            Removing it here stops it being handed to new profiles.
+          </div>
+          <div class="proxy-toolbar">
+            <input type="text" id="ext-search" class="editor-input" placeholder="Search extensions..." />
+            <span class="proxy-count" id="ext-count"></span>
+            <button class="btn" id="btn-ext-refresh">Refresh</button>
+          </div>
+          <div class="ext-list" id="ext-list"></div>
         </div>
       </div>
 

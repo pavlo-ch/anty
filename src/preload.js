@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld('api', {
   deleteProxy: (id) => ipcRenderer.invoke('proxy:delete', id),
   checkProxy: (data) => ipcRenderer.invoke('proxy:check', data),
 
+  getExtensions: () => ipcRenderer.invoke('extensions:list'),
+  removeExtension: (id) => ipcRenderer.invoke('extensions:remove', id),
+  revealExtension: (id) => ipcRenderer.invoke('extensions:reveal', id),
+
   // Tags
   getTags: () => ipcRenderer.invoke('tag:list'),
 

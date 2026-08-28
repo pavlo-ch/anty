@@ -188,6 +188,9 @@ function setupEventListeners() {
       if (page === 'proxy') {
         void renderProxyList();
       }
+      if (page === 'extensions') {
+        void renderExtensionList();
+      }
       if (page === 'account') {
         refreshAccountPage();
       }
@@ -2992,3 +2995,113 @@ window.proxyDelete = proxyDelete;
 window.proxyRotate = proxyRotate;
 window.proxyShowProfiles = proxyShowProfiles;
 window.proxyRename = proxyRename;
+
+// ===== EXTENSIONS =====
+// Read-only over the shared store: adding an extension means installing it inside a
+// launched profile, because the store also carries Chrome's MAC-signed settings.
+let extensionsCache = [];
+let extensionSearchTerm = '';
+
+const ICON_FOLDER = svgIcon('<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/>');
+
+function formatBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function renderExtensionList() {
+  const listEl = document.getElementById('ext-list');
+  if (!listEl) return;
+  try {
+    extensionsCache = (await window.api.getExtensions()) || [];
+  } catch (err) {
+    listEl.innerHTML = `<div class="empty-state visible"><p>Could not read extensions: ${escapeHtml(err.message || 'unknown error')}</p></div>`;
+    return;
+  }
+  paintExtensionList();
+}
+
+function paintExtensionList() {
+  const listEl = document.getElementById('ext-list');
+  const countEl = document.getElementById('ext-count');
+  if (!listEl) return;
+
+  const term = extensionSearchTerm.trim().toLowerCase();
+  const rows = term
+    ? extensionsCache.filter((e) => `${e.name} ${e.id} ${e.description}`.toLowerCase().includes(term))
+    : extensionsCache;
+
+  if (countEl) {
+    countEl.textContent = term
+      ? `${rows.length} of ${extensionsCache.length}`
+      : `${extensionsCache.length} ${extensionsCache.length === 1 ? 'extension' : 'extensions'}`;
+  }
+
+  if (!rows.length) {
+    listEl.innerHTML = extensionsCache.length
+      ? '<div class="empty-state visible"><p>Nothing matches that search.</p></div>'
+      : `<div class="empty-state visible"><p>No shared extensions yet.<br />
+           Launch a profile, install an extension from the Chrome Web Store, then close the
+           profile — it will show up here.</p></div>`;
+    return;
+  }
+
+  listEl.innerHTML = rows.map((e) => {
+    const meta = [e.id];
+    if (e.sizeBytes) meta.push(formatBytes(e.sizeBytes));
+    if (e.manifestVersion) meta.push(`MV${e.manifestVersion}`);
+    if (e.addedAt) meta.push(`added ${escapeHtml(formatTime(e.addedAt.slice(0, 19).replace('T', ' ')))}`);
+
+    const badge = e.enabled === false
+      ? '<span class="ext-badge off">disabled in Chrome</span>'
+      : (!e.hasSettings ? '<span class="ext-badge warn">files only</span>' : '');
+
+    return `
+      <div class="ext-row">
+        ${e.icon
+          ? `<img class="ext-icon" src="${e.icon}" alt="" />`
+          : '<div class="ext-icon placeholder"></div>'}
+        <div class="ext-main">
+          <div class="ext-title">${escapeHtml(e.name)}${e.version ? `<span class="ext-version">v${escapeHtml(e.version)}</span>` : ''}${badge}</div>
+          ${e.description ? `<div class="ext-desc">${escapeHtml(e.description)}</div>` : ''}
+          <div class="ext-meta">${meta.map(escapeHtml).join(' · ')}</div>
+        </div>
+        <div class="proxy-actions">
+          <button class="icon-btn" title="Show files" onclick="extensionReveal('${e.id}')">${ICON_FOLDER}</button>
+          <button class="icon-btn btn-delete" title="Remove from shared store" onclick="extensionRemove('${e.id}')">${ICON_TRASH}</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function extensionReveal(id) {
+  const res = await window.api.revealExtension(id);
+  if (!res?.success) showToast(res?.error || 'Could not open the folder', 'error');
+}
+
+async function extensionRemove(id) {
+  const ext = extensionsCache.find((e) => e.id === id);
+  if (!ext) return;
+  // Profiles that already have it keep it — Chrome owns those copies, not this store.
+  if (!window.confirm(`Remove "${ext.name}" from the shared store?\n\nProfiles you open from now on will no longer receive it. Profiles that already have it installed keep it until you remove it there.`)) return;
+  const res = await window.api.removeExtension(id);
+  if (!res?.success) {
+    showToast(res?.error || 'Could not remove the extension', 'error');
+    return;
+  }
+  await renderExtensionList();
+  showToast(`Removed ${ext.name}`, 'success');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('ext-search')?.addEventListener('input', (e) => {
+    extensionSearchTerm = e.target.value || '';
+    paintExtensionList();
+  });
+  document.getElementById('btn-ext-refresh')?.addEventListener('click', () => void renderExtensionList());
+});
+
+window.extensionReveal = extensionReveal;
+window.extensionRemove = extensionRemove;

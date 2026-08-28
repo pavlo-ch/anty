@@ -3,6 +3,7 @@ const db = require('./database');
 const launcher = require('./launcher');
 const auth = require('./auth');
 const profileSync = require('./profile-sync');
+const extensions = require('./extensions');
 const warmup = require('./warmup');
 const { generateFingerprint, generateFingerprintFromUA, parseUA: parseFpUA, FINGERPRINT_PROFILES } = require('./fingerprint');
 
@@ -247,6 +248,23 @@ function registerIpcHandlers() {
   ipcMain.handle('proxy:check', (_, data) => {
     requireLoggedIn();
     return launcher.checkProxy(data);
+  });
+
+  // ---- EXTENSIONS ----
+  ipcMain.handle('extensions:list', () => {
+    requireLoggedIn();
+    return extensions.listSharedExtensions();
+  });
+  ipcMain.handle('extensions:remove', (_, id) => {
+    requireLoggedIn();
+    return extensions.removeSharedExtension(id);
+  });
+  ipcMain.handle('extensions:reveal', (_, id) => {
+    requireLoggedIn();
+    const dir = extensions.getSharedExtensionPath(id);
+    if (!dir) return { success: false, error: 'Extension not found' };
+    shell.showItemInFolder(dir);
+    return { success: true };
   });
 
   // ---- TAGS ----
