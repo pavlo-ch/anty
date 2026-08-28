@@ -2119,3 +2119,4 @@ button.proxy-name.add { opacity: 0; color: #55557a; transition: opacity .12s; }
 .ext-badge.warn { background: #35301a; color: #d6b45a; }
 .ext-desc { color: #8a8ab0; font-size: 12.5px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ext-meta { color: #55557a; font-size: 11.5px; margin-top: 4px; }
+.ext-badge.folder { background: #1d2f3a; color: #6ab0d6; }

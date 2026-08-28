@@ -62,6 +62,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // Launch handed over from the web build (anty:// link). The launcher itself
+  // reports running state through onProfileStatus; this only explains outcomes
+  // the user would otherwise see as the app opening and doing nothing.
+  window.api.onDeepLinkLaunch?.(async (data) => {
+    if (data?.ok) {
+      showToast(data.alreadyRunning
+        ? `${data.name || 'Profile'} is already running`
+        : `Launching ${data.name || 'profile'} from the web`, 'success');
+      await loadData();
+      renderProfilesList(document.getElementById('search-input')?.value || '');
+      if (data.profileId) selectProfile(data.profileId);
+      return;
+    }
+    if (data?.reason === 'login_required') {
+      showLoginModal();
+      showToast('Log in to launch profiles from the web', 'error');
+      return;
+    }
+    if (data?.reason === 'not_found') {
+      showToast('That profile is not in your account yet — try syncing', 'error');
+      return;
+    }
+    if (data?.reason === 'running_elsewhere') {
+      showToast(`${data.name || 'Profile'} is already running on another device`, 'error');
+      return;
+    }
+    showToast(data?.error || 'Could not launch the profile', 'error');
+  });
+
   try {
     const startupUpdate = await window.api.startupUpdateCheck();
     if (startupUpdate?.required) {
@@ -3057,6 +3086,9 @@ function paintExtensionList() {
     const badge = e.enabled === false
       ? '<span class="ext-badge off">disabled in Chrome</span>'
       : (!e.hasSettings ? '<span class="ext-badge warn">files only</span>' : '');
+    const sourceBadge = e.source === 'folder'
+      ? '<span class="ext-badge folder">from folder</span>'
+      : '';
 
     return `
       <div class="ext-row">
@@ -3064,29 +3096,32 @@ function paintExtensionList() {
           ? `<img class="ext-icon" src="${e.icon}" alt="" />`
           : '<div class="ext-icon placeholder"></div>'}
         <div class="ext-main">
-          <div class="ext-title">${escapeHtml(e.name)}${e.version ? `<span class="ext-version">v${escapeHtml(e.version)}</span>` : ''}${badge}</div>
+          <div class="ext-title">${escapeHtml(e.name)}${e.version ? `<span class="ext-version">v${escapeHtml(e.version)}</span>` : ''}${sourceBadge}${badge}</div>
           ${e.description ? `<div class="ext-desc">${escapeHtml(e.description)}</div>` : ''}
           <div class="ext-meta">${meta.map(escapeHtml).join(' · ')}</div>
         </div>
         <div class="proxy-actions">
-          <button class="icon-btn" title="Show files" onclick="extensionReveal('${e.id}')">${ICON_FOLDER}</button>
-          <button class="icon-btn btn-delete" title="Remove from shared store" onclick="extensionRemove('${e.id}')">${ICON_TRASH}</button>
+          <button class="icon-btn" title="Show files" onclick="extensionReveal('${e.id}','${e.source}')">${ICON_FOLDER}</button>
+          <button class="icon-btn btn-delete" title="Remove from shared store" onclick="extensionRemove('${e.id}','${e.source}')">${ICON_TRASH}</button>
         </div>
       </div>`;
   }).join('');
 }
 
-async function extensionReveal(id) {
-  const res = await window.api.revealExtension(id);
+async function extensionReveal(id, source) {
+  const res = await window.api.revealExtension(id, source);
   if (!res?.success) showToast(res?.error || 'Could not open the folder', 'error');
 }
 
-async function extensionRemove(id) {
-  const ext = extensionsCache.find((e) => e.id === id);
+async function extensionRemove(id, source) {
+  const ext = extensionsCache.find((e) => e.id === id && e.source === source);
   if (!ext) return;
   // Profiles that already have it keep it — Chrome owns those copies, not this store.
-  if (!window.confirm(`Remove "${ext.name}" from the shared store?\n\nProfiles you open from now on will no longer receive it. Profiles that already have it installed keep it until you remove it there.`)) return;
-  const res = await window.api.removeExtension(id);
+  const warning = source === 'folder'
+    ? `Remove "${ext.name}" from your extensions?\n\nThe copy in Anty's library is deleted; the folder you added it from is untouched.`
+    : `Remove "${ext.name}" from the shared store?\n\nProfiles you open from now on will no longer receive it. Profiles that already have it installed keep it until you remove it there.`;
+  if (!window.confirm(warning)) return;
+  const res = await window.api.removeExtension(id, source);
   if (!res?.success) {
     showToast(res?.error || 'Could not remove the extension', 'error');
     return;
@@ -3101,6 +3136,13 @@ document.addEventListener('DOMContentLoaded', () => {
     paintExtensionList();
   });
   document.getElementById('btn-ext-refresh')?.addEventListener('click', () => void renderExtensionList());
+  document.getElementById('btn-ext-add')?.addEventListener('click', async () => {
+    const res = await window.api.addExtensionFolder();
+    if (res?.canceled) return;
+    if (!res?.success) { showToast(res?.error || 'Could not add that folder', 'error'); return; }
+    await renderExtensionList();
+    showToast(`Added ${res.extension?.name || 'extension'}`, 'success');
+  });
 });
 
 window.extensionReveal = extensionReveal;

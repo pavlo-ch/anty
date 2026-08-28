@@ -11,6 +11,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
+const extensionsLibrary = require('./extensions');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA, alignUAToInstalledChrome } = require('./fingerprint');
 const { resolveChromeExecutable, candidatePaths } = require('./chrome-binary');
 const { resolveEngineExecutable, engineUsesJsInjection, buildEngineFlags } = require('./engine');
@@ -397,6 +398,58 @@ function seedDefaultBookmarks(userDataDir) {
   } catch (err) {
     console.error('[Bookmarks] Could not seed defaults:', err.message);
   }
+}
+
+/**
+ * Hand the user's own unpacked extensions to a running browser.
+ *
+ * --load-extension is ignored by current Chrome, and a folder dropped into the profile
+ * is rejected for lacking Chrome's MAC signature. The CDP Extensions.loadUnpacked
+ * command is the supported route, but it only exists on a browser-level session, so the
+ * browser has to expose a debugging port. The load is per-session, hence a fresh call
+ * on every launch.
+ */
+async function loadLibraryExtensions(userDataDir) {
+  const paths = extensionsLibrary.getLibraryLoadPaths();
+  if (!paths.length) return { loaded: 0 };
+
+  // Chrome writes the port it actually bound to, which is the only reliable value
+  // when it was asked for port 0.
+  const portFile = path.join(userDataDir, 'DevToolsActivePort');
+  let port = null;
+  for (let attempt = 0; attempt < 40 && !port; attempt += 1) {
+    try {
+      const line = fs.readFileSync(portFile, 'utf8').split('\n')[0].trim();
+      if (line) port = Number(line);
+    } catch (_) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  if (!port) {
+    console.error('[Extensions] No DevToolsActivePort; skipped loading', paths.length, 'extension(s)');
+    return { loaded: 0 };
+  }
+
+  let cdpBrowser = null;
+  let loaded = 0;
+  try {
+    cdpBrowser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    const session = await cdpBrowser.newBrowserCDPSession();
+    for (const extensionPath of paths) {
+      try {
+        await session.send('Extensions.loadUnpacked', { path: extensionPath });
+        loaded += 1;
+      } catch (err) {
+        console.error('[Extensions] Could not load', extensionPath, '-', err.message);
+      }
+    }
+  } catch (err) {
+    console.error('[Extensions] CDP connection failed:', err.message);
+  } finally {
+    // Detaches this client; the browser Playwright launched keeps running.
+    if (cdpBrowser) { try { await cdpBrowser.close(); } catch (_) {} }
+  }
+  return { loaded };
 }
 
 function getUserDataDir(profileId) {
@@ -1470,9 +1523,14 @@ async function launchProfile(profileId, mainWindow) {
     // navigator.webdriver is already handled by:
     //  1) ignoreDefaultArgs: ['--enable-automation'] (Chrome doesn't set it)
     //  2) prototype-level override in buildInjectionScript (fingerprint.js)
+    // Port 0 lets Chrome pick a free one and record it in DevToolsActivePort. Only
+    // requested when the user actually has extensions, so a plain launch is unchanged.
+    const hasLibraryExtensions = extensionsLibrary.getLibraryLoadPaths().length > 0;
+
     const launchOptions = {
       headless: false,
       args: [
+        ...(hasLibraryExtensions ? ['--remote-debugging-port=0'] : []),
         '--disable-infobars',
         '--no-first-run',
         '--no-default-browser-check',
@@ -1835,6 +1893,11 @@ async function launchProfile(profileId, mainWindow) {
         '--disable-component-extensions-with-background-pages',
       ],
     });
+
+    if (hasLibraryExtensions) {
+      const { loaded } = await loadLibraryExtensions(userDataDir);
+      if (loaded) console.log(`[Extensions] Loaded ${loaded} extension(s) into profile ${profileId}`);
+    }
 
     if (injectionScript) await context.addInitScript(injectionScript);
     const importedStorage = await importStorageState(context);

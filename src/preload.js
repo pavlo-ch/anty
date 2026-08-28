@@ -24,8 +24,9 @@ contextBridge.exposeInMainWorld('api', {
   checkProxy: (data) => ipcRenderer.invoke('proxy:check', data),
 
   getExtensions: () => ipcRenderer.invoke('extensions:list'),
-  removeExtension: (id) => ipcRenderer.invoke('extensions:remove', id),
-  revealExtension: (id) => ipcRenderer.invoke('extensions:reveal', id),
+  addExtensionFolder: () => ipcRenderer.invoke('extensions:add-folder'),
+  removeExtension: (id, source) => ipcRenderer.invoke('extensions:remove', id, source),
+  revealExtension: (id, source) => ipcRenderer.invoke('extensions:reveal', id, source),
 
   // Tags
   getTags: () => ipcRenderer.invoke('tag:list'),
@@ -90,6 +91,10 @@ contextBridge.exposeInMainWorld('api', {
   // Events
   onProfileStatus: (callback) => {
     ipcRenderer.on('browser:status', (_, data) => callback(data));
+  },
+  // Launch requested from the web build via an anty:// link.
+  onDeepLinkLaunch: (callback) => {
+    ipcRenderer.on('deeplink:launch', (_, data) => callback(data));
   },
   onAccessChallenge: (callback) => {
     ipcRenderer.on('browser:challenge', (_, data) => callback(data));

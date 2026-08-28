@@ -483,12 +483,14 @@
             <strong>Extensions are shared by every profile.</strong>
             Install one from the Chrome Web Store inside a launched profile — once you close that
             profile it is copied here, and every profile you open afterwards gets it too.
-            Removing it here stops it being handed to new profiles.
+            <strong>Add folder</strong> takes an unpacked extension straight from disk; those are
+            handed to Chrome at every launch instead of being installed into the profile.
           </div>
           <div class="proxy-toolbar">
             <input type="text" id="ext-search" class="editor-input" placeholder="Search extensions..." />
             <span class="proxy-count" id="ext-count"></span>
             <button class="btn" id="btn-ext-refresh">Refresh</button>
+            <button class="btn btn-save" id="btn-ext-add">Add folder</button>
           </div>
           <div class="ext-list" id="ext-list"></div>
         </div>

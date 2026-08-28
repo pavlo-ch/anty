@@ -1,4 +1,4 @@
-const { app, ipcMain, BrowserWindow, shell } = require('electron');
+const { app, ipcMain, BrowserWindow, shell, dialog } = require('electron');
 const db = require('./database');
 const launcher = require('./launcher');
 const auth = require('./auth');
@@ -253,15 +253,28 @@ function registerIpcHandlers() {
   // ---- EXTENSIONS ----
   ipcMain.handle('extensions:list', () => {
     requireLoggedIn();
-    return extensions.listSharedExtensions();
+    return extensions.listAllExtensions();
   });
-  ipcMain.handle('extensions:remove', (_, id) => {
+  ipcMain.handle('extensions:add-folder', async () => {
     requireLoggedIn();
-    return extensions.removeSharedExtension(id);
+    const result = await dialog.showOpenDialog({
+      title: 'Pick an unpacked extension folder',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths?.length) return { success: false, canceled: true };
+    return extensions.addLibraryExtension(result.filePaths[0]);
   });
-  ipcMain.handle('extensions:reveal', (_, id) => {
+  ipcMain.handle('extensions:remove', (_, id, source) => {
     requireLoggedIn();
-    const dir = extensions.getSharedExtensionPath(id);
+    return source === 'folder'
+      ? extensions.removeLibraryExtension(id)
+      : extensions.removeSharedExtension(id);
+  });
+  ipcMain.handle('extensions:reveal', (_, id, source) => {
+    requireLoggedIn();
+    const dir = source === 'folder'
+      ? (extensions.listLibraryExtensions().find((e) => e.id === id)?.path || null)
+      : extensions.getSharedExtensionPath(id);
     if (!dir) return { success: false, error: 'Extension not found' };
     shell.showItemInFolder(dir);
     return { success: true };

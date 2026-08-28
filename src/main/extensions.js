@@ -179,8 +179,119 @@ function getSharedExtensionPath(id) {
   return fs.existsSync(dir) ? dir : null;
 }
 
+/* ---- Local library: unpacked folders the user adds themselves ----
+ * These are not part of the shared store. Chrome refuses hand-placed extensions in a
+ * profile because the store's entries are MAC-signed by Chrome, so these are handed to
+ * the browser at launch through the CDP Extensions.loadUnpacked command instead. That
+ * load does not persist, which is why the launcher repeats it on every start.
+ */
+function getLibraryDir() {
+  return path.join(getDataDir(), 'extensions_library');
+}
+
+function slugify(name, fallback) {
+  const slug = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return slug || fallback;
+}
+
+function readManifestAt(dir) {
+  const manifest = readJsonSafe(path.join(dir, 'manifest.json'));
+  if (!manifest) return null;
+  if (!manifest.name || !manifest.version) return null;
+  return manifest;
+}
+
+function describeLibraryEntry(entryDir, id) {
+  const manifest = readManifestAt(entryDir);
+  if (!manifest) return null;
+  const defaultLocale = manifest.default_locale;
+  let addedAt = '';
+  try { addedAt = fs.statSync(entryDir).mtime.toISOString(); } catch (_) { /* keep blank */ }
+  return {
+    id,
+    source: 'folder',
+    name: resolveI18n(manifest.name, entryDir, defaultLocale) || id,
+    version: String(manifest.version || ''),
+    description: resolveI18n(manifest.description, entryDir, defaultLocale),
+    manifestVersion: Number(manifest.manifest_version) || null,
+    permissions: Array.isArray(manifest.permissions) ? manifest.permissions.map(String) : [],
+    icon: pickIcon(manifest, entryDir),
+    sizeBytes: directorySize(entryDir),
+    enabled: true,
+    hasSettings: true,
+    path: entryDir,
+    addedAt,
+  };
+}
+
+function listLibraryExtensions() {
+  const root = getLibraryDir();
+  if (!fs.existsSync(root)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const described = describeLibraryEntry(path.join(root, entry.name), entry.name);
+    if (described) out.push(described);
+  }
+  return out;
+}
+
+/** Absolute paths handed to Extensions.loadUnpacked, newest last. */
+function getLibraryLoadPaths() {
+  return listLibraryExtensions().map((e) => e.path);
+}
+
+function addLibraryExtension(sourceDir) {
+  const source = String(sourceDir || '');
+  if (!source || !fs.existsSync(source) || !fs.statSync(source).isDirectory()) {
+    return { success: false, error: 'Pick a folder, not a file' };
+  }
+  const manifest = readManifestAt(source);
+  if (!manifest) {
+    return { success: false, error: 'No usable manifest.json in that folder — pick the unpacked extension folder itself' };
+  }
+
+  const root = getLibraryDir();
+  fs.mkdirSync(root, { recursive: true });
+  const base = slugify(manifest.name, 'extension');
+  let id = base;
+  let n = 2;
+  while (fs.existsSync(path.join(root, id))) id = `${base}-${n++}`;
+
+  try {
+    fs.cpSync(source, path.join(root, id), { recursive: true });
+  } catch (err) {
+    return { success: false, error: err.message || 'Could not copy the extension' };
+  }
+  return { success: true, extension: describeLibraryEntry(path.join(root, id), id) };
+}
+
+function removeLibraryExtension(id) {
+  const safeId = String(id || '');
+  if (!/^[a-z0-9._-]+$/i.test(safeId)) return { success: false, error: 'Invalid extension id' };
+  const dir = path.join(getLibraryDir(), safeId);
+  if (!fs.existsSync(dir)) return { success: false, error: 'Extension not found' };
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    return { success: false, error: err.message || 'Could not delete extension files' };
+  }
+  return { success: true };
+}
+
+/** Both sources in one list; the page labels them so their differences stay visible. */
+function listAllExtensions() {
+  return [...listLibraryExtensions(), ...listSharedExtensions().map((e) => ({ ...e, source: 'store' }))]
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 module.exports = {
+  listAllExtensions,
   listSharedExtensions,
+  listLibraryExtensions,
+  getLibraryLoadPaths,
+  addLibraryExtension,
+  removeLibraryExtension,
   removeSharedExtension,
   getSharedExtensionPath,
   getExtensionsRoot,
