@@ -2091,3 +2091,13 @@ button.proxy-usage.link:hover { color: #b9b9e0; }
 .proxy-usage-card { width: 380px; max-width: 90vw; text-align: left; }
 .proxy-usage-list { max-height: 320px; overflow-y: auto; margin-top: 10px; }
 .proxy-usage-item { padding: 8px 10px; border-radius: 6px; background: #171732; color: #d8d8ea; font-size: 13px; margin-bottom: 6px; }
+
+button.proxy-name { background: none; border: none; font: inherit; cursor: pointer; color: #8a8ab0; padding: 0 0 0 8px; }
+button.proxy-name:hover { color: #b9b9e0; text-decoration: underline dotted; }
+button.proxy-name.add { opacity: 0; color: #55557a; transition: opacity .12s; }
+.proxy-row:hover button.proxy-name.add { opacity: 1; }
+.proxy-name-input {
+  margin-left: 8px; padding: 2px 8px; width: 200px;
+  background: #0f0f24; border: 1px solid #35356b; border-radius: 5px;
+  color: #e6e6f0; font-size: 13px; font-family: inherit; outline: none;
+}

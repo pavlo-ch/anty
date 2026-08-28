@@ -2755,10 +2755,12 @@ function paintProxyList() {
     }
 
     return `
-      <div class="proxy-row">
+      <div class="proxy-row" data-id="${p.id}">
         <span class="proxy-dot ${status}"></span>
         <div class="proxy-main">
-          <div class="proxy-host">${escapeHtml(proxyLabel(p))}${showName ? `<span class="proxy-name">${escapeHtml(p.name)}</span>` : ''}</div>
+          <div class="proxy-host">${escapeHtml(proxyLabel(p))}${showName
+            ? `<button class="proxy-name" title="Rename" onclick="proxyRename(${p.id})">${escapeHtml(p.name)}</button>`
+            : `<button class="proxy-name add" title="Add a name" onclick="proxyRename(${p.id})">+ name</button>`}</div>
           <div class="proxy-meta">${meta.join(' · ')}</div>
         </div>
         ${used
@@ -2846,6 +2848,43 @@ async function proxyCheckAll() {
 function proxyRotate(id) {
   const proxy = proxiesCache.find((p) => p.id === id);
   if (proxy?.ip_change_link) void window.api.openExternal(proxy.ip_change_link);
+}
+
+function proxyRename(id) {
+  const proxy = proxiesCache.find((p) => p.id === id);
+  const hostEl = document.querySelector(`.proxy-row[data-id="${id}"] .proxy-host`);
+  if (!proxy || !hostEl || hostEl.querySelector('input')) return;
+
+  // Imported proxies store name = host, which is not a real label — start from blank
+  // so the field does not invite the address to be typed twice.
+  const current = (proxy.name && proxy.name !== proxy.host && proxy.name !== proxyLabel(proxy)) ? proxy.name : '';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'proxy-name-input';
+  input.value = current;
+  input.placeholder = 'Proxy name';
+  input.maxLength = 60;
+  hostEl.querySelector('.proxy-name')?.remove();
+  hostEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const commit = async (save) => {
+    if (settled) return;
+    settled = true;
+    const next = input.value.trim();
+    if (save && next !== current) {
+      await window.api.updateProxy(id, { name: next });
+      proxy.name = next;
+    }
+    paintProxyList();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); void commit(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); void commit(false); }
+  });
+  input.addEventListener('blur', () => void commit(true));
 }
 
 function proxyShowProfiles(id) {
@@ -2952,3 +2991,4 @@ window.proxyEdit = proxyEdit;
 window.proxyDelete = proxyDelete;
 window.proxyRotate = proxyRotate;
 window.proxyShowProfiles = proxyShowProfiles;
+window.proxyRename = proxyRename;
