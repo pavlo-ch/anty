@@ -32,6 +32,14 @@
   "build": {
     "appId": "com.anty.browser",
     "productName": "Anty Browser",
+    "protocols": [
+      {
+        "name": "Anty Browser",
+        "schemes": [
+          "anty"
+        ]
+      }
+    ],
     "artifactName": "Anty-Browser.${ext}",
     "afterSign": "scripts/notarize.js",
     "directories": {
