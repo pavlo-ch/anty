@@ -313,7 +313,18 @@ const DEFAULT_BOOKMARKS = [
   { name: 'Facebook', url: 'https://www.facebook.com/' },
   { name: 'Ads Manager', url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns' },
   { name: 'Whoer', url: 'https://whoer.net/' },
+  { name: 'FB Acc', url: 'https://fbacc.io/' },
 ];
+
+// The marker used to be a bare timestamp, written when only these three existed.
+// Profiles carrying one have already been offered exactly this set.
+const LEGACY_SEEDED_URLS = [
+  'https://www.facebook.com/',
+  'https://adsmanager.facebook.com/adsmanager/manage/campaigns',
+  'https://whoer.net/',
+];
+
+const normalizeBookmarkUrl = (url) => String(url || '').replace(/\/+$/, '');
 
 /** Chrome timestamps are microseconds since 1601-01-01, stored as a string. */
 function chromeTimestamp() {
@@ -335,9 +346,26 @@ function highestBookmarkId(node, current = 0) {
   return max;
 }
 
+/**
+ * The marker records which URLs have already been offered, not just that seeding ran.
+ * Adding a bookmark to the list above therefore reaches profiles that were seeded
+ * earlier, while one the user deleted in the browser stays deleted.
+ */
+function readSeededUrls(marker) {
+  if (!fs.existsSync(marker)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(marker, 'utf8'));
+    if (Array.isArray(parsed?.seeded)) return new Set(parsed.seeded.map(normalizeBookmarkUrl));
+  } catch (_) { /* legacy timestamp marker */ }
+  return new Set(LEGACY_SEEDED_URLS.map(normalizeBookmarkUrl));
+}
+
 function seedDefaultBookmarks(userDataDir) {
   const marker = path.join(userDataDir, '.anty_default_bookmarks');
-  if (fs.existsSync(marker)) return;
+  const alreadySeeded = readSeededUrls(marker);
+  const isFirstSeed = alreadySeeded === null;
+  const seeded = alreadySeeded || new Set();
+  if (DEFAULT_BOOKMARKS.every((b) => seeded.has(normalizeBookmarkUrl(b.url)))) return;
 
   const defaultDir = path.join(userDataDir, 'Default');
   const bookmarksPath = path.join(defaultDir, 'Bookmarks');
@@ -364,7 +392,10 @@ function seedDefaultBookmarks(userDataDir) {
 
     let added = 0;
     for (const bookmark of DEFAULT_BOOKMARKS) {
-      if (present.has(bookmark.url.replace(/\/+$/, ''))) continue;
+      const key = normalizeBookmarkUrl(bookmark.url);
+      if (seeded.has(key)) continue;
+      seeded.add(key);
+      if (present.has(key)) continue;
       bar.children.push({
         date_added: now, date_last_used: '0', guid: crypto.randomUUID(),
         id: String(nextId++), name: bookmark.name, type: 'url', url: bookmark.url,
@@ -387,14 +418,17 @@ function seedDefaultBookmarks(userDataDir) {
     // Chrome only shows the bar on the new-tab page unless this is set, so the seeded
     // bookmarks would exist but stay invisible on every real page. Written directly
     // rather than through writeJsonFileSafe, which skips files that do not exist yet —
-    // and a profile that has never been launched has no Preferences file.
-    const prefsPath = path.join(defaultDir, 'Preferences');
-    const prefs = readJsonFileSafe(prefsPath) || {};
-    prefs.bookmark_bar = { ...(prefs.bookmark_bar || {}), show_on_all_tabs: true };
-    fs.mkdirSync(defaultDir, { recursive: true });
-    writeJsonFileAtomic(prefsPath, prefs);
+    // and a profile that has never been launched has no Preferences file. Only on the
+    // first seed: re-pinning later would override someone who hid the bar on purpose.
+    if (isFirstSeed) {
+      const prefsPath = path.join(defaultDir, 'Preferences');
+      const prefs = readJsonFileSafe(prefsPath) || {};
+      prefs.bookmark_bar = { ...(prefs.bookmark_bar || {}), show_on_all_tabs: true };
+      fs.mkdirSync(defaultDir, { recursive: true });
+      writeJsonFileAtomic(prefsPath, prefs);
+    }
 
-    fs.writeFileSync(marker, now);
+    writeJsonFileAtomic(marker, { seeded: [...seeded], updated_at: new Date().toISOString() });
   } catch (err) {
     console.error('[Bookmarks] Could not seed defaults:', err.message);
   }
