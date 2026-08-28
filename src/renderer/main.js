@@ -2669,6 +2669,12 @@ window.confirmDeleteProfile = confirmDeleteProfile;
 // The proxy IPC surface (list/create/update/delete/usage-count/check) already existed;
 // this is the UI that finally uses it. Check results are written back through
 // updateProxy so a status survives leaving the tab.
+const svgIcon = (body) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+const ICON_CHECK = svgIcon('<circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/>');
+const ICON_EDIT = svgIcon('<path d="M4 20h4L19 9a2.5 2.5 0 10-4-3L4 16v4z"/><path d="M14.5 6.5l3 3"/>');
+const ICON_TRASH = svgIcon('<path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6 7l.9 12.1A2 2 0 008.9 21h6.2a2 2 0 002-1.9L18 7"/><path d="M10 11.5v5M14 11.5v5"/>');
+const ICON_ROTATE = svgIcon('<path d="M20 12a8 8 0 11-2.6-5.9"/><path d="M20 4v4h-4"/>');
+
 let proxiesCache = [];
 let proxyUsageCache = {};
 let proxySearchTerm = '';
@@ -2691,11 +2697,15 @@ async function renderProxyList() {
     listEl.innerHTML = `<div class="empty-state visible"><p>Could not load proxies: ${escapeHtml(err.message || 'unknown error')}</p></div>`;
     return;
   }
-  const counts = await Promise.all(
-    proxiesCache.map((p) => window.api.getProxyUsageCount(p.id).catch(() => 0))
-  );
+  // listProfiles already carries proxy_id, so one call replaces a usage-count round
+  // trip per proxy and gives the profile names the usage popup needs.
+  let profileRows = [];
+  try { profileRows = (await window.api.getProfiles()) || []; } catch (_) { profileRows = []; }
   proxyUsageCache = {};
-  proxiesCache.forEach((p, i) => { proxyUsageCache[p.id] = counts[i] || 0; });
+  for (const row of profileRows) {
+    if (!row.proxy_id) continue;
+    (proxyUsageCache[row.proxy_id] ||= []).push(row.name || `Profile ${row.id}`);
+  }
   paintProxyList();
 }
 
@@ -2723,7 +2733,8 @@ function paintProxyList() {
   }
 
   listEl.innerHTML = rows.map((p) => {
-    const used = proxyUsageCache[p.id] || 0;
+    const users = proxyUsageCache[p.id] || [];
+    const used = users.length;
     const checking = proxyChecking.has(p.id);
     const status = checking ? 'checking' : (p.last_check_status === 'ok' ? 'ok' : (p.last_check_status === 'fail' ? 'fail' : ''));
 
@@ -2750,12 +2761,14 @@ function paintProxyList() {
           <div class="proxy-host">${escapeHtml(proxyLabel(p))}${showName ? `<span class="proxy-name">${escapeHtml(p.name)}</span>` : ''}</div>
           <div class="proxy-meta">${meta.join(' · ')}</div>
         </div>
-        <span class="proxy-usage ${used ? '' : 'unused'}">${used ? `used by ${used} profile${used === 1 ? '' : 's'}` : 'unused'}</span>
+        ${used
+          ? `<button class="proxy-usage link" title="Show profiles" onclick="proxyShowProfiles(${p.id})">used by ${used} profile${used === 1 ? '' : 's'}</button>`
+          : '<span class="proxy-usage unused">unused</span>'}
         <div class="proxy-actions">
-          ${p.ip_change_link ? `<button class="icon-btn" title="Open IP change link" onclick="proxyRotate(${p.id})">&#8635;</button>` : ''}
-          <button class="icon-btn" title="Check proxy" onclick="proxyCheck(${p.id})" ${checking ? 'disabled' : ''}>&#10003;</button>
-          <button class="icon-btn" title="Edit" onclick="proxyEdit(${p.id})">&#9998;</button>
-          <button class="icon-btn btn-delete" title="Delete" onclick="proxyDelete(${p.id})">&#128465;</button>
+          ${p.ip_change_link ? `<button class="icon-btn" title="Open IP change link" onclick="proxyRotate(${p.id})">${ICON_ROTATE}</button>` : ''}
+          <button class="icon-btn" title="Check proxy" onclick="proxyCheck(${p.id})" ${checking ? 'disabled' : ''}>${ICON_CHECK}</button>
+          <button class="icon-btn" title="Edit" onclick="proxyEdit(${p.id})">${ICON_EDIT}</button>
+          <button class="icon-btn btn-delete" title="Delete" onclick="proxyDelete(${p.id})">${ICON_TRASH}</button>
         </div>
       </div>`;
   }).join('');
@@ -2835,6 +2848,23 @@ function proxyRotate(id) {
   if (proxy?.ip_change_link) void window.api.openExternal(proxy.ip_change_link);
 }
 
+function proxyShowProfiles(id) {
+  const proxy = proxiesCache.find((p) => p.id === id);
+  const users = proxyUsageCache[id] || [];
+  if (!proxy || !users.length) return;
+  document.getElementById('proxy-usage-title').textContent =
+    `${users.length} profile${users.length === 1 ? '' : 's'} on ${proxyLabel(proxy)}`;
+  document.getElementById('proxy-usage-list').innerHTML =
+    users.slice().sort((a, b) => a.localeCompare(b))
+      .map((n) => `<div class="proxy-usage-item">${escapeHtml(n)}</div>`).join('');
+  document.getElementById('proxy-usage-modal').style.display = 'flex';
+}
+
+function proxyUsageClose() {
+  const modal = document.getElementById('proxy-usage-modal');
+  if (modal) modal.style.display = 'none';
+}
+
 function proxyEdit(id) {
   const proxy = proxiesCache.find((p) => p.id === id);
   if (!proxy) return;
@@ -2881,7 +2911,7 @@ async function proxyEditSave() {
 async function proxyDelete(id) {
   const proxy = proxiesCache.find((p) => p.id === id);
   if (!proxy) return;
-  const used = proxyUsageCache[id] || 0;
+  const used = (proxyUsageCache[id] || []).length;
   const warn = used
     ? `${proxyLabel(proxy)} is used by ${used} profile${used === 1 ? '' : 's'}. They will be left without a proxy. Delete anyway?`
     : `Delete proxy ${proxyLabel(proxy)}?`;
@@ -2914,9 +2944,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-proxy-check-all')?.addEventListener('click', () => void proxyCheckAll());
   document.getElementById('btn-proxy-edit-save')?.addEventListener('click', () => void proxyEditSave());
   document.getElementById('btn-proxy-edit-cancel')?.addEventListener('click', proxyEditClose);
+  document.getElementById('btn-proxy-usage-close')?.addEventListener('click', proxyUsageClose);
 });
 
 window.proxyCheck = proxyCheck;
 window.proxyEdit = proxyEdit;
 window.proxyDelete = proxyDelete;
 window.proxyRotate = proxyRotate;
+window.proxyShowProfiles = proxyShowProfiles;

@@ -2034,8 +2034,20 @@ body.platform-win32 .titlebar-btn.close:hover {
 
 /* ===== PROXY MANAGER ===== */
 .proxy-page { display: flex; flex-direction: column; height: 100%; padding: 20px 24px; gap: 14px; overflow: hidden; }
-.proxy-add-bar { display: flex; gap: 8px; align-items: center; }
+/* flex-start, not center: when the textarea grows for a pasted list the select and
+   the Add button stay level with its first line instead of drifting to the middle. */
+.proxy-add-bar { display: flex; gap: 8px; align-items: flex-start; }
 .proxy-add-bar .flex-1 { flex: 1; }
+/* One control height across both rows — .editor-input, .editor-select and .btn each
+   size themselves differently (33.5 / 35.5 / 37.5px), so the row never lined up. */
+.proxy-add-bar .editor-select,
+.proxy-add-bar .editor-input,
+.proxy-add-bar .btn,
+.proxy-toolbar .editor-input,
+.proxy-toolbar .btn { height: 36px; padding-top: 0; padding-bottom: 0; margin-bottom: 0; }
+/* .editor-input carries a global margin-bottom: 8px, which inflates its margin box and
+   pushes the field 4px above the button once the row centres them. */
+.proxy-add-bar .proxy-add-input { height: auto; padding-top: 8px; padding-bottom: 8px; }
 .proxy-toolbar { display: flex; gap: 10px; align-items: center; }
 .proxy-toolbar .editor-input { flex: 1; }
 .proxy-count { color: #6b6b8a; font-size: 12px; white-space: nowrap; }
@@ -2067,4 +2079,15 @@ body.platform-win32 .titlebar-btn.close:hover {
 
 /* A textarea, not an input: pasting a proxy list must keep its line breaks.
    Grows with content instead of scrolling a single visible row. */
-.proxy-add-input { resize: none; min-height: 38px; max-height: 160px; font-family: inherit; line-height: 1.4; }
+/* 36px total = 18px line + 8px padding top/bottom + 1px border top/bottom, so a single
+   line is centred exactly like the sibling controls and extra lines add 18px each. */
+.proxy-add-input { resize: none; min-height: 36px; max-height: 160px; font-family: inherit; line-height: 18px; padding: 8px 12px; }
+
+.icon-btn svg { width: 16px; height: 16px; display: block; }
+.proxy-actions .icon-btn { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; }
+.proxy-actions .btn-delete:hover { color: #e74c3c; }
+button.proxy-usage.link { background: none; border: none; padding: 0; cursor: pointer; font: inherit; color: #8a8ab0; text-decoration: underline dotted; }
+button.proxy-usage.link:hover { color: #b9b9e0; }
+.proxy-usage-card { width: 380px; max-width: 90vw; text-align: left; }
+.proxy-usage-list { max-height: 320px; overflow-y: auto; margin-top: 10px; }
+.proxy-usage-item { padding: 8px 10px; border-radius: 6px; background: #171732; color: #d8d8ea; font-size: 13px; margin-bottom: 6px; }
