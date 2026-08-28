@@ -382,6 +382,17 @@ function seedDefaultBookmarks(userDataDir) {
       // would silently undo the seed.
       fs.rmSync(`${bookmarksPath}.bak`, { force: true });
     }
+
+    // Chrome only shows the bar on the new-tab page unless this is set, so the seeded
+    // bookmarks would exist but stay invisible on every real page. Written directly
+    // rather than through writeJsonFileSafe, which skips files that do not exist yet —
+    // and a profile that has never been launched has no Preferences file.
+    const prefsPath = path.join(defaultDir, 'Preferences');
+    const prefs = readJsonFileSafe(prefsPath) || {};
+    prefs.bookmark_bar = { ...(prefs.bookmark_bar || {}), show_on_all_tabs: true };
+    fs.mkdirSync(defaultDir, { recursive: true });
+    writeJsonFileAtomic(prefsPath, prefs);
+
     fs.writeFileSync(marker, now);
   } catch (err) {
     console.error('[Bookmarks] Could not seed defaults:', err.message);
