@@ -692,6 +692,53 @@ function cleanupStartupNoiseHistory(userDataDir) {
   }
 }
 
+/* Chrome reads a profile's display name from two files, and it must be in both
+   or the browser keeps calling it "Person 1": the per-profile Preferences and
+   the info_cache entry in Local State that the profile menu is built from.
+
+   Note this is NOT the OS window title — that stays "<page> — Google Chrome",
+   and on macOS the Dock and Cmd-Tab keep showing "Google Chrome" for every
+   profile, because that name comes from the .app bundle they all share.
+   Faking it with an extension that rewrites document.title was rejected on
+   purpose: a page-visible title that no real Chrome would produce is exactly
+   the kind of tell this browser exists to avoid. */
+function setChromeProfileName(userDataDir, profileName) {
+  const name = String(profileName || '').trim();
+  if (!name) return;
+
+  // A profile's first launch has no Preferences yet, so these must create the
+  // file rather than patch it — writeJsonFileSafe deliberately skips missing ones.
+  const patch = (filePath, patcher) => {
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      let parsed = {};
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        parsed = raw ? JSON.parse(raw) : {};
+      }
+      fs.writeFileSync(filePath, JSON.stringify(patcher(parsed) || parsed));
+    } catch (_) {}
+  };
+
+  patch(path.join(userDataDir, 'Default', 'Preferences'), (prefs) => {
+    prefs.profile = { ...(prefs.profile || {}), name };
+    return prefs;
+  });
+
+  patch(path.join(userDataDir, 'Local State'), (state) => {
+    const profileState = state.profile || {};
+    const infoCache = profileState.info_cache || {};
+    state.profile = {
+      ...profileState,
+      info_cache: {
+        ...infoCache,
+        Default: { ...(infoCache.Default || {}), name, is_using_default_name: false },
+      },
+    };
+    return state;
+  });
+}
+
 function disableChromeSessionRestore(userDataDir, startAction = 'open-page') {
   if (startAction === 'continue-session') return;
 
@@ -1399,6 +1446,7 @@ async function launchProfile(profileId, mainWindow) {
     ensureSharedExtensionsDir(userDataDir);
     seedDefaultBookmarks(userDataDir);
     disableChromeSessionRestore(userDataDir, startAction);
+    setChromeProfileName(userDataDir, profile.name);
 
     // Cap viewport to reasonable desktop size (never larger than 1920x1080 for actual window)
     const viewportWidth = Math.min(fingerprint.screen?.width || 1280, 1440);
@@ -2203,6 +2251,7 @@ async function openProfileForManualLogin(profileId, options = {}) {
     ensureSharedExtensionsDir(userDataDir);
     seedDefaultBookmarks(userDataDir);
     disableChromeSessionRestore(userDataDir, 'open-page');
+    setChromeProfileName(userDataDir, profile.name);
 
     if (profile.proxy_host) {
       const proxyType = String(profile.proxy_type || 'http').toLowerCase();
