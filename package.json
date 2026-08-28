@@ -34,6 +34,14 @@
     "productName": "Anty Browser",
     "artifactName": "Anty-Browser.${ext}",
     "afterSign": "scripts/notarize.js",
+    "protocols": [
+      {
+        "name": "Anty Browser",
+        "schemes": [
+          "anty"
+        ]
+      }
+    ],
     "directories": {
       "output": "dist"
     },
