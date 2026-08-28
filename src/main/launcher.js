@@ -10,6 +10,7 @@ const { chromium } = require('playwright-core');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const crypto = require('crypto');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA, alignUAToInstalledChrome } = require('./fingerprint');
 const { resolveChromeExecutable, candidatePaths } = require('./chrome-binary');
 const { resolveEngineExecutable, engineUsesJsInjection, buildEngineFlags } = require('./engine');
@@ -302,6 +303,88 @@ function getDataDir() {
     return app.getPath('userData');
   } catch {
     return path.join(os.homedir(), '.anty');
+  }
+}
+
+// Bookmarks every profile should start with. Seeded once per profile — deleting one in
+// the browser must not bring it back on the next launch.
+const DEFAULT_BOOKMARKS = [
+  { name: 'Facebook', url: 'https://www.facebook.com/' },
+  { name: 'Ads Manager', url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns' },
+  { name: 'Whoer', url: 'https://whoer.net/' },
+];
+
+/** Chrome timestamps are microseconds since 1601-01-01, stored as a string. */
+function chromeTimestamp() {
+  return String((BigInt(Date.now()) + 11644473600000n) * 1000n);
+}
+
+function collectBookmarkUrls(node, into) {
+  if (!node || typeof node !== 'object') return into;
+  if (node.type === 'url' && node.url) into.add(String(node.url).replace(/\/+$/, ''));
+  for (const child of node.children || []) collectBookmarkUrls(child, into);
+  return into;
+}
+
+function highestBookmarkId(node, current = 0) {
+  if (!node || typeof node !== 'object') return current;
+  const id = Number(node.id);
+  let max = Number.isFinite(id) ? Math.max(current, id) : current;
+  for (const child of node.children || []) max = highestBookmarkId(child, max);
+  return max;
+}
+
+function seedDefaultBookmarks(userDataDir) {
+  const marker = path.join(userDataDir, '.anty_default_bookmarks');
+  if (fs.existsSync(marker)) return;
+
+  const defaultDir = path.join(userDataDir, 'Default');
+  const bookmarksPath = path.join(defaultDir, 'Bookmarks');
+
+  try {
+    const now = chromeTimestamp();
+    const emptyFolder = (id, name) => ({
+      children: [], date_added: now, date_modified: now, date_last_used: '0',
+      guid: crypto.randomUUID(), id, name, type: 'folder',
+    });
+
+    const existing = readJsonFileSafe(bookmarksPath);
+    const data = existing?.roots ? existing : {
+      roots: { bookmark_bar: emptyFolder('1', 'Bookmarks bar'), other: emptyFolder('2', 'Other bookmarks'), synced: emptyFolder('3', 'Mobile bookmarks') },
+      version: 1,
+    };
+
+    const bar = data.roots.bookmark_bar;
+    if (!bar) return;
+    bar.children = bar.children || [];
+
+    const present = collectBookmarkUrls({ children: Object.values(data.roots) }, new Set());
+    let nextId = highestBookmarkId({ children: Object.values(data.roots) }, 3) + 1;
+
+    let added = 0;
+    for (const bookmark of DEFAULT_BOOKMARKS) {
+      if (present.has(bookmark.url.replace(/\/+$/, ''))) continue;
+      bar.children.push({
+        date_added: now, date_last_used: '0', guid: crypto.randomUUID(),
+        id: String(nextId++), name: bookmark.name, type: 'url', url: bookmark.url,
+      });
+      added += 1;
+    }
+
+    if (added > 0) {
+      bar.date_modified = now;
+      // Chrome stores an MD5 of the tree here and rewrites it on load; a stale value
+      // would make it treat the file as tampered with, so drop it entirely.
+      delete data.checksum;
+      fs.mkdirSync(defaultDir, { recursive: true });
+      writeJsonFileAtomic(bookmarksPath, data);
+      // Chrome prefers Bookmarks.bak when it distrusts the main file; a stale backup
+      // would silently undo the seed.
+      fs.rmSync(`${bookmarksPath}.bak`, { force: true });
+    }
+    fs.writeFileSync(marker, now);
+  } catch (err) {
+    console.error('[Bookmarks] Could not seed defaults:', err.message);
   }
 }
 
@@ -1314,6 +1397,7 @@ async function launchProfile(profileId, mainWindow) {
 
   try {
     ensureSharedExtensionsDir(userDataDir);
+    seedDefaultBookmarks(userDataDir);
     disableChromeSessionRestore(userDataDir, startAction);
 
     // Cap viewport to reasonable desktop size (never larger than 1920x1080 for actual window)
@@ -2117,6 +2201,7 @@ async function openProfileForManualLogin(profileId, options = {}) {
 
   try {
     ensureSharedExtensionsDir(userDataDir);
+    seedDefaultBookmarks(userDataDir);
     disableChromeSessionRestore(userDataDir, 'open-page');
 
     if (profile.proxy_host) {
