@@ -49,13 +49,34 @@ docker run --rm -it \
   -v anty-data:/data \
   -p 6080:6080 \
   --shm-size=1g \
+  --security-opt seccomp=unconfined \
   anty-cloud <profileId|remoteId>
 ```
 
-`--shm-size=1g` is not optional. Chrome's default 64 MB of `/dev/shm` in a
-container causes renderer crashes that look like random page failures.
-
 Then open `http://localhost:6080/vnc.html`.
+
+Neither flag is optional, and both are worth understanding rather than copying:
+
+**`--shm-size=1g`** — Chrome's default 64 MB of `/dev/shm` in a container causes
+renderer crashes that read as random page failures.
+
+**`--security-opt seccomp=unconfined`** — the GUI launch path strips
+`--no-sandbox` on purpose (the flag is itself a detection signal), so Chrome uses
+its namespace sandbox, which needs unprivileged user namespaces. Docker's default
+seccomp profile blocks the `clone` call that requires. Without this you get
+Chrome failing to start, which looks like a launcher bug and is not one.
+
+`unconfined` is fine for a Phase 1 test on a machine you control and is **not**
+acceptable in production — replace it with Chrome's own seccomp profile before
+this runs anywhere real:
+
+```bash
+curl -O https://raw.githubusercontent.com/GoogleChrome/chrome-launcher/main/docs/chrome.json
+docker run ... --security-opt seccomp=$(pwd)/chrome.json anty-cloud <id>
+```
+
+Do not "fix" a sandbox failure by adding `--no-sandbox`. It would start, and it
+would fail detection — which is the one thing this phase is measuring.
 
 ## What to check, in order
 
