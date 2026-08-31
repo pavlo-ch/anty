@@ -37,6 +37,12 @@ docker build -f cloud/Dockerfile -t anty-cloud .
 
 Build from the repo root, not from `cloud/` — the image copies `src/`.
 
+Google publishes `google-chrome-stable` for both amd64 and arm64, so this builds
+natively on an Apple Silicon machine as well as on an x86 server. Useful for
+getting it running — but **run the detection comparison on the same architecture
+as production**. CPU and GPU strings are fingerprint inputs, so an arm64 result
+does not transfer to an amd64 host.
+
 ## Run
 
 The profile must already exist in the mounted data directory, and it **must have
