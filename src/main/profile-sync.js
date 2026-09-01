@@ -404,6 +404,8 @@ function normalizeProfileForPayload(profile) {
     fingerprint: parseJsonSafe(profile.fingerprint || '{}'),
     cookies: parseJsonSafe(profile.cookies || '[]'),
     storageState: parseJsonSafe(profile.storage_state || '{}'),
+    lastOpenTabs: parseJsonSafe(profile.last_open_tabs || '[]'),
+    warmupCompleted: profile.warmup_completed ? 1 : 0,
     notes: profile.notes || '',
     tags: normalizeTagNames(profile.tags),
     startPage: profile.start_page || 'https://whoer.net',
@@ -464,6 +466,12 @@ function normalizeCloudProfile(item) {
         ? root.storageState
         : (root.storage_state && typeof root.storage_state === 'object' ? root.storage_state : {}),
       notes: String(root.notes || ''),
+      last_open_tabs: Array.isArray(root.lastOpenTabs)
+        ? root.lastOpenTabs
+        : (Array.isArray(root.last_open_tabs) ? root.last_open_tabs : undefined),
+      warmup_completed: (root.warmupCompleted !== undefined || root.warmup_completed !== undefined)
+        ? (Number(root.warmupCompleted ?? root.warmup_completed) ? 1 : 0)
+        : undefined,
       tags: normalizeTagNames(root.tags || root.data?.tags || []),
       start_page: String(root.startPage || root.start_page || 'https://whoer.net'),
       warmup_url: String(root.warmupUrl || root.warmup_url || '').trim(),
@@ -806,7 +814,11 @@ async function pullProfilesFromCloud(options = {}) {
       notes: cloud.data.notes,
       tags: cloud.data.tags
     });
-    db.updateProfile(created.id, cloud.data);
+    // A profile arriving from the team is an already-used, aged profile — not a fresh
+    // fingerprint that needs warming. Default it to "warmed" so pulling it does not
+    // trigger a warmup that fills it with warmup cookies and overwrites the shared
+    // (e.g. LinkedIn) session on the next push. Honoured once the cloud carries the flag.
+    db.updateProfile(created.id, { ...cloud.data, warmup_completed: cloud.data.warmup_completed ?? 1 });
     pulled += 1;
   }
 
