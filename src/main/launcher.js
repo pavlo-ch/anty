@@ -1818,12 +1818,21 @@ async function launchProfile(profileId, mainWindow) {
 
       let activePage = firstPage;
       if (!activePage || activePage.isClosed()) activePage = await ctx.newPage();
-      await activePage.goto(savedOpenTabs[0]).catch(() => {});
 
-      for (const url of savedOpenTabs.slice(1)) {
-        const tab = await ctx.newPage();
-        await tab.goto(url).catch(() => {});
+      // Create the tabs in order first (newPage is cheap), then navigate them all at
+      // once with waitUntil:'commit'. Previously each tab was opened one-after-another
+      // and awaited to FULL load, so restore time was the sum of every page's load —
+      // painfully slow behind a proxy. 'commit' returns as soon as the navigation is
+      // accepted; the pages finish loading in the background, exactly like a real
+      // browser restoring a session, and they open concurrently so the total wait is
+      // the single slowest tab rather than all of them added up.
+      const pages = [activePage];
+      for (let i = 1; i < savedOpenTabs.length; i += 1) {
+        pages.push(await ctx.newPage());
       }
+      await Promise.all(
+        pages.map((pg, i) => pg.goto(savedOpenTabs[i], { waitUntil: 'commit' }).catch(() => {}))
+      );
 
       return activePage;
     }
