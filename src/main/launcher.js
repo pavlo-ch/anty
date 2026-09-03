@@ -230,10 +230,18 @@ function startStateAutosave(profileId, context) {
     }
   };
 
+  // Capture cookies + storage on a timer, not only when the profile is closed cleanly.
+  // Before this, a login was written to the profile only in finalizeClose, so a crash,
+  // a force-quit, or the machine sleeping/dying lost the whole session — exactly how a
+  // freshly-logged-in profile ended up with nothing to sync. Every ~20s the current
+  // session is saved and (if it changed) queued for cloud sync, so a login survives.
+  const timer = setInterval(() => { void flush(); }, 20000);
+
   return {
     flush,
     stop() {
       stopped = true;
+      clearInterval(timer);
       openTabsTracker.stop();
     }
   };
