@@ -5,7 +5,24 @@ const auth = require('./auth');
 const profileSync = require('./profile-sync');
 const extensions = require('./extensions');
 const warmup = require('./warmup');
+const os = require('os');
 const { generateFingerprint, generateFingerprintFromUA, parseUA: parseFpUA, FINGERPRINT_PROFILES } = require('./fingerprint');
+
+// A 'running' status only blocks a launch when another machine is ACTIVELY using the
+// profile. Treat the lock as stale — and let the launch take it over — when it is our
+// own host (a crash/force-quit left it), when no host owns it, when there is no launch
+// timestamp behind it, or when that timestamp is old. Otherwise a single crash would
+// wedge a profile as "already running on another team device" forever.
+function isStaleRunningLock(profile) {
+  if (!profile) return true;
+  const owner = String(profile.running_on || '').trim();
+  if (!owner) return true;
+  if (owner === os.hostname()) return true;
+  const launched = Date.parse(profile.last_launched_at || '');
+  if (!profile.last_launched_at) return true;
+  if (Number.isFinite(launched) && (Date.now() - launched) > 12 * 60 * 60 * 1000) return true;
+  return false;
+}
 
 function requireLoggedIn() {
   if (!auth.isLoggedIn()) {
@@ -311,7 +328,7 @@ function registerIpcHandlers() {
     requireLoggedIn();
     // Check if profile is already running on another team member's machine (status in DB)
     const profile = db.getProfile(id);
-    if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id)) {
+    if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id) && !isStaleRunningLock(profile)) {
       return { success: false, error: 'This profile is already running on another team device' };
     }
     const mainWindow = BrowserWindow.fromWebContents(event.sender);
@@ -330,7 +347,7 @@ function registerIpcHandlers() {
     // automation (Google). Resolves when they close the window; the saved session
     // is then reused by normal launches.
     const profile = db.getProfile(id);
-    if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id)) {
+    if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id) && !isStaleRunningLock(profile)) {
       return { success: false, error: 'This profile is already running on another team device' };
     }
     const result = await launcher.openProfileForManualLogin(id, opts || {});

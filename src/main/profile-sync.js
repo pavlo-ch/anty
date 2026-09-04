@@ -777,6 +777,25 @@ async function pullProfilesFromCloud(options = {}) {
     const cloud = normalizeCloudProfile(item);
     if (!cloud.remoteId) continue;
     if (cloud.teamId) seenTeamIds.add(cloud.teamId);
+
+    // A stale 'running' lock (a crash, force-quit, or renamed host left it behind) would
+    // otherwise arrive as permanently "in use" and hide the launch button. Downgrade it
+    // to 'ready' on the way in when no machine is credibly using it — no owner, our own
+    // host, no launch timestamp, or an old one. A real launch re-asserts the lock in the
+    // cloud, so a genuine remote session (recent timestamp on another host) is preserved.
+    if (cloud.data.status === 'running') {
+      const owner = String(cloud.data.running_on || '').trim();
+      const launched = Date.parse(cloud.data.last_launched_at || '');
+      const stale = !owner
+        || owner === os.hostname()
+        || !cloud.data.last_launched_at
+        || (Number.isFinite(launched) && (Date.now() - launched) > 12 * 60 * 60 * 1000);
+      if (stale) {
+        cloud.data.status = 'ready';
+        cloud.data.running_on = '';
+      }
+    }
+
     const existing = db.getProfileByRemoteId(cloud.remoteId);
 
     if (cloud.deleted) {
