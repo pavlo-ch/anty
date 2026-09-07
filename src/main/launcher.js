@@ -194,6 +194,97 @@ function enqueueProfileSync(profileId) {
   } catch (_) {}
 }
 
+// How long a single tab may take to hand back its localStorage before the autosave
+// gives up on it for this tick. A tab stuck in a navigation or a heavy script must
+// not stall the whole save.
+const LIVE_STORAGE_READ_TIMEOUT_MS = 1500;
+
+function pageHttpOrigin(page) {
+  try {
+    const parsed = new URL(page.url());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readPageLocalStorage(page) {
+  const read = page.evaluate(() => {
+    const entries = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const name = localStorage.key(i);
+        entries.push({ name, value: localStorage.getItem(name) });
+      }
+    } catch (_) {}
+    return entries;
+  });
+  read.catch(() => {});
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('localStorage read timed out')), LIVE_STORAGE_READ_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  return Promise.race([read, timeout]).finally(() => clearTimeout(timer));
+}
+
+function parseSavedStorageOrigins(profile) {
+  const raw = profile?.storage_state;
+  if (!raw) return [];
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(parsed?.origins) ? parsed.origins : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * Snapshot the session WITHOUT `context.storageState()`.
+ *
+ * Playwright's storageState() remembers every origin the context has ever visited
+ * and, for each one that has no open tab, opens a blank page, navigates it to that
+ * origin, reads its storage and closes it again. Run on a timer that is a tab
+ * flashing open and shut in the user's window every tick. So the live snapshot only
+ * reads localStorage from tabs that are already open (a plain evaluate — no new
+ * page), and keeps whatever was previously saved for origins that are not open
+ * right now. The close paths still take a full storageState() once the window is
+ * going away, so nothing visited in the session is lost.
+ */
+async function collectLiveStorageState(profileId, context, cookies) {
+  const byOrigin = new Map();
+  for (const entry of parseSavedStorageOrigins(getProfile(profileId))) {
+    if (entry && typeof entry.origin === 'string') byOrigin.set(entry.origin, entry);
+  }
+
+  let openPages = [];
+  try {
+    openPages = context.pages().filter((page) => !page.isClosed());
+  } catch (_) {
+    openPages = [];
+  }
+
+  const readOrigins = new Set();
+  for (const page of openPages) {
+    const origin = pageHttpOrigin(page);
+    if (!origin || readOrigins.has(origin)) continue;
+    try {
+      const localStorage = await readPageLocalStorage(page);
+      if (!Array.isArray(localStorage)) continue;
+      readOrigins.add(origin);
+      if (localStorage.length > 0) byOrigin.set(origin, { origin, localStorage });
+      else byOrigin.delete(origin);
+    } catch (_) {
+      // Page is navigating, crashed, or slow — keep the previously saved entry.
+    }
+  }
+
+  // Stable ordering so an unchanged session serialises identically and does not
+  // look "changed" (and re-queue a cloud sync) on every tick.
+  const origins = [...byOrigin.values()].sort((a, b) => a.origin.localeCompare(b.origin));
+  return { cookies, origins };
+}
+
 function startStateAutosave(profileId, context) {
   let stopped = false;
   let saving = false;
@@ -212,7 +303,8 @@ function startStateAutosave(profileId, context) {
         changed = Boolean(updated?.__changed) || changed;
       }
 
-      const state = await context.storageState();
+      // Never context.storageState() here — see collectLiveStorageState().
+      const state = await collectLiveStorageState(profileId, context, allCookies);
       const cookieCount = Array.isArray(state?.cookies) ? state.cookies.length : 0;
       const originCount = Array.isArray(state?.origins) ? state.origins.length : 0;
       if (cookieCount > 0 || originCount > 0) {
@@ -236,6 +328,7 @@ function startStateAutosave(profileId, context) {
   // freshly-logged-in profile ended up with nothing to sync. Every ~20s the current
   // session is saved and (if it changed) queued for cloud sync, so a login survives.
   const timer = setInterval(() => { void flush(); }, 20000);
+  timer.unref?.();
 
   return {
     flush,
@@ -315,13 +408,36 @@ function getDataDir() {
   }
 }
 
+// The "FB Acc" bookmark is a javascript: bookmarklet, kept in a config asset rather
+// than hardcoded here: it is ~25KB of user-owned tooling and can change without a code
+// edit. Read once, validated (must be a javascript: URL). Missing/invalid file → the
+// bookmark falls back to the old fbacc.io site, so nothing regresses before the asset
+// is provided. Searched in both the dev tree and the packaged app (config/**/* ships
+// in the asar per package.json "files").
+const FB_ACC_LEGACY_URL = 'https://fbacc.io/';
+
+function loadFbAccBookmarklet() {
+  const candidates = [];
+  try { const { app } = require('electron'); candidates.push(path.join(app.getAppPath(), 'config', 'bookmarks', 'fb-acc.txt')); } catch (_) {}
+  candidates.push(path.join(__dirname, '..', '..', 'config', 'bookmarks', 'fb-acc.txt'));
+  for (const file of candidates) {
+    try {
+      const raw = fs.readFileSync(file, 'utf8').trim();
+      if (raw.toLowerCase().startsWith('javascript:') && raw.length > 'javascript:'.length) return raw;
+    } catch (_) { /* try next candidate */ }
+  }
+  return null;
+}
+
+const FB_ACC_BOOKMARKLET = loadFbAccBookmarklet();
+
 // Bookmarks every profile should start with. Seeded once per profile — deleting one in
 // the browser must not bring it back on the next launch.
 const DEFAULT_BOOKMARKS = [
   { name: 'Facebook', url: 'https://www.facebook.com/' },
   { name: 'Ads Manager', url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns' },
   { name: 'Whoer', url: 'https://whoer.net/' },
-  { name: 'FB Acc', url: 'https://fbacc.io/' },
+  { name: 'FB Acc', url: FB_ACC_BOOKMARKLET || FB_ACC_LEGACY_URL },
 ];
 
 // The marker used to be a bare timestamp, written when only these three existed.
@@ -344,6 +460,28 @@ function collectBookmarkUrls(node, into) {
   if (node.type === 'url' && node.url) into.add(String(node.url).replace(/\/+$/, ''));
   for (const child of node.children || []) collectBookmarkUrls(child, into);
   return into;
+}
+
+/**
+ * Rewrite bookmark URLs in place across the tree. `mapping` is keyed by the normalized
+ * old URL; each value is the replacement { name, url }. Used to turn a profile's old
+ * fbacc.io bookmark into the FB Acc bookmarklet without adding a duplicate. Returns the
+ * number of nodes changed.
+ */
+function migrateBookmarkUrls(node, mapping, now) {
+  if (!node || typeof node !== 'object') return 0;
+  let changed = 0;
+  if (node.type === 'url' && node.url) {
+    const replacement = mapping.get(normalizeBookmarkUrl(node.url));
+    if (replacement && node.url !== replacement.url) {
+      node.url = replacement.url;
+      node.name = replacement.name;
+      node.date_modified = now;
+      changed += 1;
+    }
+  }
+  for (const child of node.children || []) changed += migrateBookmarkUrls(child, mapping, now);
+  return changed;
 }
 
 function highestBookmarkId(node, current = 0) {
@@ -398,6 +536,17 @@ function seedDefaultBookmarks(userDataDir) {
     const present = collectBookmarkUrls({ children: Object.values(data.roots) }, new Set());
     let nextId = highestBookmarkId({ children: Object.values(data.roots) }, 3) + 1;
 
+    // Migrate profiles that were seeded with the old fbacc.io site to the FB Acc
+    // bookmarklet, rewriting the existing node in place. Doing this before the add loop
+    // (and registering the new URL as "present") means the loop won't also append a
+    // duplicate FB Acc bookmark.
+    let migrated = 0;
+    if (FB_ACC_BOOKMARKLET) {
+      const mapping = new Map([[normalizeBookmarkUrl(FB_ACC_LEGACY_URL), { name: 'FB Acc', url: FB_ACC_BOOKMARKLET }]]);
+      migrated = migrateBookmarkUrls({ children: Object.values(data.roots) }, mapping, now);
+      if (migrated > 0) present.add(normalizeBookmarkUrl(FB_ACC_BOOKMARKLET));
+    }
+
     let added = 0;
     for (const bookmark of DEFAULT_BOOKMARKS) {
       const key = normalizeBookmarkUrl(bookmark.url);
@@ -411,7 +560,7 @@ function seedDefaultBookmarks(userDataDir) {
       added += 1;
     }
 
-    if (added > 0) {
+    if (added > 0 || migrated > 0) {
       bar.date_modified = now;
       // Chrome stores an MD5 of the tree here and rewrites it on load; a stale value
       // would make it treat the file as tampered with, so drop it entirely.
@@ -2231,28 +2380,38 @@ function createOpenTabsTracker(profileId, context) {
     persist(openPages.length > 0 ? urls : lastTabs);
   };
 
+  // Refresh the in-memory snapshot NOW, then debounce the DB write. The synchronous
+  // readCurrentTabs() keeps `lastTabs` current on every tab event, so if the profile
+  // window is closed faster than the debounce, finalizeClose's flush still persists the
+  // real current set instead of a stale one — that was why a tab opened and closed
+  // quickly went missing on the next launch. The debounce only coalesces the writes.
+  const snapshot = () => {
+    readCurrentTabs();
+    scheduleFlush();
+  };
+
   const scheduleFlush = () => {
     if (stopped) return;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       void flush();
-    }, 800);
+    }, 250);
     saveTimer.unref?.();
   };
 
   const trackPage = (page) => {
     if (!page || trackedPages.has(page)) return;
     trackedPages.add(page);
-    capturePage(page);
+    // A newly opened tab is captured and snapshotted right away, so it survives an
+    // immediate close even before it finishes navigating.
+    snapshot();
 
     const onNavigated = (frame) => {
       if (frame && frame !== page.mainFrame()) return;
-      capturePage(page);
-      scheduleFlush();
+      snapshot();
     };
     const onLoaded = () => {
-      capturePage(page);
-      scheduleFlush();
+      snapshot();
     };
     const onClose = () => {
       setTimeout(() => {

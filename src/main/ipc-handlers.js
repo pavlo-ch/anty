@@ -5,23 +5,18 @@ const auth = require('./auth');
 const profileSync = require('./profile-sync');
 const extensions = require('./extensions');
 const warmup = require('./warmup');
-const os = require('os');
+const { isStaleRunningLock, withoutStaleRunningLock } = require('./running-lock');
 const { generateFingerprint, generateFingerprintFromUA, parseUA: parseFpUA, FINGERPRINT_PROFILES } = require('./fingerprint');
 
-// A 'running' status only blocks a launch when another machine is ACTIVELY using the
-// profile. Treat the lock as stale — and let the launch take it over — when it is our
-// own host (a crash/force-quit left it), when no host owns it, when there is no launch
-// timestamp behind it, or when that timestamp is old. Otherwise a single crash would
-// wedge a profile as "already running on another team device" forever.
-function isStaleRunningLock(profile) {
-  if (!profile) return true;
-  const owner = String(profile.running_on || '').trim();
-  if (!owner) return true;
-  if (owner === os.hostname()) return true;
-  const launched = Date.parse(profile.last_launched_at || '');
-  if (!profile.last_launched_at) return true;
-  if (Number.isFinite(launched) && (Date.now() - launched) > 12 * 60 * 60 * 1000) return true;
-  return false;
+// What the renderer gets to draw. A stale 'running' lock (see running-lock.js) is
+// already ignored by the launch guard below; it must not keep painting an "In use"
+// badge and hiding the launch button. Rows that arrived before the stale rule existed
+// (and are never re-pulled because the cloud row has not changed since) still carry
+// the raw lock, so the list is normalised on the way out rather than in the DB.
+function presentProfile(profile) {
+  if (!profile) return profile;
+  const runningLocally = launcher.getRunningProfiles().includes(profile.id);
+  return withoutStaleRunningLock(profile, { runningLocally });
 }
 
 function requireLoggedIn() {
@@ -122,11 +117,11 @@ function registerIpcHandlers() {
   // ---- PROFILES ----
   ipcMain.handle('profile:list', () => {
     requireLoggedIn();
-    return db.listProfiles();
+    return db.listProfiles().map(presentProfile);
   });
   ipcMain.handle('profile:get', (_, id) => {
     requireLoggedIn();
-    return db.getProfile(id);
+    return presentProfile(db.getProfile(id));
   });
   ipcMain.handle('profile:create', async (_, data) => {
     requireLoggedIn();

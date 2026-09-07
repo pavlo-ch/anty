@@ -33,6 +33,7 @@ const {
 } = require('../main/database');
 
 const launcher = require('../main/launcher');
+const { withoutStaleRunningLock } = require('../main/running-lock');
 const profileSync = require('../main/profile-sync');
 
 const PORT = Number(process.env.ANTY_API_PORT) || 3032;
@@ -112,7 +113,9 @@ function serverError(res, err) { send(res, 500, { ok: false, error: String(err?.
 route('GET', '/api/profiles', async (_req, res, _params) => {
   const profiles = listProfiles();
   const running = new Set(launcher.getRunningProfiles());
-  const list = profiles.map((p) => ({
+  const list = profiles.map((raw) => {
+    const p = withoutStaleRunningLock(raw, { runningLocally: running.has(raw.id) });
+    return {
     id: p.id,
     name: p.name,
     status: running.has(p.id) ? 'running' : (p.status || 'ready'),
@@ -121,7 +124,8 @@ route('GET', '/api/profiles', async (_req, res, _params) => {
     warmup_url: p.warmup_url,
     created_at: p.created_at,
     wsEndpoint: running.has(p.id) ? launcher.getWsEndpoint(p.id) : null,
-  }));
+    };
+  });
   ok(res, { profiles: list });
 });
 
