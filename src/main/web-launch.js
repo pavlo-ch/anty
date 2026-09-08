@@ -16,14 +16,21 @@ function createWebLaunchController({ auth, db, launcher, profileSync, isStaleRun
   let draining = false;
   async function launch(remoteId) {
     if (!auth.isLoggedIn()) throw new Error('Sign in to Anty Browser with the same account as the website, then click Launch on the website again.');
-    let sync;
-    for (let attempt = 0; attempt < 20; attempt++) {
-      sync = await profileSync.runFullSync({ fullPull: true });
-      if (sync.reason !== 'sync_in_progress') break;
-      await new Promise(resolve => setTimeout(resolve, 500));
+    // The website can only launch a cloud-synced profile, and the desktop keeps
+    // that profile locally. Use it immediately instead of blocking every click
+    // on a full cloud pull. A pull is needed only on the first launch of a profile
+    // this installation has not seen yet.
+    let profile = db.getProfileByRemoteId(remoteId);
+    if (!profile) {
+      let sync;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        sync = await profileSync.runFullSync({ fullPull: true });
+        if (sync.reason !== 'sync_in_progress') break;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      if (!sync?.pull?.ok) throw new Error('Could not sync profiles. Check your connection and account in Anty Browser, then try again.');
+      profile = db.getProfileByRemoteId(remoteId);
     }
-    if (!sync?.pull?.ok) throw new Error('Could not sync profiles. Check your connection and account in Anty Browser, then try again.');
-    const profile = db.getProfileByRemoteId(remoteId);
     if (!profile) throw new Error('This profile is not available in the signed-in account. Sign in to the same account as the website.');
     if (!launcher.getRunningProfiles().includes(profile.id)) {
       if (profile.status === 'running' && !isStaleRunningLock(profile)) {

@@ -12,6 +12,7 @@ const { createWebLaunchController, parseLaunchUrl } = require('./web-launch');
 
 let mainWindow;
 let isGracefulQuitInProgress = false;
+let suppressActivationUntil = 0;
 const appIconPath = path.join(__dirname, '..', 'renderer', 'assets', 'desktop-icon-mac.png');
 
 const webLaunch = createWebLaunchController({
@@ -27,9 +28,18 @@ const webLaunch = createWebLaunchController({
 });
 function focusMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  if (process.platform === 'darwin' && app.dock) void app.dock.show();
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+function enqueueWebLaunch(url) {
+  if (!parseLaunchUrl(url)) return false;
+  // Opening a custom protocol activates its owner on macOS. Keep that activation
+  // from surfacing the manager while the requested Chrome profile starts.
+  suppressActivationUntil = Date.now() + 15000;
+  if (process.platform === 'darwin' && app.dock && app.isReady?.()) app.dock.hide();
+  return webLaunch.enqueue(url);
 }
 function registerProtocolClient() {
   if (process.defaultApp && process.argv.length >= 2) {
@@ -39,17 +49,17 @@ function registerProtocolClient() {
 // Register before ready: macOS sends the cold-start URL during initialization.
 app.on('open-url', (event, url) => {
   event.preventDefault();
-  webLaunch.enqueue(url);
+  enqueueWebLaunch(url);
 });
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) app.quit();
 app.on('second-instance', (_event, argv) => {
   const url = argv.find(arg => parseLaunchUrl(arg));
-  if (url) webLaunch.enqueue(url);
+  if (url) enqueueWebLaunch(url);
   else focusMainWindow();
 });
 const startupUrl = process.argv.find(arg => parseLaunchUrl(arg));
-if (startupUrl) webLaunch.enqueue(startupUrl);
+if (startupUrl) enqueueWebLaunch(startupUrl);
 
 function createWindow({ show = true } = {}) {
   mainWindow = new BrowserWindow({
@@ -96,6 +106,7 @@ if (gotSingleInstanceLock) app.whenReady().then(() => {
     if (!dockIcon.isEmpty()) {
       app.dock.setIcon(dockIcon);
     }
+    if (webLaunch.hasPending()) app.dock.hide();
   }
 
   registerProtocolClient();
@@ -104,7 +115,7 @@ if (gotSingleInstanceLock) app.whenReady().then(() => {
   createWindow({ show: !webLaunch.hasPending() });
 
   app.on('activate', () => {
-    if (!webLaunch.hasPending()) focusMainWindow();
+    if (!webLaunch.hasPending() && Date.now() >= suppressActivationUntil) focusMainWindow();
   });
 });
 
