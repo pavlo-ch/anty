@@ -1,16 +1,59 @@
-const { app, BrowserWindow, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeImage, dialog } = require('electron');
 const path = require('path');
 const { initDatabase } = require('./database');
 const { registerIpcHandlers } = require('./ipc-handlers');
 const { registerUpdater } = require('./updater');
 const launcher = require('./launcher');
+const db = require('./database');
+const auth = require('./auth');
+const profileSync = require('./profile-sync');
+const { isStaleRunningLock } = require('./running-lock');
+const { createWebLaunchController, parseLaunchUrl } = require('./web-launch');
 
 let mainWindow;
 let isGracefulQuitInProgress = false;
 const appIconPath = path.join(__dirname, '..', 'renderer', 'assets', 'desktop-icon-mac.png');
 
-function createWindow() {
+const webLaunch = createWebLaunchController({
+  auth, db, launcher, profileSync, isStaleRunningLock,
+  getWindow: () => {
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow({ show: false });
+    return mainWindow;
+  },
+  showError(message) {
+    focusMainWindow();
+    void dialog.showMessageBox(mainWindow, { type: 'info', title: 'Anty Browser', message });
+  },
+});
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+function registerProtocolClient() {
+  if (process.defaultApp && process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('anty', process.execPath, [path.resolve(process.argv[1])]);
+  } else if (!process.defaultApp) app.setAsDefaultProtocolClient('anty');
+}
+// Register before ready: macOS sends the cold-start URL during initialization.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  webLaunch.enqueue(url);
+});
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) app.quit();
+app.on('second-instance', (_event, argv) => {
+  const url = argv.find(arg => parseLaunchUrl(arg));
+  if (url) webLaunch.enqueue(url);
+  else focusMainWindow();
+});
+const startupUrl = process.argv.find(arg => parseLaunchUrl(arg));
+if (startupUrl) webLaunch.enqueue(startupUrl);
+
+function createWindow({ show = true } = {}) {
   mainWindow = new BrowserWindow({
+    show,
     width: 1280,
     height: 800,
     minWidth: 1024,
@@ -29,7 +72,13 @@ function createWindow() {
   registerUpdater(mainWindow);
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
+  // Initialize the renderer for IPC/account services even on a hidden launch.
+  mainWindow.webContents.once('did-finish-load', () => { void webLaunch.start(); });
+
   // Window controls via IPC
+  ipcMain.removeAllListeners('window:minimize');
+  ipcMain.removeAllListeners('window:maximize');
+  ipcMain.removeAllListeners('window:close');
   ipcMain.on('window:minimize', () => mainWindow.minimize());
   ipcMain.on('window:maximize', () => {
     if (mainWindow.isMaximized()) {
@@ -41,7 +90,7 @@ function createWindow() {
   ipcMain.on('window:close', () => mainWindow.close());
 }
 
-app.whenReady().then(() => {
+if (gotSingleInstanceLock) app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     const dockIcon = nativeImage.createFromPath(appIconPath);
     if (!dockIcon.isEmpty()) {
@@ -49,12 +98,13 @@ app.whenReady().then(() => {
     }
   }
 
+  registerProtocolClient();
   initDatabase();
   registerIpcHandlers();
-  createWindow();
+  createWindow({ show: !webLaunch.hasPending() });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!webLaunch.hasPending()) focusMainWindow();
   });
 });
 
