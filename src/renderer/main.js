@@ -20,6 +20,7 @@ let autoSaveQueued = false;
 let suppressAutoSave = false;
 let activePlatformTab = 'all';
 const DEFAULT_PLATFORM_STORAGE_KEY = 'anty.defaultPlatformTab';
+const PROFILE_FILTER_STORAGE_KEY = 'anty.profileFilter';
 const SUPPORTED_PLATFORM_TABS = new Set(['all', 'instagram', 'linkedin', 'facebook']);
 const PROXY_LOCALE_REFRESH_INTERVAL_MS = 20 * 1000;
 let mandatoryUpdateFlow = {
@@ -39,6 +40,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   applyPlatformClass();
   setupEventListeners();
   setActivePlatformTab(loadStoredPlatformTab(), { save: false, render: false });
+  // Restore the saved filter before the first render, so a reload comes back to the
+  // same view instead of silently resetting to every profile.
+  activeFilter = loadStoredProfileFilter();
+  updateFilterBtnState();
   window.api.onUpdateStatus(handleUpdateStatus);
   await renderAppVersion();
   
@@ -1363,6 +1368,71 @@ const FILTER_OPTIONS = [
   { key: 'no_proxy', label: 'Without proxy' },
 ];
 
+// Per-teammate filters live in the same single-string filter slot as the built-in
+// ones, under a prefix, so the whole selection still saves and restores as one value.
+const OWNER_FILTER_PREFIX = 'owner:';
+
+function ownerFilterKey(name) {
+  return `${OWNER_FILTER_PREFIX}${name}`;
+}
+
+function ownerFromFilterKey(key) {
+  return typeof key === 'string' && key.startsWith(OWNER_FILTER_PREFIX)
+    ? key.slice(OWNER_FILTER_PREFIX.length)
+    : null;
+}
+
+function profileOwner(profile) {
+  return String(profile?.created_by || '').trim();
+}
+
+/** Everyone who owns at least one profile, most profiles first, then A–Z. */
+function getOwnerFilterOptions() {
+  const counts = new Map();
+  for (const profile of profiles) {
+    const owner = profileOwner(profile);
+    if (!owner) continue;
+    counts.set(owner, (counts.get(owner) || 0) + 1);
+  }
+
+  // A filter can outlive the last profile it matched (the teammate's profiles were
+  // deleted, or a sync has not landed yet). Keep showing it at zero so the active
+  // choice stays visible and clearable instead of silently vanishing.
+  const active = ownerFromFilterKey(activeFilter);
+  if (active && !counts.has(active)) counts.set(active, 0);
+
+  return [...counts.entries()]
+    .map(([name, count]) => ({ key: ownerFilterKey(name), label: name, count }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+function loadStoredProfileFilter() {
+  try {
+    const stored = localStorage.getItem(PROFILE_FILTER_STORAGE_KEY);
+    if (!stored) return null;
+    if (stored.startsWith(OWNER_FILTER_PREFIX)) return stored.length > OWNER_FILTER_PREFIX.length ? stored : null;
+    return FILTER_OPTIONS.some((opt) => opt.key === stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredProfileFilter(value) {
+  try {
+    if (value === null) localStorage.removeItem(PROFILE_FILTER_STORAGE_KEY);
+    else localStorage.setItem(PROFILE_FILTER_STORAGE_KEY, String(value));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function setActiveFilter(key) {
+  activeFilter = key ?? null;
+  saveStoredProfileFilter(activeFilter);
+  updateFilterBtnState();
+  renderProfilesList(document.getElementById('search-input')?.value || '');
+}
+
 function closeAllMenus() {
   document.getElementById('sort-menu')?.remove();
   document.getElementById('filter-menu')?.remove();
@@ -1399,17 +1469,26 @@ function toggleFilterMenu() {
   const menu = document.createElement('div');
   menu.id = 'filter-menu';
   menu.className = 'dropdown-menu';
-  menu.innerHTML = FILTER_OPTIONS.map((opt, i) => {
+
+  const renderItem = (opt) => {
     const isActive = opt.key === activeFilter;
-    return `<button class="dropdown-item${isActive ? ' active' : ''}" data-filter-idx="${i}">${isActive ? '✓ ' : ''}${opt.label}</button>`;
-  }).join('');
+    const count = typeof opt.count === 'number'
+      ? `<span class="dropdown-count">${opt.count}</span>`
+      : '';
+    return `<button class="dropdown-item${isActive ? ' active' : ''}" data-filter-key="${escapeHtml(String(opt.key ?? ''))}">`
+      + `<span class="dropdown-label">${isActive ? '✓ ' : ''}${escapeHtml(opt.label)}</span>${count}</button>`;
+  };
+
+  const owners = getOwnerFilterOptions();
+  menu.innerHTML = FILTER_OPTIONS.map(renderItem).join('')
+    + (owners.length
+      ? `<div class="dropdown-sep"></div><div class="dropdown-heading">Created by</div>${owners.map(renderItem).join('')}`
+      : '');
+
   menu.querySelectorAll('.dropdown-item').forEach((item) => {
     item.addEventListener('click', () => {
-      const opt = FILTER_OPTIONS[Number(item.dataset.filterIdx)];
-      activeFilter = opt.key;
       closeAllMenus();
-      updateFilterBtnState();
-      renderProfilesList(document.getElementById('search-input')?.value || '');
+      setActiveFilter(item.dataset.filterKey || null);
     });
   });
   positionMenuUnderBtn(menu, btn);
@@ -1538,7 +1617,10 @@ function renderProfilesList(searchTerm = '') {
   }
 
   // Apply filter
-  if (activeFilter === 'running') {
+  const ownerFilter = ownerFromFilterKey(activeFilter);
+  if (ownerFilter) {
+    filtered = filtered.filter((p) => profileOwner(p) === ownerFilter);
+  } else if (activeFilter === 'running') {
     filtered = filtered.filter((p) => runningProfiles.has(p.id));
   } else if (activeFilter === 'has_proxy') {
     filtered = filtered.filter((p) => Boolean(p.proxy_host));
