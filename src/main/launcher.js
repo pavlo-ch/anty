@@ -1716,6 +1716,15 @@ async function launchProfile(profileId, mainWindow) {
     //  2) prototype-level override in buildInjectionScript (fingerprint.js)
     // Port 0 lets Chrome pick a free one and record it in DevToolsActivePort. Only
     // requested when the user actually has extensions, so a plain launch is unchanged.
+    // Bring in the extensions every profile is meant to ship with before deciding
+    // whether a debugging port is needed — otherwise the very first launch on a
+    // machine would install them and still start without loading them.
+    try {
+      await extensionsLibrary.ensureDefaultExtensions();
+    } catch (err) {
+      console.error('[Extensions] Default extension check failed:', err.message);
+    }
+
     const hasLibraryExtensions = extensionsLibrary.getLibraryLoadPaths().length > 0;
 
     const launchOptions = {
