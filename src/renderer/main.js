@@ -94,7 +94,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const startupUpdate = await window.api.startupUpdateCheck();
     if (startupUpdate?.required) {
-      showMandatoryUpdateModal(startupUpdate);
+      showMandatoryUpdateModal({ ...startupUpdate, mandatory: true });
+    } else if (startupUpdate?.available) {
+      // Offered, not imposed — it waits on the Settings button instead.
+      availableUpdateInfo = {
+        version: startupUpdate.version || null,
+        currentVersion: startupUpdate.currentVersion || null,
+        mandatory: false,
+        downloaded: false,
+        localFilePath: null,
+      };
+      renderSettingsUpdateButton();
     }
   } catch (err) {
     console.error('Startup update check failed:', err);
@@ -2146,10 +2156,25 @@ function handleUpdateStatus(data) {
     return;
   }
 
+  // An ordinary release is offered, never imposed: it only lights up the Settings
+  // button, so nothing interrupts whatever the user is in the middle of.
+  if (data.state === 'available') {
+    availableUpdateInfo = {
+      version: data.version || null,
+      currentVersion: data.currentVersion || null,
+      mandatory: false,
+      downloaded: Boolean(data.downloaded || data.localFilePath),
+      localFilePath: data.localFilePath || null,
+    };
+    renderSettingsUpdateButton();
+    return;
+  }
+
   if (data.state === 'required') {
     availableUpdateInfo = {
       version: data.version || null,
       currentVersion: data.currentVersion || null,
+      mandatory: true,
       downloaded: Boolean(data.downloaded || data.localFilePath),
       localFilePath: data.localFilePath || null,
     };
@@ -2219,10 +2244,13 @@ function handleUpdateStatus(data) {
 }
 
 function showMandatoryUpdateModal(data = {}) {
-  mandatoryUpdateRequired = false;
+  // Only a release published as mandatory removes the way out. Opening this window
+  // from Settings for an ordinary update must always leave "Later" available.
+  mandatoryUpdateRequired = data?.mandatory === true;
   availableUpdateInfo = {
     version: data?.version || mandatoryUpdateFlow.version || null,
     currentVersion: data?.currentVersion || mandatoryUpdateFlow.currentVersion || null,
+    mandatory: mandatoryUpdateRequired,
     downloaded: Boolean(data?.downloaded || data?.localFilePath || mandatoryUpdateFlow.downloaded),
     localFilePath: data?.localFilePath || null,
   };
@@ -2243,9 +2271,13 @@ function showMandatoryUpdateModal(data = {}) {
   const modal = document.getElementById('update-lock-modal');
   const text = document.getElementById('update-lock-text');
   const versionEl = document.getElementById('update-lock-version');
+  const laterBtn = document.getElementById('btn-update-lock-later');
   if (text) {
-    text.textContent = 'A new version is available. You can update now or continue using this version.';
+    text.textContent = mandatoryUpdateRequired
+      ? 'This is a required update. Install it to keep using Anty Browser.'
+      : 'A new version is available. You can update now or continue using this version.';
   }
+  if (laterBtn) laterBtn.classList.toggle('hidden', mandatoryUpdateRequired);
   if (versionEl) {
     const nextVersion = mandatoryUpdateFlow.version ? `v${mandatoryUpdateFlow.version}` : '';
     const currentVersion = mandatoryUpdateFlow.currentVersion ? `v${mandatoryUpdateFlow.currentVersion}` : '';

@@ -26,6 +26,9 @@ let mandatoryDownloadState = {
   message: null,
 };
 const DEFAULT_GITHUB_UPDATE_URL = 'https://github.com/pavlo-ch/anty/releases/latest/download';
+// Lives in the repo, not in a release, so a published version can still be made
+// mandatory later. Override with the update_policy_url setting or ANTY_UPDATE_POLICY_URL.
+const DEFAULT_UPDATE_POLICY_URL = 'https://raw.githubusercontent.com/pavlo-ch/anty/main/build/update-policy.json';
 const DEFAULT_PLATFORM_LOG_URL = '';
 const ENCRYPTED_PREFIX = 'enc:v1:';
 const PLAIN_PREFIX = 'plain:v1:';
@@ -201,6 +204,46 @@ function parseLatestMacYml(rawText) {
   const version = stripQuotes(versionMatch[1]);
   const filePath = stripQuotes(preferredFile || (pathMatch && pathMatch[1]) || 'Anty-Browser.dmg');
   return { version, filePath };
+}
+
+/**
+ * Which releases everyone must take.
+ *
+ * Read from the repository rather than from the release assets, so the answer is not
+ * frozen into a build: a release can be made mandatory afterwards, once a problem
+ * turns out to be serious, by editing one file — no rebuild, no re-publish. A release
+ * is forced on a user only when their installed version is older than
+ * `mandatoryMinVersion`; everything else is an ordinary update they take when they
+ * like.
+ */
+function getUpdatePolicyUrl() {
+  const configured = (db.getSetting('update_policy_url') || process.env.ANTY_UPDATE_POLICY_URL || '').trim();
+  return configured || DEFAULT_UPDATE_POLICY_URL;
+}
+
+/**
+ * Anything unexpected — file missing, unreachable, malformed — means optional. A
+ * failed fetch must never be able to lock someone out of the app they already have,
+ * and most releases are small, so optional is the safe default as well as the
+ * common case.
+ */
+async function fetchUpdatePolicy() {
+  // The raw host caches for a few minutes; a changing query defeats that, so making a
+  // release mandatory takes effect promptly instead of waiting out the CDN.
+  const policyUrl = `${getUpdatePolicyUrl()}?t=${Date.now()}`;
+  try {
+    const response = await fetch(policyUrl, { cache: 'no-store' });
+    if (!response.ok) {
+      logEvent('info', 'update_policy_unavailable', { policyUrl, status: response.status });
+      return { mandatoryMinVersion: null, policyUrl };
+    }
+    const parsed = JSON.parse(await response.text());
+    const minVersion = String(parsed?.mandatoryMinVersion || '').trim();
+    return { mandatoryMinVersion: minVersion || null, policyUrl };
+  } catch (err) {
+    logEvent('info', 'update_policy_fetch_failed', { policyUrl, message: err.message });
+    return { mandatoryMinVersion: null, policyUrl };
+  }
 }
 
 async function fetchLatestManifest() {
@@ -588,6 +631,43 @@ async function checkMandatoryUpdate() {
       manifestUrl: latest.manifestUrl,
     };
 
+    // Only a release the publisher marked forces the issue. Everything else is
+    // offered, not imposed: the app stays usable and the update waits in Settings.
+    const policy = await fetchUpdatePolicy();
+    const mandatory = Boolean(policy.mandatoryMinVersion)
+      && isNewerVersion(policy.mandatoryMinVersion, currentVersion);
+
+    if (!mandatory) {
+      updateMandatoryState({
+        state: 'idle',
+        version: latest.version,
+        percent: 0,
+        downloadedBytes: 0,
+        totalBytes: 0,
+        attempts: 0,
+        filePath: null,
+        message: null,
+      });
+
+      emitStatus({
+        state: 'available',
+        mandatory: false,
+        version: latest.version,
+        currentVersion,
+        downloadUrl: latest.downloadUrl,
+        downloaded: false,
+        localFilePath: null,
+      });
+
+      logEvent('info', 'optional_update_available', {
+        version: latest.version,
+        currentVersion,
+        mandatoryMinVersion: policy.mandatoryMinVersion,
+      });
+
+      return { required: false, available: true, reason: 'optional', ...mandatoryUpdateInfo };
+    }
+
     updateMandatoryState({
       state: 'required',
       version: latest.version,
@@ -612,10 +692,11 @@ async function checkMandatoryUpdate() {
     logEvent('warn', 'mandatory_update_required', {
       version: latest.version,
       currentVersion,
+      mandatoryMinVersion: policy.mandatoryMinVersion,
       downloadUrl: latest.downloadUrl
     });
 
-    return { required: true, ...mandatoryUpdateInfo };
+    return { required: true, available: true, ...mandatoryUpdateInfo };
   } catch (err) {
     logEvent('error', 'mandatory_update_check_failed', { message: err.message });
     return { required: false, reason: 'check_failed', message: err.message };
