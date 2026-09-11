@@ -254,6 +254,54 @@ body.platform-win32 .titlebar-btn.close:hover {
   letter-spacing: 0.3px;
 }
 
+/* Count of things waiting on a page — today only the pending update. Sits on the
+   icon rather than in the page, because the whole point is to be seen from
+   wherever the user is, now that an ordinary update no longer interrupts them. */
+.nav-badge {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--green);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+  box-shadow: 0 0 0 2px var(--bg-secondary), 0 0 10px rgba(76, 175, 80, 0.55);
+  animation: badgePulse 2.4s ease-in-out infinite;
+}
+
+/* A slow pulse reads as "new" without nagging; it stops mattering once the
+   update is taken, since the badge is removed outright. */
+@keyframes badgePulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--bg-secondary), 0 0 10px rgba(76, 175, 80, 0.55); }
+  50%      { box-shadow: 0 0 0 2px var(--bg-secondary), 0 0 16px rgba(76, 175, 80, 0.85); }
+}
+
+/* The settings button itself picks up the accent, so the update is visible even
+   at a glance where the badge is small. */
+.nav-btn.has-update {
+  color: var(--green);
+}
+
+/* An update waiting turns "Check for updates" into an obvious call to action. */
+.settings-btn.update-ready {
+  animation: updateGlow 2.4s ease-in-out infinite;
+}
+
+@keyframes updateGlow {
+  0%, 100% { box-shadow: 0 2px 12px rgba(76, 175, 80, 0.35); }
+  50%      { box-shadow: 0 4px 22px rgba(76, 175, 80, 0.75); }
+}
+
 .nav-btn:hover {
   color: var(--text-primary);
   background: var(--bg-hover);

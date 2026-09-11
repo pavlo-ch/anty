@@ -2097,16 +2097,27 @@ function renderAccountState(state) {
 }
 
 function renderSettingsUpdateButton() {
+  const pending = Boolean(availableUpdateInfo);
+  // A waiting update has to be visible from anywhere, not only on the page that
+  // happens to mention it — since an ordinary release no longer interrupts anyone,
+  // this badge is the only thing that says one is there at all.
+  const badge = document.getElementById('nav-settings-badge');
+  if (badge) badge.classList.toggle('hidden', !pending);
+  document.querySelector('.nav-btn[data-page="settings"]')?.classList.toggle('has-update', pending);
+
   const btn = document.getElementById('btn-settings-check-update');
   if (!btn) return;
-  if (availableUpdateInfo) {
-    btn.textContent = 'Update Now';
+  if (pending) {
+    // Naming the version answers the question the button raises, so nobody has to
+    // open the window to find out what is actually waiting.
+    const version = availableUpdateInfo.version ? ` to v${availableUpdateInfo.version}` : '';
+    btn.textContent = `Update${version}`;
     btn.classList.remove('btn-save');
-    btn.classList.add('btn-open');
+    btn.classList.add('btn-open', 'update-ready');
     return;
   }
   btn.textContent = 'Check for updates';
-  btn.classList.remove('btn-open');
+  btn.classList.remove('btn-open', 'update-ready');
   btn.classList.add('btn-save');
 }
 
