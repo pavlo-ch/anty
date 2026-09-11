@@ -815,6 +815,16 @@ async function pullProfilesFromCloud(options = {}) {
     }
 
     if (existing) {
+      // An empty tab list arriving from the cloud never clears one we already hold.
+      // The web client does not send tabs at all, and the platform turns that absence
+      // into an empty array, so a pull could wipe a session's restored tabs that the
+      // desktop had saved correctly. Only a real, non-empty list replaces ours; the
+      // desktop still clears its own tabs directly when a profile closes with none.
+      if (Array.isArray(cloud.data.last_open_tabs) && cloud.data.last_open_tabs.length === 0) {
+        let keptTabs = [];
+        try { keptTabs = JSON.parse(existing.last_open_tabs || '[]'); } catch (_) { keptTabs = []; }
+        if (Array.isArray(keptTabs) && keptTabs.length > 0) delete cloud.data.last_open_tabs;
+      }
       db.updateProfile(existing.id, cloud.data);
       pulled += 1;
       continue;
