@@ -1605,6 +1605,53 @@ body.platform-win32 .titlebar-btn.close:hover {
   color: var(--green);
 }
 
+/* Owner rows carry a profile count, so the row becomes name-left / count-right. */
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dropdown-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropdown-count {
+  flex: none;
+  min-width: 18px;
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.dropdown-item.active .dropdown-count {
+  color: var(--green);
+}
+
+.dropdown-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.dropdown-heading {
+  padding: 4px 12px 2px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
 /* Filter active indicator */
 .icon-btn.active {
   color: var(--green);
