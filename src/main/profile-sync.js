@@ -545,6 +545,14 @@ function onLocalProfileUpsert(profile) {
 function onLocalProfileDelete(profile) {
   const normalized = normalizeProfileForPayload(profile);
   if (!normalized) return null;
+  // Drop this profile's pending upserts first: pushed after the delete they would
+  // re-create it in the cloud, and the next pull would hand it back.
+  try {
+    const dropped = db.dropQueuedUpsertsForProfile(profile.id, profile.remote_id);
+    if (dropped > 0) console.log(`[Sync] Dropped ${dropped} queued upsert(s) for deleted profile ${profile.id}`);
+  } catch (err) {
+    console.error('[Sync] Could not clear queued upserts before delete:', err.message);
+  }
   return db.enqueueProfileSync('profile_delete', {
     localId: profile.id,
     remoteId: profile.remote_id || '',
@@ -824,6 +832,13 @@ async function pullProfilesFromCloud(options = {}) {
         let keptTabs = [];
         try { keptTabs = JSON.parse(existing.last_open_tabs || '[]'); } catch (_) { keptTabs = []; }
         if (Array.isArray(keptTabs) && keptTabs.length > 0) delete cloud.data.last_open_tabs;
+      }
+      // Warmup completion only ever goes 0 -> 1. The cloud still holds 0 for most
+      // profiles, and the flag is set locally without queueing a push, so a pull would
+      // hand that 0 straight back and re-open the warmup prompt on a profile that was
+      // already warmed — then that 0 gets pushed on, which is how it spread.
+      if (Number(cloud.data.warmup_completed) === 0 && Number(existing.warmup_completed) === 1) {
+        delete cloud.data.warmup_completed;
       }
       db.updateProfile(existing.id, cloud.data);
       pulled += 1;

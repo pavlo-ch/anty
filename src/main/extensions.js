@@ -421,7 +421,60 @@ async function installDefaultExtension(id, label) {
  * Make sure every default extension is present in the library. Never throws and
  * never blocks a launch on a failure: a profile still opens without them.
  */
+/**
+ * Shipping these by default cost more than they were worth, so they are off unless
+ * someone deliberately turns them on.
+ *
+ * A non-empty library makes the launcher open a CDP debugging port on every profile,
+ * which lets any local process read that profile's cookies and sessions without
+ * credentials. And the bundled password manager patched navigator.credentials on every
+ * https page while handing out one extension id shared by all of a user's profiles —
+ * a single marker linking profiles that exist precisely to be unlinkable. Neither is
+ * an acceptable default for an anti-detect browser.
+ */
+function areDefaultExtensionsEnabled() {
+  try {
+    const { getSetting } = require('./database');
+    return String(getSetting('default_extensions_enabled') || '').trim() === 'true';
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Take back what we installed on the user's behalf, so an upgrade actually undoes the
+ * exposure instead of leaving it in place for everyone who already launched once.
+ * Only entries this feature created are touched — the marker records them — so an
+ * extension the user added themselves is left alone even if it is the same one.
+ */
+function removeSeededDefaultExtensions() {
+  const markerPath = getDefaultExtensionsMarkerPath();
+  const marker = readJsonSafe(markerPath);
+  const seeded = Array.isArray(marker?.seeded) ? marker.seeded.map(String) : [];
+  if (seeded.length === 0) return { removed: 0 };
+
+  const defaultIds = new Set(DEFAULT_EXTENSIONS.map((e) => e.id));
+  let removed = 0;
+  for (const id of seeded) {
+    if (!defaultIds.has(id)) continue;
+    const dir = path.join(getLibraryDir(), id);
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        removed += 1;
+        console.log(`[Extensions] Removed auto-installed default extension ${id}`);
+      }
+    } catch (err) {
+      console.error(`[Extensions] Could not remove ${id}:`, err.message);
+    }
+  }
+  try { fs.rmSync(markerPath, { force: true }); } catch (_) {}
+  return { removed };
+}
+
 async function ensureDefaultExtensions() {
+  if (!areDefaultExtensionsEnabled()) return removeSeededDefaultExtensions();
+
   const marker = readJsonSafe(getDefaultExtensionsMarkerPath()) || {};
   const seeded = new Set(Array.isArray(marker.seeded) ? marker.seeded.map(String) : []);
 

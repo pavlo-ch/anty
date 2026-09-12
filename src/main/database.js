@@ -863,6 +863,39 @@ function countProfilesUsingProxy(proxyId) {
 }
 
 // ---- CLOUD SYNC QUEUE ----
+/**
+ * Forget any queued upsert for a profile that has just been deleted.
+ *
+ * A pending profile_upsert outlives the row it describes. Pushed after the delete, it
+ * re-creates the profile in the cloud — and if the profile never had a remote id, the
+ * delete is a cloud no-op while the upsert inserts a brand new row — so the next pull
+ * brings it back and the user has to delete it again. That is the "it deleted on the
+ * third try" the user hit.
+ */
+function dropQueuedUpsertsForProfile(localId, remoteId) {
+  const scope = resolveActiveScope();
+  const rows = getDb()
+    .prepare("SELECT id, payload FROM profile_sync_queue WHERE action = 'profile_upsert' AND status = 'pending' AND owner_scope = ?")
+    .all(scope);
+
+  const wantedLocal = Number(localId);
+  const wantedRemote = String(remoteId || '').trim();
+  const doomed = [];
+  for (const row of rows) {
+    let profile = null;
+    try { profile = JSON.parse(row.payload || '{}')?.profile || null; } catch (_) { continue; }
+    if (!profile) continue;
+    const sameRemote = wantedRemote && String(profile.remoteId || '').trim() === wantedRemote;
+    const sameLocal = Number.isFinite(wantedLocal) && Number(profile.localId) === wantedLocal;
+    if (sameRemote || sameLocal) doomed.push(row.id);
+  }
+  if (doomed.length === 0) return 0;
+
+  const stmt = getDb().prepare('DELETE FROM profile_sync_queue WHERE id = ?');
+  for (const id of doomed) stmt.run(id);
+  return doomed.length;
+}
+
 function enqueueProfileSync(action, payload = {}) {
   const result = getDb().prepare(`
     INSERT INTO profile_sync_queue (action, payload, status, retry_count, last_error, created_at, updated_at, owner_scope)
@@ -1016,5 +1049,6 @@ module.exports = {
   listFolders, createFolder,
   listGroups, createGroup,
   getSetting, setSetting,
-  enqueueProfileSync, listProfileSyncQueue, markProfileSyncDone, markProfileSyncFailed
+  enqueueProfileSync,
+  dropQueuedUpsertsForProfile, listProfileSyncQueue, markProfileSyncDone, markProfileSyncFailed
 };
