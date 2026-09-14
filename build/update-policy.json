@@ -1,4 +1,4 @@
 {
   "_readme": "Set mandatoryMinVersion to a release version to force everyone below it to update. Leave it alone and updates stay optional. See docs/update-policy.md.",
-  "mandatoryMinVersion": "0.0.0"
+  "mandatoryMinVersion": "1.2.12"
 }
