@@ -495,19 +495,37 @@
     .row button[hidden] { display: none; }
     textarea { width: 100%; height: 120px; margin-top: 8px; box-sizing: border-box; font: 11px/1.3 monospace; }
     textarea[hidden] { display: none; }
+    ol[hidden] { display: none; }
+    /* Завіса на час роботи кнопки: під нею Ads Manager перевантажується, а меню й діалог
+       колонок відкриваються й закриваються самі — без неї це виглядає як збій. */
+    .veil { position: fixed; inset: 0; z-index: 2147482990; display: flex; align-items: center;
+      justify-content: center; background: #f0f2f5; cursor: progress;
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #1c1e21; }
+    .veil[hidden] { display: none; }
+    .card { display: flex; align-items: center; gap: 12px; max-width: 360px; padding: 16px 20px;
+      background: #fff; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+    .spin { flex: none; width: 18px; height: 18px; border: 2px solid #ccd0d5; border-top-color: #1c2b33;
+      border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .what { font-weight: 600; }
+    .sub { margin-top: 2px; color: #65676b; font-size: 12px; }
   `;
 
   // Кнопку натиснули → перехід → у новому документі цей самий скрипт звіряє таблицю.
   // Прапорець у sessionStorage каже, що звірку ініціювала кнопка, а не закладка.
   const PENDING = '__advColumnsPending';
-  const takePending = () => {
+  const peekPending = () => {
     try {
       const at = Number(sessionStorage.getItem(PENDING));
-      sessionStorage.removeItem(PENDING);
       return at > 0 && Date.now() - at < 120000;
     } catch (_) {
       return false;
     }
+  };
+  const takePending = () => {
+    const pending = peekPending();
+    try { sessionStorage.removeItem(PENDING); } catch (_) {}
+    return pending;
   };
 
   function mountUi() {
@@ -525,6 +543,7 @@
       shadow.appendChild(style);
     }
     shadow.innerHTML += `
+      <div class="veil" hidden><div class="card"><div class="spin"></div><div><div class="what">Setting up ${PRESET.name} columns</div><div class="sub"></div></div></div></div>
       <div class="panel" hidden>
         <div class="title">${PRESET.name} columns</div>
         <ol></ol>
@@ -545,6 +564,8 @@
     const copyBtn = $('.copy');
     const area = $('textarea');
     const fab = $('.fab');
+    const veil = $('.veil');
+    const sub = $('.sub');
     let log = [];
     let report = '';
 
@@ -556,6 +577,7 @@
         li.textContent = text;
         list.appendChild(li);
         log.push(`step: ${text}`);
+        sub.textContent = text;
         place();
       },
       note(text) {
@@ -592,8 +614,12 @@
     }
     addEventListener('resize', () => { if (!panel.hidden) place(); });
 
-    function reset() {
-      panel.hidden = false;
+    // Під завісою людина бачить лише один рядок про поточний крок; панель із кроками —
+    // тільки коли щось пішло не так.
+    function reset({ busy }) {
+      veil.hidden = !busy;
+      panel.hidden = busy;
+      list.hidden = false;
       list.textContent = '';
       msg.hidden = true;
       copyBtn.hidden = true;
@@ -604,20 +630,26 @@
     // quiet: відкрили закладку з columns=ADV, а не натиснули кнопку — панель лише при збої.
     async function check({ quiet }) {
       fab.disabled = true;
-      reset();
+      reset({ busy: !quiet });
       if (quiet) panel.hidden = true;
       try {
         let result = await verify(ui);
         // Пресет — лише на клік: закладка з columns=ADV нічого в акаунті не зберігає.
         if (result === 'ok' && !quiet) result = await ensurePreset(ui);
         list.querySelector('li.cur')?.classList.remove('cur');
-        if (result === 'ok' && !quiet) {
-          show('ok', `${PRESET.name} is on.`);
-          // Панель стоїть над Ads Manager — після успіху прибираємо її, щоб не заважала.
-          setTimeout(() => { if (!fab.disabled) panel.hidden = true; }, 5000);
+        veil.hidden = true;
+        if (!quiet || result !== 'ok') {
+          // Успіх чи попередження — коротке повідомлення без списку кроків.
+          list.hidden = true;
+          panel.hidden = false;
+          if (result === 'ok') show('ok', `${PRESET.name} is on.`);
         }
-        if (result !== 'ok' && quiet) panel.hidden = false;
+        if (result === 'ok' && !quiet) {
+          // Панель стоїть над Ads Manager — після успіху прибираємо її, щоб не заважала.
+          setTimeout(() => { if (!fab.disabled) panel.hidden = true; }, 3000);
+        }
       } catch (error) {
+        veil.hidden = true;
         console.error('[ADV columns]', error); // повний слід лишається в консолі
         report = buildReport(log, error);
         panel.hidden = false;
@@ -635,7 +667,7 @@
     // Перехід навіть тоді, коли в адресі вже columns=ADV: колонки могли змінити руками,
     // а Ads Manager застосовує columns= лише при відкритті сторінки.
     fab.addEventListener('click', () => {
-      reset();
+      reset({ busy: true });
       ui.step(`Open the table with the ${PRESET.name} columns`);
       fab.disabled = true;
       try { sessionStorage.setItem(PENDING, String(Date.now())); } catch (_) {}
@@ -660,10 +692,13 @@
     if (onAdsManager() && hasAdvColumns()) void check({ quiet: !pending });
   }
 
-  // Скрипт виконується ще до розбору сторінки; кнопку ставимо, коли DOM готовий.
+  // Скрипт виконується ще до розбору сторінки; кнопку ставимо, коли DOM готовий. Після
+  // кліку — одразу, щойно є <html>: інакше між перезавантаженням і завісою секунди зо дві-
+  // десять видно завантажувач Ads Manager, і завіса «вискакує» посеред нього.
   const start = () => {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', start, { once: true });
+    if (document.readyState === 'loading' && !(peekPending() && document.documentElement)) {
+      if (peekPending()) setTimeout(start, 50);
+      else document.addEventListener('DOMContentLoaded', start, { once: true });
       return;
     }
     mountUi();
