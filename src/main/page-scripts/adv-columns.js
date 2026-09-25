@@ -6,18 +6,24 @@
  * без розширення і без порту налагодження. Сторінка Facebook не бачить його змінних;
  * спільний з нею лише DOM (кнопка в shadow DOM).
  *
- * Як працює: Ads Manager бере набір колонок з параметра columns= в адресі — ключі через
- * кому, у потрібному порядку. Кнопка перевідкриває поточну таблицю (кампанії, групи
- * оголошень чи оголошення) з columns=<ключі ADV>; дата, фільтри й акаунт з адреси
- * лишаються. Діалог колонок не відкривається, пресет не зберігається й не змінюється.
+ * Як працює, два кроки:
+ * 1. Колонки — посиланням. Ads Manager бере набір із параметра columns= в адресі — ключі
+ *    через кому, у потрібному порядку. Кнопка перевідкриває поточну таблицю (кампанії,
+ *    групи оголошень чи оголошення) з columns=<ключі ADV>; дата, фільтри й акаунт з
+ *    адреси лишаються. Ключі не залежать від мови інтерфейсу, і таблиця після
+ *    завантаження звіряється за ними ж: у заголовку колонки є id «reporting_table_column_<ключ>».
+ * 2. Пресет ADV. Посилання дає лише «Columns: Custom» — пресет Ads Manager не створює.
+ *    Якщо ADV ще немає, кнопка зберігає вже відкритий набір: Columns → Customize columns
+ *    (колонки там уже стоять, нічого не проклікується) → Save ▾ → Save as new preset →
+ *    «ADV» → Save. Якщо ADV із цим набором уже є, Ads Manager сам підписує таблицю
+ *    «Columns: ADV» — тоді нічого не зберігається. Цей крок шукає елементи за видимим
+ *    текстом, тож лише він вимагає англійського інтерфейсу.
  *
  * Перевірено на справжньому Ads Manager 25.09.2026 (профіль «Facebook Maria Shevchyk»):
  * на всіх трьох рівнях таблиця відкривається з цими колонками рівно в цьому порядку;
  * business.facebook.com/adsmanager/… переадресовує на adsmanager.facebook.com з тим самим
  * columns=; column_preset= у тій самій адресі перебив би набір, тож його прибираємо.
- *
- * Ключі не залежать від мови інтерфейсу, і після завантаження таблиця звіряється за ними ж:
- * у заголовку колонки є id «reporting_table_column_<ключ>». Тож мова Ads Manager не важлива.
+ * Кроки збереження пресета — зі старої кнопки, прогнаної на живому Ads Manager 23.09.2026.
  */
 (function () {
   // Скрипт приходить у кожен документ профілю; працює лише у вкладці Ads Manager.
@@ -166,7 +172,277 @@
     return 'ok';
   }
 
+  /* ---------------- пресет ADV: пошук за текстом ---------------- */
+
+  // Далі — кроки старої кнопки (перевірені на живому Ads Manager 23.09.2026) без
+  // проклікування колонок: набір уже відкрито посиланням. Класи у верстці Facebook
+  // обфусковані, тож елементи шукаються за видимим текстом і ARIA-ролями.
+  const CLICKABLE = 'button, a, [role="button"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [tabindex]';
+  const COUNT_RE = /^(\d+) columns? selected$/i;
+
+  // Найглибші видимі елементи під root, чий текст приймає accept. Текст може бути
+  // розбитий на кілька вузлів, тому звіряється textContent предків, а prefilter
+  // дешево відсікає вузли, які точно не частина шуканого.
+  function findText(root, accept, prefilter) {
+    const out = [];
+    if (!root) return out;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const piece = norm(n.data);
+      if (!piece || !prefilter(piece)) continue;
+      for (let el = n.parentElement, i = 0; el && root.contains(el) && i < 4; el = el.parentElement, i++) {
+        const text = norm(el.textContent);
+        if (accept(text)) {
+          if (!out.includes(el) && isVisible(el) && !(host && host.contains(el))) out.push(el);
+          break;
+        }
+        if (text.length > 120) break;
+      }
+    }
+    return out;
+  }
+
+  function exactly(label) {
+    const want = norm(label).toLowerCase();
+    return [(t) => t.toLowerCase() === want, (p) => want.includes(p.toLowerCase())];
+  }
+
+  function pattern(re, hint) {
+    return [(t) => t.length <= 80 && re.test(t), (p) => hint.test(p)];
+  }
+
+  // Вище за el, але ще не спільний предок з anchor: для порталу — корінь меню/діалогу.
+  function popupRoot(el, anchor) {
+    let root = el;
+    while (root.parentElement && root.parentElement !== document.body && !root.parentElement.contains(anchor)) {
+      root = root.parentElement;
+    }
+    return root;
+  }
+
+  const isDisabled = (el) => el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+
+  function press(el) {
+    el.scrollIntoView({ block: 'nearest' });
+    const r = el.getBoundingClientRect();
+    const base = {
+      bubbles: true, cancelable: true, composed: true, button: 0,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    };
+    const ptr = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    el.dispatchEvent(new PointerEvent('pointerdown', ptr));
+    el.dispatchEvent(new MouseEvent('mousedown', base));
+    el.dispatchEvent(new PointerEvent('pointerup', ptr));
+    el.dispatchEvent(new MouseEvent('mouseup', base));
+    el.dispatchEvent(new MouseEvent('click', base));
+  }
+
+  // React стежить за value через власний сетер; нативний сетер прототипу + подія input
+  // — перевірений спосіб, щоб onChange спрацював.
+  function typeInto(input, value) {
+    input.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function findColumnsButton() {
+    for (const el of document.querySelectorAll('button, [role="button"]')) {
+      if (host && host.contains(el)) continue;
+      const label = norm(el.getAttribute('aria-label')) || norm(el.textContent);
+      if (/^columns\b/i.test(label) && isVisible(el)) return el;
+    }
+    return null;
+  }
+
+  // «Columns: ADV» — Ads Manager упізнав відкритий набір як наш пресет.
+  const saysPreset = (btn) => new RegExp(`\\b${PRESET.name}\\b`).test(norm(btn.textContent));
+
+  // Діалог «Customize columns»: корінь і лічильник «N columns selected». Шукається
+  // заново щоразу — React перемальовує діалог, і старі посилання відвалюються.
+  function locateDialog(anchor) {
+    const countEl = findText(document.body, ...pattern(COUNT_RE, /selected/i))[0];
+    if (!countEl) return null;
+    return { dialog: countEl.closest('[role="dialog"]') || popupRoot(countEl, anchor), countEl };
+  }
+
+  const readCount = (ctx) => Number(COUNT_RE.exec(norm(ctx.countEl.textContent))[1]);
+
+  class StepError extends Error {
+    constructor(message, root) {
+      super(message);
+      this.root = root; // що покласти у звіт: меню, діалог або сторінку
+    }
+  }
+
+  /* ---------------- пресет ADV: збереження ---------------- */
+
+  // Викликається після звірки таблиці, тож у ній уже рівно набір ADV.
+  async function ensurePreset(ui) {
+    const colBtn = await waitFor(findColumnsButton, 15000);
+    if (!colBtn) {
+      ui.note(`The columns are set, but the Columns button wasn't found, so the ${PRESET.name} preset wasn't saved.`);
+      return 'warn';
+    }
+    if (saysPreset(colBtn)) return 'ok';
+
+    ui.step(`Save the ${PRESET.name} preset`);
+    // Меню прив'язане до кнопки через aria-controls (перевірено 23.09.2026). Шукати
+    // «Customize columns» по всій сторінці не можна: у кнопці «+» шапки таблиці є
+    // прихований текст «Customize columns…», і клік по ньому відкриває інший поповер.
+    const customize = pattern(/^customi[sz]e columns/i, /customi[sz]e/i);
+    const menuEl = () => {
+      const id = colBtn.getAttribute('aria-controls');
+      const el = id && document.getElementById(id);
+      if (el && isVisible(el)) return el;
+      return [...document.querySelectorAll('[role="menu"]')].find(isVisible) || null;
+    };
+    if (colBtn.getAttribute('aria-expanded') !== 'true') press(colBtn);
+    // Одразу після завантаження сторінки меню секунди зо три-п'ять показує «Loading...».
+    const menu = await waitFor(() => { const m = menuEl(); return m && findText(m, ...customize)[0] && m; }, 15000);
+    if (!menu) {
+      const lang = document.documentElement.lang || 'unknown';
+      throw new StepError(
+        "The Columns menu didn't open, or it has no Customize columns item." +
+        (/^en/i.test(lang) ? '' : ` Saving the preset needs Ads Manager in English (now: ${lang}).`),
+        menuEl(),
+      );
+    }
+
+    // ADV уже є, а таблиця не «Columns: ADV» — отже, в ньому інший набір. Другий ADV
+    // не створюємо (як і стара кнопка): його треба перейменувати чи видалити самому.
+    let existing = findText(menu, ...exactly(PRESET.name))[0];
+    if (!existing) {
+      const yours = findText(menu, ...pattern(/^view your (column )?presets$/i, /view|presets/i))[0];
+      if (yours) {
+        press(yours.closest(CLICKABLE) || yours);
+        // «Back» — іконка з прихованим підписом, тож шукаємо кнопку за її textContent.
+        const back = await waitFor(() => {
+          const m = menuEl();
+          return m && [...m.querySelectorAll('button, [role="button"]')]
+            .find((b) => isVisible(b) && /^back\b/i.test(norm(b.textContent).replace(/​/g, '')));
+        }, 3000);
+        existing = await waitFor(() => { const m = menuEl(); return m && findText(m, ...exactly(PRESET.name))[0]; }, back ? 2000 : 0);
+        if (!existing && back) {
+          press(back.closest(CLICKABLE) || back);
+          await waitFor(() => { const m = menuEl(); return m && findText(m, ...customize)[0]; }, 3000);
+        }
+      }
+    }
+    if (existing) {
+      press(colBtn); // закрити меню, нічого не вибравши
+      ui.note(
+        `The table has the ${PRESET.name} columns now. A preset named ${PRESET.name} with other columns already ` +
+        `exists, so a second one wasn't saved — rename or delete it in Ads Manager and click again.`,
+      );
+      return 'warn';
+    }
+
+    const item = findText(menuEl() || menu, ...customize)[0];
+    if (!item) throw new StepError('Lost the Customize columns item in the Columns menu.', menuEl());
+    press(item.closest(CLICKABLE) || item);
+
+    // Діалог — модуль, що довантажується: перший раз буває повільно.
+    let ctx = await waitFor(() => locateDialog(colBtn), 15000);
+    if (!ctx) throw new StepError("Customize columns didn't open.", menuEl());
+    await sleep(500);
+    ctx = locateDialog(colBtn);
+    // У діалозі вже набір із посилання (Campaign + решта). Інша кількість — це не наш
+    // набір, і зберігати його під назвою ADV не можна.
+    if (readCount(ctx) !== PRESET.columns.length) {
+      throw new StepError(
+        `Customize columns shows ${readCount(ctx)} columns, expected ${PRESET.columns.length}. ` +
+        'Nothing was saved — press Cancel in the dialog.',
+        ctx.dialog,
+      );
+    }
+
+    const textInputs = () => [...document.querySelectorAll('input')]
+      .filter((i) => isVisible(i) && !isDisabled(i) && ['text', 'search', ''].includes(i.type) && !(host && host.contains(i)));
+    const inputsBefore = new Set(textInputs());
+
+    // Нинішній Ads Manager (перевірено 23.09.2026): розділена кнопка «Save ▾» → пункт
+    // «Save as new preset» → поле назви. Старіший: чекбокс «Save as preset» + поле + «Apply».
+    const saveText = findText(ctx.dialog, ...exactly('Save'))[0];
+    const dropdown = (saveText && saveText.closest('[role="group"]')?.querySelector('[aria-haspopup="menu"]'))
+      || [...ctx.dialog.querySelectorAll('[aria-haspopup="menu"]')].find((b) => /open dropdown/i.test(norm(b.textContent)));
+    if (dropdown) {
+      press(dropdown);
+      const saveNew = await waitFor(() => {
+        const found = findText(document.body, ...pattern(/^save as( a)? new (column )?preset$/i, /save|preset/i));
+        return found.find((el) => el.closest('[role="menu"], [role="menuitem"]')) || found[0] || null;
+      }, 4000);
+      if (!saveNew) throw new StepError("The Save menu has no 'Save as new preset'. Nothing was saved — press Cancel.", ctx.dialog);
+      press(saveNew.closest(CLICKABLE) || saveNew);
+    } else {
+      const saveLabel = findText(ctx.dialog, ...pattern(/^save\b.*\bpreset$/i, /save|preset/i))[0];
+      const saveBox = saveLabel && (saveLabel.closest('input[type="checkbox"], [role="checkbox"]')
+        || saveLabel.parentElement?.querySelector('input[type="checkbox"], [role="checkbox"]'));
+      if (!saveBox) throw new StepError("Couldn't find how to save a preset here. Nothing was saved — press Cancel.", ctx.dialog);
+      if (!(saveBox.checked === true || saveBox.getAttribute('aria-checked') === 'true')) {
+        if (saveBox instanceof HTMLInputElement) saveBox.click(); else press(saveBox);
+      }
+    }
+
+    const nameInput = await waitFor(() => textInputs().find((i) => !inputsBefore.has(i)) || null, 4000);
+    if (!nameInput) {
+      throw new StepError("The preset name field didn't appear. Nothing was saved — press Cancel.", locateDialog(colBtn)?.dialog);
+    }
+    typeInto(nameInput, PRESET.name);
+    await sleep(300);
+
+    // Підтвердження — кнопка в тому ж діалозі, що й поле назви, і після нього.
+    const scope = nameInput.closest('[role="dialog"]') || document.body;
+    const confirm = [...scope.querySelectorAll('button, [role="button"]')].find((b) =>
+      isVisible(b) && !isDisabled(b) && /^(save|create|save preset|confirm|done|apply)$/i.test(norm(b.textContent))
+      && nameInput.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!confirm) {
+      throw new StepError(`Typed ${PRESET.name}, but found no button to confirm it. Nothing was saved — press Cancel.`, scope);
+    }
+    ui.info(`confirm: "${norm(confirm.textContent)}" in ${scope === document.body ? 'page' : 'dialog'}`);
+    press(confirm);
+
+    const closed = await waitFor(() => !locateDialog(colBtn), 8000);
+    if (!closed) {
+      const alert = [...document.querySelectorAll('[role="alert"]')].find((el) => isVisible(el) && norm(el.textContent));
+      throw new StepError(
+        `Ads Manager kept the dialog open${alert ? `: "${norm(alert.textContent)}"` : ''}.`,
+        locateDialog(colBtn)?.dialog,
+      );
+    }
+    const named = await waitFor(() => { const b = findColumnsButton(); return b && saysPreset(b); }, 5000);
+    if (!named) {
+      ui.note(`Saved, but the Columns button doesn't say ${PRESET.name} — check the Columns menu.`);
+      return 'warn';
+    }
+    return 'ok';
+  }
+
   /* ---------------- звіт ---------------- */
+
+  // Скелет меню чи діалогу для звіту: ролі, підписи й власний текст, без класів.
+  function outline(root, limit = 300) {
+    const lines = [];
+    (function walk(el, depth) {
+      if (lines.length >= limit || !(el instanceof Element) || el === host) return;
+      const tag = el.tagName.toLowerCase();
+      const role = el.getAttribute('role');
+      const aria = el.getAttribute('aria-label');
+      const own = norm([...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.data).join(' '));
+      const keep = Boolean(role || aria || own || tag === 'input' || tag === 'button');
+      if (keep && isVisible(el)) {
+        let line = '  '.repeat(Math.min(depth, 20)) + tag;
+        if (role) line += `[role=${role}]`;
+        if (tag === 'input') line += `[type=${el.type}]${el.checked ? '[checked]' : ''}`;
+        if (isDisabled(el)) line += '[disabled]';
+        if (aria) line += ` aria="${aria.slice(0, 60)}"`;
+        if (own) line += ` "${own.slice(0, 60)}"`;
+        lines.push(line);
+      }
+      for (const c of el.children) walk(c, depth + (keep ? 1 : 0));
+    })(root, 0);
+    return lines.join('\n');
+  }
 
   // Без адреси: у ній id акаунта й бізнесу, а для діагностики досить шляху й ключів.
   function buildReport(log, error) {
@@ -181,6 +457,8 @@
     ];
     if (error.detail) {
       parts.push('', `expected: ${PRESET.columns.join(', ')}`, `table:    ${error.detail.keys.join(', ')}`);
+    } else if (error instanceof StepError) {
+      parts.push('', '--- dialog/menu outline ---', error.root ? outline(error.root) : '(none)');
     } else {
       parts.push('', String(error.stack || ''));
     }
@@ -278,6 +556,7 @@
         li.textContent = text;
         list.appendChild(li);
         log.push(`step: ${text}`);
+        place();
       },
       note(text) {
         log.push(`note: ${text}`);
@@ -292,7 +571,26 @@
       msg.hidden = false;
       msg.className = `msg ${kind}`;
       msg.textContent = text;
+      place();
     }
+
+    // Над відкритим діалогом Ads Manager панель не стоїть: на реальному прогоні 23.09 вона
+    // перекривала «Save». Ставимо її збоку від діалогу — там лише затемнений фон.
+    function place() {
+      const dialog = [...document.querySelectorAll('[role="dialog"]')]
+        .map((d) => d.getBoundingClientRect())
+        .filter((r) => r.width > 300 && r.height > 200)
+        .sort((a, b) => b.width * b.height - a.width * a.height)[0];
+      panel.style.left = panel.style.right = panel.style.width = '';
+      if (!dialog) return;
+      const gap = 8;
+      const onRight = innerWidth - dialog.right >= dialog.left;
+      const room = (onRight ? innerWidth - dialog.right : dialog.left) - gap * 2;
+      panel.style.width = `${Math.max(200, Math.min(300, room))}px`;
+      if (onRight) panel.style.right = `${gap}px`;
+      else { panel.style.left = `${gap}px`; panel.style.right = 'auto'; }
+    }
+    addEventListener('resize', () => { if (!panel.hidden) place(); });
 
     function reset() {
       panel.hidden = false;
@@ -309,7 +607,9 @@
       reset();
       if (quiet) panel.hidden = true;
       try {
-        const result = await verify(ui);
+        let result = await verify(ui);
+        // Пресет — лише на клік: закладка з columns=ADV нічого в акаунті не зберігає.
+        if (result === 'ok' && !quiet) result = await ensurePreset(ui);
         list.querySelector('li.cur')?.classList.remove('cur');
         if (result === 'ok' && !quiet) {
           show('ok', `${PRESET.name} is on.`);
@@ -323,7 +623,9 @@
         panel.hidden = false;
         show('err', error instanceof CheckError
           ? `${error.message} Copy the report and send it to the dev.`
-          : 'Something broke in ADV columns. Copy the report and send it to the dev.');
+          : error instanceof StepError
+            ? error.message
+            : 'Something broke in ADV columns. Copy the report and send it to the dev.');
         copyBtn.hidden = false;
       } finally {
         fab.disabled = false;
