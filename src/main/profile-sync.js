@@ -642,6 +642,22 @@ async function fetchWithAuthRetry(url, payload) {
   }
 }
 
+// FB Connect (src/main/fb-connect.js) ходить у платформу тим самим токеном і з тим самим
+// оновленням на 401, що й синхронізація профілів. Адреси — сусіди login, як refresh і push.
+function getFbConnectTicketUrl() {
+  return (process.env.ANTY_PLATFORM_FB_TICKET_URL || deriveSiblingUrl(getAuthUrl(), 'fb-connect-ticket')).trim();
+}
+
+function getFbStatusUrl() {
+  return (process.env.ANTY_PLATFORM_FB_STATUS_URL || deriveSiblingUrl(getAuthUrl(), 'fb-status')).trim();
+}
+
+async function platformPost(url, payload) {
+  if (!url) return { ok: false, status: 0, body: {}, reason: 'url_not_configured' };
+  if (!isLoggedIn()) return { ok: false, status: 401, body: {}, reason: 'not_logged_in' };
+  return fetchWithAuthRetry(url, payload);
+}
+
 async function pushActionToCloud(action, payload) {
   const pushUrl = getProfilesPushUrl();
   if (!isLoggedIn()) {
@@ -966,5 +982,8 @@ module.exports = {
   pushProfileDeleteNow,
   runFullSync,
   scheduleSync,
-  getSyncStatus
+  getSyncStatus,
+  getFbConnectTicketUrl,
+  getFbStatusUrl,
+  platformPost
 };

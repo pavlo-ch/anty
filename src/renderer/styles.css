@@ -648,6 +648,12 @@ body.platform-win32 .titlebar-btn.close:hover {
   color: var(--green);
 }
 
+/* FB Connect: «f» підключеного до BlackAffiliate Facebook */
+.badge-fb { font-weight: 700; font-family: Helvetica, Arial, sans-serif; }
+.badge-fb.ok { background: rgba(24, 119, 242, 0.18); color: #4a9bff; }
+.badge-fb.warn { background: rgba(255, 193, 7, 0.15); color: var(--yellow); }
+.badge-fb.wait { background: rgba(255, 255, 255, 0.08); color: #aaa; }
+
 .badge-status {
   width: auto;
   padding: 0 6px;
@@ -722,6 +728,11 @@ body.platform-win32 .titlebar-btn.close:hover {
   color: #fff;
   background: rgba(244, 67, 54, 0.9);
   border-color: rgba(244, 67, 54, 1);
+}
+
+.profile-fb-btn:hover {
+  background: #1877f2;
+  border-color: #1877f2;
 }
 
 .profile-launch-btn {

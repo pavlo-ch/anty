@@ -8,6 +8,7 @@ let tags = [];
 let selectedProfileId = null;
 let runningProfiles = new Set();
 let pendingProfiles = new Set(); // profiles being launched/stopped (prevents double-click)
+const fbStates = new Map(); // profileId → стан FB Connect з платформи (fb-connect.js)
 let accountState = null;
 let mandatoryUpdateRequired = false;
 let mandatoryUpdateOpenInProgress = false;
@@ -946,6 +947,96 @@ async function syncProfileLocaleFromProxy(profileId, options = {}) {
   }
 }
 
+// ===== FB CONNECT =====
+// Кнопка «f» у рядку профілю: запускає профіль (якщо треба), просить у платформи посилання
+// на вікно згоди Meta і відкриває його в профілі. Далі — лише статус; токен тримає платформа.
+const FB_POLL_EVERY_MS = 3000;
+const FB_POLL_FOR_MS = 5 * 60 * 1000;
+const fbPolling = new Set();
+
+function fbBadge(id) {
+  const s = fbStates.get(id);
+  if (!s) return '';
+  const accounts = `${s.adAccounts} ad account${s.adAccounts === 1 ? '' : 's'}`;
+  if (s.kind === 'connected') {
+    return `<span class="badge badge-fb ok" title="Facebook connected to BlackAffiliate${s.fbUserName ? ': ' + escapeHtml(s.fbUserName) : ''} · ${accounts}">f</span>`;
+  }
+  if (s.kind === 'expiring' || s.kind === 'expired') {
+    return `<span class="badge badge-fb warn" title="${s.kind === 'expired' ? 'Facebook access ended' : 'Facebook access ends soon'} — press f to reconnect">f</span>`;
+  }
+  if (s.kind === 'waiting') return '<span class="badge badge-fb wait" title="Waiting for Facebook confirmation">f</span>';
+  return '';
+}
+
+function setFbState(id, state) {
+  fbStates.set(id, state);
+  renderProfilesList(document.getElementById('search-input')?.value || '');
+}
+
+async function connectFacebook(id) {
+  if (fbPolling.has(id)) {
+    showToast('Waiting for you to confirm access in the Facebook window.', 'info');
+    return;
+  }
+  const profile = profiles.find((p) => p.id === id);
+  if (profile?.status === 'running' && !runningProfiles.has(id)) {
+    showToast('This profile is running on another device.', 'error');
+    return;
+  }
+  if (!runningProfiles.has(id)) {
+    await launchProfile(id);
+    if (!runningProfiles.has(id)) return; // запуск скасували або він не вдався — тост уже був
+  }
+  let result;
+  try {
+    result = await window.api.fbConnect(id);
+  } catch (err) {
+    showToast(err.message === 'LOGIN_REQUIRED' ? 'Sign in to BlackAffiliate first.' : err.message, 'error');
+    return;
+  }
+  if (!result?.success) {
+    showToast(result?.state?.text || 'Could not start Facebook connection', 'error');
+    return;
+  }
+  showToast('Confirm access in the Facebook window that just opened.', 'info');
+  setFbState(id, result.state);
+  pollFacebook(id);
+}
+
+function pollFacebook(id) {
+  fbPolling.add(id);
+  const until = Date.now() + FB_POLL_FOR_MS;
+  const tick = async () => {
+    let state = null;
+    try { state = await window.api.fbStatus(id); } catch (_) {}
+    if (state && (state.kind === 'connected' || state.kind === 'expiring')) {
+      fbPolling.delete(id);
+      setFbState(id, state);
+      showToast(`Facebook connected${state.fbUserName ? ': ' + state.fbUserName : ''} · ${state.adAccounts} ad account${state.adAccounts === 1 ? '' : 's'}`, 'success');
+      return;
+    }
+    if (Date.now() > until) {
+      fbPolling.delete(id);
+      if (state) setFbState(id, state);
+      else fbStates.delete(id);
+      showToast('Facebook connection was not confirmed. Press f to try again.', 'error');
+      return;
+    }
+    setTimeout(tick, FB_POLL_EVERY_MS);
+  };
+  setTimeout(tick, FB_POLL_EVERY_MS);
+}
+
+// Тихо: значок у вибраного профілю, без тостів — платформа може бути недоступна.
+async function refreshFacebookState(id) {
+  if (fbPolling.has(id)) return;
+  try {
+    const state = await window.api.fbStatus(id);
+    if (state && ['connected', 'expiring', 'expired'].includes(state.kind)) setFbState(id, state);
+    else if (fbStates.has(id)) { fbStates.delete(id); renderProfilesList(document.getElementById('search-input')?.value || ''); }
+  } catch (_) {}
+}
+
 // ===== PROFILE LAUNCH =====
 async function launchProfile(id) {
   if (pendingProfiles.has(id) || runningProfiles.has(id)) return;
@@ -1701,6 +1792,11 @@ function renderProfilesList(searchTerm = '') {
                     title="Open without automation — for sites that block the automated browser (Google sign-in, Cloudflare sites like blackhatworld). Opens a plain Chrome window with an address bar.">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20"/></svg>
             </button>`}
+            <button class="profile-delete-btn profile-fb-btn"
+                    onclick="event.stopPropagation(); connectFacebook(${p.id})"
+                    title="Connect Facebook to BlackAffiliate — opens Meta's permission window in this profile">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M14 8h3V4h-3c-2.8 0-4.5 1.8-4.5 4.6V11H7v4h2.5v9h4v-9h3l.5-4h-3.5V9c0-.6.4-1 1-1z"/></svg>
+            </button>
             <button class="profile-launch-btn ${isRunningLocally ? 'running' : isRunningByOther ? 'other-running' : ''} ${isPending ? 'pending' : ''}"
                     onclick="event.stopPropagation(); ${isPending ? '' : isRunningByOther ? `forceStopProfile(${p.id})` : isRunningLocally ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
                     title="${isPending ? 'Please wait...' : isRunningByOther ? 'Force stop (running on ' + escapeHtml(p.running_on || 'another device') + ')' : isRunningLocally ? 'Stop' : 'Launch'}"
@@ -1720,6 +1816,7 @@ function renderProfilesList(searchTerm = '') {
             <span class="badge badge-os" title="${escapeHtml(systemLabel)}">${getOsBadgeMarkup(fp)}</span>
             ${countryFlag ? `<span class="badge badge-country" title="${countryCode}">${countryFlag}</span>` : ''}
             ${hasProxy ? `<span class="badge badge-proxy" title="Proxy active">⇄</span>` : ''}
+            ${fbBadge(p.id)}
           </div>
           <span class="profile-item-country">${p.created_by ? escapeHtml(p.created_by) : (countryCode || '')}</span>
           ${isRunningLocally ? '<span class="badge badge-status running">Running</span>' : ''}
@@ -1736,6 +1833,7 @@ function selectProfile(id) {
   clearAutoSaveTimer();
   renderProfilesList();
   loadProfileEditor(id);
+  void refreshFacebookState(id);
 }
 
 async function backfillProxyLocaleForExistingProfiles(options = {}) {
@@ -2818,6 +2916,7 @@ function showToast(message, type = 'success') {
 // Make functions globally accessible for onclick handlers
 window.selectProfile = selectProfile;
 window.launchProfile = launchProfile;
+window.connectFacebook = connectFacebook;
 window.stopProfile = stopProfile;
 window.deleteProfile = deleteProfile;
 window.confirmDeleteProfile = confirmDeleteProfile;

@@ -2296,6 +2296,23 @@ async function stopAllProfiles() {
   };
 }
 
+/**
+ * Нова вкладка з адресою в уже запущеному профілі — його cookies, проксі й відбиток.
+ * Для FB Connect: вікно згоди Meta має відкритись у тому профілі, чий Facebook підключаємо.
+ */
+async function openUrlInProfile(profileId, url) {
+  const instance = runningBrowsers.get(profileId);
+  if (!instance?.context) return { success: false, error: 'Profile is not running' };
+  try {
+    const page = await instance.context.newPage();
+    await page.goto(url).catch(() => {}); // сторінку з помилкою мережі теж лишаємо відкритою — людина побачить
+    await page.bringToFront().catch(() => {});
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
 function getRunningProfiles() {
   return Array.from(runningBrowsers.keys());
 }
@@ -2610,6 +2627,7 @@ module.exports = {
   stopProfile,
   stopAllProfiles,
   getRunningProfiles,
+  openUrlInProfile,
   getWsEndpoint,
   getStorageState,
   checkProxy,

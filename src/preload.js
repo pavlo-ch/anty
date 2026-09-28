@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('api', {
   stopProfile: (id) => ipcRenderer.invoke('browser:stop', id),
   getRunningProfiles: () => ipcRenderer.invoke('browser:running'),
 
+  // FB Connect
+  fbConnect: (id) => ipcRenderer.invoke('fb:connect', id),
+  fbStatus: (id) => ipcRenderer.invoke('fb:status', id),
+
   // Warmup
   getWarmupSites: () => ipcRenderer.invoke('warmup:sites'),
   getWarmupDefaultConfig: () => ipcRenderer.invoke('warmup:default-config'),

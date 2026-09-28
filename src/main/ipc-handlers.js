@@ -3,6 +3,7 @@ const db = require('./database');
 const launcher = require('./launcher');
 const auth = require('./auth');
 const profileSync = require('./profile-sync');
+const fbConnect = require('./fb-connect');
 const extensions = require('./extensions');
 const warmup = require('./warmup');
 const { isStaleRunningLock, withoutStaleRunningLock } = require('./running-lock');
@@ -335,6 +336,15 @@ function registerIpcHandlers() {
       profileSync.scheduleSync();
     }
     return result;
+  });
+  // FB Connect: вікно згоди Meta в запущеному профілі; токен тримає платформа (fb-connect.js).
+  ipcMain.handle('fb:connect', async (_, id) => {
+    requireLoggedIn();
+    return fbConnect.connect(id, launcher.openUrlInProfile);
+  });
+  ipcMain.handle('fb:status', async (_, id) => {
+    requireLoggedIn();
+    return fbConnect.getStatus(id);
   });
   ipcMain.handle('browser:manual-login', async (_, id, opts) => {
     requireLoggedIn();
