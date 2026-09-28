@@ -292,6 +292,9 @@ function startStateAutosave(profileId, context) {
   const openTabsTracker = createOpenTabsTracker(profileId, context);
 
   const flush = async () => {
+    // A timer tick may be mid-save when the window closes; wait for it rather than
+    // skip, or the close-time save is silently lost.
+    for (let i = 0; saving && i < 60; i += 1) await new Promise((r) => setTimeout(r, 50));
     if (stopped || saving) return;
     saving = true;
     try {
@@ -331,11 +334,50 @@ function startStateAutosave(profileId, context) {
   const timer = setInterval(() => { void flush(); }, 20000);
   timer.unref?.();
 
+  // Cookies can only be read while a tab is open: once the last one closes, Chrome
+  // answers Storage.getCookies with "Browser context management is not supported"
+  // (checked 28.09.2026), so the close-time save in finalizeClose always comes too late
+  // and a session only ever had what the last 20 s tick caught. Cookies usually arrive
+  // with a navigation (a solved Google captcha redirects to the results), so save ~1 s
+  // after one; and save as each tab closes while others are still open — Chrome closes a
+  // window tab by tab, so this catches the session before the last one goes.
+  let navTimer = null;
+  const onNavigated = (frame) => {
+    if (stopped || !frame || frame.parentFrame()) return;
+    clearTimeout(navTimer);
+    navTimer = setTimeout(() => { void flush(); }, 1000);
+    navTimer.unref?.();
+  };
+  const onPageClosed = () => {
+    if (stopped) return;
+    let open = 0;
+    try { open = context.pages().filter((page) => !page.isClosed()).length; } catch (_) {}
+    if (open > 0) void flush();
+  };
+  const watchPage = (page) => {
+    try {
+      page.on('framenavigated', onNavigated);
+      page.on('close', onPageClosed);
+    } catch (_) {}
+  };
+  try {
+    context.pages().forEach(watchPage);
+    context.on('page', watchPage);
+  } catch (_) {}
+
   return {
     flush,
     stop() {
       stopped = true;
       clearInterval(timer);
+      clearTimeout(navTimer);
+      try { context.off('page', watchPage); } catch (_) {}
+      try {
+        context.pages().forEach((page) => {
+          page.off('framenavigated', onNavigated);
+          page.off('close', onPageClosed);
+        });
+      } catch (_) {}
       openTabsTracker.stop();
     }
   };
@@ -2360,6 +2402,16 @@ function createOpenTabsTracker(profileId, context) {
   let stopped = false;
   let saveTimer = null;
   let lastTabs = getContextOpenTabUrls(context);
+  // Closing a window, Chrome closes its tabs one after another, and heavy pages
+  // (Facebook, Ads Manager) take well over 250 ms each to unload. Saving after every
+  // close shrank the list tab by tab until only the last one was left (reproduced
+  // 28.09.2026: 4 tabs closed 400 ms apart → 1 tab saved). So the set as it stood when
+  // a run of closes began is kept aside; if the run ends with nothing open, that was the
+  // window going away and the whole set is saved. If tabs are still open, the user
+  // closed some of them, and the current list is saved as before.
+  const CLOSE_BURST_MS = 1500;
+  let burstTabs = null;
+  let burstTimer = null;
 
   const capturePage = (page) => {
     if (!page || page.isClosed()) return;
@@ -2394,7 +2446,7 @@ function createOpenTabsTracker(profileId, context) {
     clearTimeout(saveTimer);
     saveTimer = null;
     const { urls, openPages } = readCurrentTabs();
-    persist(openPages.length > 0 ? urls : lastTabs);
+    persist(openPages.length > 0 ? urls : (burstTabs || lastTabs));
   };
 
   // Refresh the in-memory snapshot NOW, then debounce the DB write. The synchronous
@@ -2431,7 +2483,11 @@ function createOpenTabsTracker(profileId, context) {
       snapshot();
     };
     const onClose = () => {
-      setTimeout(() => {
+      if (stopped) return;
+      if (burstTabs === null) burstTabs = lastTabs.slice();
+      clearTimeout(burstTimer);
+      burstTimer = setTimeout(() => {
+        burstTimer = null;
         if (stopped) return;
         let openPages = [];
         try {
@@ -2439,9 +2495,19 @@ function createOpenTabsTracker(profileId, context) {
         } catch (_) {
           openPages = [];
         }
-        if (openPages.length > 0) knownPageUrls.delete(page);
+        for (const known of [...knownPageUrls.keys()]) {
+          if (known.isClosed()) knownPageUrls.delete(known);
+        }
+        if (openPages.length === 0) {
+          lastTabs = burstTabs;
+          persist(burstTabs);
+          burstTabs = null;
+          return;
+        }
+        burstTabs = null;
         void flush();
-      }, 250).unref?.();
+      }, CLOSE_BURST_MS);
+      burstTimer.unref?.();
     };
 
     page.on('framenavigated', onNavigated);
@@ -2460,6 +2526,7 @@ function createOpenTabsTracker(profileId, context) {
     stop() {
       stopped = true;
       clearTimeout(saveTimer);
+      clearTimeout(burstTimer);
       try { context.off('page', trackPage); } catch (_) {}
       for (const page of trackedPages) {
         const handlers = page.__antyTabTrackerHandlers;
