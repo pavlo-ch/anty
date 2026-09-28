@@ -1,7 +1,7 @@
 // node --test src/main/fb-connect.test.js
 const test = require('node:test');
 const assert = require('node:assert');
-const { connect, getStatus, toState } = require('./fb-connect');
+const { connect, connectWithToken, getStatus, toState } = require('./fb-connect');
 
 const DAY = 24 * 60 * 60 * 1000;
 const now = Date.parse('2026-09-28T12:00:00Z');
@@ -27,6 +27,7 @@ const deps = (over = {}) => ({
   remoteId: () => 'remote-1',
   ticketUrl: () => 'https://p/ticket',
   statusUrl: () => 'https://p/status',
+  tokenUrl: () => 'https://p/token',
   post: async () => ok({ url: 'https://p/api/fb/connect?ticket=abc' }),
   ...over,
 });
@@ -54,4 +55,32 @@ test('getStatus: sends remote id', async () => {
   let payload = null;
   await getStatus(7, deps({ post: async (_u, p) => { payload = p; return ok({ connected: false }); } }));
   assert.deepEqual(payload, { profileId: 'remote-1' });
+});
+
+test('token: sends token and account to the platform, then reads status', async () => {
+  const calls = [];
+  const res = await connectWithToken(7, { accessToken: ' EAAx ', adAccountId: 'act_123' }, deps({
+    post: async (url, payload) => {
+      calls.push([url, payload]);
+      return url.endsWith('/token') ? ok({ connected: true }) : ok({ connected: true, adAccounts: 2, fbUserName: 'Maria' });
+    },
+  }));
+  assert.equal(res.success, true);
+  assert.equal(res.state.kind, 'connected');
+  assert.deepEqual(calls[0], ['https://p/token', { profileId: 'remote-1', accessToken: 'EAAx', adAccountId: 'act_123' }]);
+});
+
+test('token: empty token and bad account id never reach the platform', async () => {
+  let asked = false;
+  const d = deps({ post: async () => { asked = true; return ok({}); } });
+  assert.equal((await connectWithToken(7, { accessToken: '  ' }, d)).success, false);
+  assert.equal((await connectWithToken(7, { accessToken: 'EAAx', adAccountId: 'abc' }, d)).success, false);
+  assert.equal(asked, false);
+});
+
+test('token: Facebook refusal is shown in its own words', async () => {
+  const res = await connectWithToken(7, { accessToken: 'EAAx' }, deps({
+    post: async () => ({ ok: false, status: 422, body: { error: 'fb_rejected', message: 'Error validating access token' } }),
+  }));
+  assert.equal(res.state.text, 'Error validating access token');
 });

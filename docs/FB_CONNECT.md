@@ -1,7 +1,7 @@
 # FB Connect — контракт Anty ↔ платформа BlackAffiliate
 
-Мета: у списку профілів Anty баєр тисне кнопку «f» (Connect Facebook to BlackAffiliate) →
-офіційне вікно Meta (Facebook Login for Business) → доступи (`ads_read`, `ads_management`,
+Мета: у редакторі профілю Anty (Platform = Facebook) баєр вставляє токен і тисне Connect —
+або тисне «Connect via Facebook login» → офіційне вікно Meta (Facebook Login for Business) → доступи (`ads_read`, `ads_management`,
 `business_management`) зберігаються на платформі й прив'язуються до команди.
 treker підключимо пізніше — у цьому етапі не чіпаємо.
 
@@ -27,8 +27,15 @@ treker підключимо пізніше — у цьому етапі не ч�
 RLS увімкнений, клієнтських політик немає — доступ тільки через серверні роути з service role.
 Видимість як у workspaces: owner/lead бачать усі підключення команди, buyer — лише свого workspace.
 
-## Потік
-1. Кнопка «f» у рядку профілю (профіль запускається, якщо ще не запущений) →
+## Токен вручну (без застосунку Meta)
+`POST /api/desktop/anty/fb-token {profileId, accessToken, adAccountId?}` (Anty-токен) → платформа
+перевіряє токен самим Facebook (/me, /me/permissions, /me/adaccounts), шифрує, прив'язує до команди.
+Потрібен лише `FB_TOKEN_ENC_KEY`. `adAccountId` (цифри, з act_ чи без) — токен мусить його бачити,
+інакше 422 `ad_account_not_visible`. Невалідний токен — 422 `fb_rejected` з текстом Facebook.
+Anty очищає поле токена після успіху й ніде його не зберігає.
+
+## Потік (вікно згоди Meta)
+1. «Connect via Facebook login» у блоці Facebook редактора профілю (профіль запускається, якщо ще не запущений) →
    Anty main process.
 2. Anty main: `POST /api/desktop/anty/fb-connect-ticket` `{ profileId }` з тим самим
    токеном, яким Anty вже ходить у платформу (profiles pull/push).

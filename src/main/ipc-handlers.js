@@ -342,6 +342,10 @@ function registerIpcHandlers() {
     requireLoggedIn();
     return fbConnect.connect(id, launcher.openUrlInProfile);
   });
+  ipcMain.handle('fb:connect-token', async (_, id, data) => {
+    requireLoggedIn();
+    return fbConnect.connectWithToken(id, data);
+  });
   ipcMain.handle('fb:status', async (_, id) => {
     requireLoggedIn();
     return fbConnect.getStatus(id);

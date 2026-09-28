@@ -149,6 +149,26 @@
                 <input type="text" id="editor-created-by" class="editor-input" placeholder="Name of creator" />
               </div>
             </div>
+            <!-- FB Connect: лише для Platform = Facebook; токен іде на платформу, в Anty не лишається -->
+            <div class="fb-connect-block" id="fb-connect-block" hidden>
+              <div class="fb-connect-head">
+                <label class="editor-label">Facebook → BlackAffiliate</label>
+                <span class="fb-connect-status" id="fb-connect-status"></span>
+              </div>
+              <div class="editor-row">
+                <div class="editor-field">
+                  <input type="password" id="fb-token-input" class="editor-input" placeholder="Access token (EAA…)" autocomplete="off" spellcheck="false" />
+                </div>
+                <div class="editor-field">
+                  <input type="text" id="fb-adaccount-input" class="editor-input" placeholder="Ad account ID (act_…), optional" autocomplete="off" spellcheck="false" />
+                </div>
+              </div>
+              <div class="fb-connect-actions">
+                <button class="btn btn-open" id="btn-fb-connect">Connect</button>
+                <button class="btn btn-fb-login" id="btn-fb-login" title="Opens Meta's permission window in this profile — needs the Facebook app set up on the platform">Connect via Facebook login</button>
+              </div>
+              <div class="editor-hint">The token goes to the platform, encrypted and tied to your team. Anty doesn't keep it.</div>
+            </div>
             <!-- Hidden legacy fields -->
             <select id="editor-folder" style="display:none"></select>
             <select id="editor-group" style="display:none"></select>

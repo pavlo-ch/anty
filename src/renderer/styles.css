@@ -730,10 +730,18 @@ body.platform-win32 .titlebar-btn.close:hover {
   border-color: rgba(244, 67, 54, 1);
 }
 
-.profile-fb-btn:hover {
-  background: #1877f2;
-  border-color: #1877f2;
-}
+/* FB Connect: блок у редакторі профілю */
+.fb-connect-block { margin: 4px 0 12px; padding: 12px; border: 1px solid rgba(24, 119, 242, 0.35);
+  border-radius: 10px; background: rgba(24, 119, 242, 0.06); }
+.fb-connect-block[hidden] { display: none; }
+.fb-connect-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.fb-connect-status { font-size: 12px; color: #9aa0b4; text-align: right; }
+.fb-connect-status.ok { color: #4a9bff; }
+.fb-connect-status.warn { color: var(--yellow); }
+.fb-connect-status.err { color: var(--red); }
+.fb-connect-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-fb-login { background: transparent; border: 1px solid rgba(255, 255, 255, 0.18); color: #c9cde0; }
+.btn-fb-login:hover { border-color: #1877f2; color: #fff; }
 
 .profile-launch-btn {
   width: 28px;

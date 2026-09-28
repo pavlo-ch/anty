@@ -440,6 +440,9 @@ function setupEventListeners() {
   });
 
   // Platform selector → update start_page only
+  document.getElementById('editor-platform')?.addEventListener('change', () => renderFbBlock());
+  document.getElementById('btn-fb-connect')?.addEventListener('click', () => void connectFacebookToken());
+  document.getElementById('btn-fb-login')?.addEventListener('click', () => { if (selectedProfileId) void connectFacebook(selectedProfileId); });
   document.getElementById('editor-platform')?.addEventListener('change', (e) => {
     const platform = e.target.value;
     const platformUrls = {
@@ -948,8 +951,9 @@ async function syncProfileLocaleFromProxy(profileId, options = {}) {
 }
 
 // ===== FB CONNECT =====
-// Кнопка «f» у рядку профілю: запускає профіль (якщо треба), просить у платформи посилання
-// на вікно згоди Meta і відкриває його в профілі. Далі — лише статус; токен тримає платформа.
+// Блок «Facebook» у редакторі профілю (Platform = Facebook): Connect — вставлений токен іде
+// на платформу; Connect via Facebook login — вікно згоди Meta в запущеному профілі. Токен тримає
+// платформа, в Anty він не лишається. Значок «f» у рядку — підключений профіль.
 const FB_POLL_EVERY_MS = 3000;
 const FB_POLL_FOR_MS = 5 * 60 * 1000;
 const fbPolling = new Set();
@@ -962,7 +966,7 @@ function fbBadge(id) {
     return `<span class="badge badge-fb ok" title="Facebook connected to BlackAffiliate${s.fbUserName ? ': ' + escapeHtml(s.fbUserName) : ''} · ${accounts}">f</span>`;
   }
   if (s.kind === 'expiring' || s.kind === 'expired') {
-    return `<span class="badge badge-fb warn" title="${s.kind === 'expired' ? 'Facebook access ended' : 'Facebook access ends soon'} — press f to reconnect">f</span>`;
+    return `<span class="badge badge-fb warn" title="${s.kind === 'expired' ? 'Facebook access ended' : 'Facebook access ends soon'} — reconnect in the profile's Facebook block">f</span>`;
   }
   if (s.kind === 'waiting') return '<span class="badge badge-fb wait" title="Waiting for Facebook confirmation">f</span>';
   return '';
@@ -971,6 +975,54 @@ function fbBadge(id) {
 function setFbState(id, state) {
   fbStates.set(id, state);
   renderProfilesList(document.getElementById('search-input')?.value || '');
+  renderFbBlock();
+}
+
+function renderFbBlock() {
+  const block = document.getElementById('fb-connect-block');
+  if (!block) return;
+  const isFacebook = document.getElementById('editor-platform')?.value === 'facebook';
+  block.hidden = !(isFacebook && selectedProfileId);
+  if (block.hidden) return;
+  const statusEl = document.getElementById('fb-connect-status');
+  const s = fbStates.get(selectedProfileId);
+  const accounts = s ? `${s.adAccounts} ad account${s.adAccounts === 1 ? '' : 's'}` : '';
+  let text = 'Not connected';
+  let cls = '';
+  if (fbPolling.has(selectedProfileId) || s?.kind === 'waiting') { text = 'Waiting for Facebook…'; cls = 'wait'; }
+  else if (s?.kind === 'connected') { text = `Connected${s.fbUserName ? ' · ' + s.fbUserName : ''} · ${accounts}`; cls = 'ok'; }
+  else if (s?.kind === 'expiring') { text = `Ends ${new Date(s.expiresAt).toLocaleDateString()} — reconnect`; cls = 'warn'; }
+  else if (s?.kind === 'expired') { text = 'Access ended — reconnect'; cls = 'warn'; }
+  else if (s?.kind === 'error' || s?.kind === 'unsynced') { text = s.text || 'Error'; cls = 'err'; }
+  statusEl.textContent = text;
+  statusEl.className = `fb-connect-status ${cls}`;
+}
+
+async function connectFacebookToken() {
+  const id = selectedProfileId;
+  if (!id) return;
+  const tokenEl = document.getElementById('fb-token-input');
+  const accountEl = document.getElementById('fb-adaccount-input');
+  const button = document.getElementById('btn-fb-connect');
+  button.disabled = true;
+  button.textContent = 'Connecting…';
+  try {
+    const result = await window.api.fbConnectToken(id, { accessToken: tokenEl.value, adAccountId: accountEl.value });
+    if (result?.success) {
+      tokenEl.value = ''; // токен уже на платформі — у полі йому більше не місце
+      setFbState(id, result.state);
+      const st = result.state || {};
+      showToast(`Facebook connected${st.fbUserName ? ': ' + st.fbUserName : ''} · ${st.adAccounts || 0} ad account${st.adAccounts === 1 ? '' : 's'}`, 'success');
+    } else {
+      showToast(result?.state?.text || 'Could not connect Facebook', 'error');
+      if (result?.state?.kind === 'error' || result?.state?.kind === 'unsynced') setFbState(id, result.state);
+    }
+  } catch (err) {
+    showToast(err.message === 'LOGIN_REQUIRED' ? 'Sign in to BlackAffiliate first.' : err.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Connect';
+  }
 }
 
 async function connectFacebook(id) {
@@ -1019,7 +1071,7 @@ function pollFacebook(id) {
       fbPolling.delete(id);
       if (state) setFbState(id, state);
       else fbStates.delete(id);
-      showToast('Facebook connection was not confirmed. Press f to try again.', 'error');
+      showToast('Facebook connection was not confirmed. Try again.', 'error');
       return;
     }
     setTimeout(tick, FB_POLL_EVERY_MS);
@@ -1033,7 +1085,7 @@ async function refreshFacebookState(id) {
   try {
     const state = await window.api.fbStatus(id);
     if (state && ['connected', 'expiring', 'expired'].includes(state.kind)) setFbState(id, state);
-    else if (fbStates.has(id)) { fbStates.delete(id); renderProfilesList(document.getElementById('search-input')?.value || ''); }
+    else if (fbStates.has(id)) { fbStates.delete(id); renderProfilesList(document.getElementById('search-input')?.value || ''); renderFbBlock(); }
   } catch (_) {}
 }
 
@@ -1792,11 +1844,6 @@ function renderProfilesList(searchTerm = '') {
                     title="Open without automation — for sites that block the automated browser (Google sign-in, Cloudflare sites like blackhatworld). Opens a plain Chrome window with an address bar.">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20 15.3 15.3 0 0 1 0-20"/></svg>
             </button>`}
-            <button class="profile-delete-btn profile-fb-btn"
-                    onclick="event.stopPropagation(); connectFacebook(${p.id})"
-                    title="Connect Facebook to BlackAffiliate — opens Meta's permission window in this profile">
-              <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M14 8h3V4h-3c-2.8 0-4.5 1.8-4.5 4.6V11H7v4h2.5v9h4v-9h3l.5-4h-3.5V9c0-.6.4-1 1-1z"/></svg>
-            </button>
             <button class="profile-launch-btn ${isRunningLocally ? 'running' : isRunningByOther ? 'other-running' : ''} ${isPending ? 'pending' : ''}"
                     onclick="event.stopPropagation(); ${isPending ? '' : isRunningByOther ? `forceStopProfile(${p.id})` : isRunningLocally ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
                     title="${isPending ? 'Please wait...' : isRunningByOther ? 'Force stop (running on ' + escapeHtml(p.running_on || 'another device') + ')' : isRunningLocally ? 'Stop' : 'Launch'}"
@@ -1833,6 +1880,9 @@ function selectProfile(id) {
   clearAutoSaveTimer();
   renderProfilesList();
   loadProfileEditor(id);
+  const fbTokenEl = document.getElementById('fb-token-input');
+  if (fbTokenEl) fbTokenEl.value = ''; // токен одного профілю не має перейти до іншого
+  renderFbBlock();
   void refreshFacebookState(id);
 }
 
@@ -1925,6 +1975,7 @@ async function loadProfileEditor(id) {
     // Platform selector
     const platformEl = document.getElementById('editor-platform');
     if (platformEl) platformEl.value = getProfilePlatform(profile) === 'other' ? 'other' : getProfilePlatform(profile);
+    renderFbBlock(); // блок Facebook — лише коли платформа профілю вже в полі
 
     // Proxy fields — display current proxy as a plain string
     if (profile.proxy_host) {

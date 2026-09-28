@@ -652,6 +652,10 @@ function getFbStatusUrl() {
   return (process.env.ANTY_PLATFORM_FB_STATUS_URL || deriveSiblingUrl(getAuthUrl(), 'fb-status')).trim();
 }
 
+function getFbTokenUrl() {
+  return (process.env.ANTY_PLATFORM_FB_TOKEN_URL || deriveSiblingUrl(getAuthUrl(), 'fb-token')).trim();
+}
+
 async function platformPost(url, payload) {
   if (!url) return { ok: false, status: 0, body: {}, reason: 'url_not_configured' };
   if (!isLoggedIn()) return { ok: false, status: 401, body: {}, reason: 'not_logged_in' };
@@ -985,5 +989,6 @@ module.exports = {
   getSyncStatus,
   getFbConnectTicketUrl,
   getFbStatusUrl,
+  getFbTokenUrl,
   platformPost
 };

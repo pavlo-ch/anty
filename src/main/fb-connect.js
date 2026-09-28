@@ -1,13 +1,13 @@
 /**
- * FB Connect — пункт «Connect Facebook to BlackAffiliate» у списку профілів Anty.
+ * FB Connect — блок «Facebook» у редакторі профілю Anty (коли Platform = Facebook).
  *
- * Anty токена Facebook не бачить. Він бере в платформи одноразове посилання на офіційне
- * вікно згоди Meta (Facebook Login for Business), відкриває його в запущеному профілі — там
- * уже cookies цього Facebook — і далі лише питає статус. Токен отримує, шифрує й прив'язує до
- * команди профілю платформа. Контракт: docs/FB_CONNECT.md.
- *
- * Кнопка живе в інтерфейсі Anty, а не на сторінках Facebook: у вкладки нічого не
- * вбудовується.
+ * Два шляхи, обидва кінчаються на платформі — вона шифрує токен і прив'язує до команди
+ * профілю; Anty його не зберігає:
+ * - Connect: вставлений токен (+ необов'язковий ID кабінету) іде на платформу, та
+ *   перевіряє його самим Facebook. Застосунок Meta для цього не потрібен.
+ * - Connect via Facebook login: платформа дає одноразове посилання на вікно згоди Meta,
+ *   Anty відкриває його в запущеному профілі. Потребує застосунку Meta на платформі.
+ * Контракт: docs/FB_CONNECT.md. На сторінки Facebook нічого не вбудовується.
  */
 const EXPIRING_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -18,6 +18,7 @@ function defaultDeps() {
     remoteId: (profileId) => String(getProfile(profileId)?.remote_id || '').trim(),
     ticketUrl: () => profileSync.getFbConnectTicketUrl(),
     statusUrl: () => profileSync.getFbStatusUrl(),
+    tokenUrl: () => profileSync.getFbTokenUrl(),
     post: (url, payload) => profileSync.platformPost(url, payload),
   };
 }
@@ -36,6 +37,10 @@ function toState(result, now = Date.now()) {
       return { kind: 'error', text: 'Facebook connection is not set up on the platform yet.' };
     }
     if (status === 403) return { kind: 'error', text: "This profile isn't in your team on the platform." };
+    // 400/422 — платформа або Facebook пояснили словами, що не так із токеном чи кабінетом.
+    if ((status === 400 || status === 422) && result?.body?.message) {
+      return { kind: 'error', text: result.body.message };
+    }
     if (status === 404) return UNSYNCED;
     if (result?.reason === 'url_not_configured') {
       return { kind: 'error', text: 'Platform address is not configured in Anty.' };
@@ -85,4 +90,23 @@ async function connect(profileId, openUrl, deps = defaultDeps()) {
   return { success: true, state: { kind: 'waiting', text: 'Confirm access in the Facebook window…' } };
 }
 
-module.exports = { connect, getStatus, toState };
+/** Вставлений токен → платформа. Токен далі нікуди не йде і ніде в Anty не лишається. */
+async function connectWithToken(profileId, { accessToken, adAccountId } = {}, deps = defaultDeps()) {
+  const token = String(accessToken || '').trim();
+  if (!token) return { success: false, state: { kind: 'error', text: 'Paste an access token first.' } };
+  const account = String(adAccountId || '').trim();
+  if (account && !/^(act_)?\d+$/.test(account)) {
+    return { success: false, state: { kind: 'error', text: 'Ad account ID is digits, with or without act_.' } };
+  }
+  const remoteId = deps.remoteId(profileId);
+  if (!remoteId) return { success: false, state: UNSYNCED };
+  const result = await deps.post(deps.tokenUrl(), {
+    profileId: remoteId,
+    accessToken: token,
+    ...(account ? { adAccountId: account } : {}),
+  });
+  if (!result?.ok) return { success: false, state: toState(result) };
+  return { success: true, state: await getStatus(profileId, deps) };
+}
+
+module.exports = { connect, connectWithToken, getStatus, toState };

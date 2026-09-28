@@ -47,6 +47,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // FB Connect
   fbConnect: (id) => ipcRenderer.invoke('fb:connect', id),
+  fbConnectToken: (id, data) => ipcRenderer.invoke('fb:connect-token', id, data),
   fbStatus: (id) => ipcRenderer.invoke('fb:status', id),
 
   // Warmup
