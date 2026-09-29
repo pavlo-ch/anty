@@ -36,8 +36,25 @@ const ANTY_SOURCE = 'anty-browser';
 const USE_KEYCHAIN = String(process.env.ANTY_USE_KEYCHAIN || '').trim().toLowerCase() === 'true';
 const UPDATE_RETENTION_DIR_LIMIT = 1;
 
+// config/platform.json already names the log endpoint (logUrl); without reading it the
+// default here is empty, so no updater event ever reached the platform and a failed
+// update on a teammate's machine left nothing to look at.
+let configLogUrl = null;
+function getConfigLogUrl() {
+  if (configLogUrl !== null) return configLogUrl;
+  configLogUrl = '';
+  for (const dir of [app.getAppPath(), process.cwd()]) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'config', 'platform.json'), 'utf8'));
+      configLogUrl = String(parsed?.logUrl || '').trim();
+      if (configLogUrl) break;
+    } catch (_) {}
+  }
+  return configLogUrl;
+}
+
 function getPlatformLogUrl() {
-  return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || DEFAULT_PLATFORM_LOG_URL || '').trim();
+  return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || DEFAULT_PLATFORM_LOG_URL || getConfigLogUrl() || '').trim();
 }
 
 function getOrCreateStableDeviceId() {
@@ -302,7 +319,11 @@ function getLegacyUpdatesDir() {
 }
 
 async function cleanupLegacyUpdatesDir(options = {}) {
-  const keepVersion = String(options.keepVersion || '').trim();
+  // A downloaded update that is waiting to be installed is never cleaned up, whoever
+  // calls this: a "Check for updates" or startup check in between used to be free to
+  // pick another directory as the one to keep and delete it.
+  const waiting = mandatoryDownloadState.state === 'mandatory_downloaded' ? String(mandatoryDownloadState.version || '') : '';
+  const keepVersion = String(options.keepVersion || waiting || '').trim();
   const keepLatestDirectoriesRaw = Number(options.keepLatestDirectories);
   const keepLatestDirectories = Number.isFinite(keepLatestDirectoriesRaw) && keepLatestDirectoriesRaw >= 0
     ? Math.floor(keepLatestDirectoriesRaw)
@@ -904,7 +925,17 @@ function registerUpdater(window) {
 
     const localPath = String(mandatoryDownloadState.filePath || '').trim();
     if (!localPath || !fs.existsSync(localPath)) {
-      return { ok: false, reason: 'missing_local_installer', message: 'Downloaded installer file is missing. Re-download update.' };
+      // Something removed the file after it was downloaded — on Windows usually the
+      // antivirus quarantining an unsigned installer. Forget the download so the next
+      // attempt fetches it again instead of reopening a path that is gone for good.
+      logEvent('error', 'mandatory_installer_missing', {
+        version: mandatoryDownloadState.version,
+        filePath: localPath,
+        platform: process.platform,
+        dirExists: localPath ? fs.existsSync(path.dirname(localPath)) : false,
+      });
+      updateMandatoryState({ state: 'idle', percent: 0, downloadedBytes: 0, totalBytes: 0, filePath: null, message: null });
+      return { ok: false, reason: 'missing_local_installer', message: 'The downloaded update file is gone. Downloading it again…' };
     }
 
     logEvent('info', 'mandatory_open_installer', { version: mandatoryUpdateInfo.version, filePath: localPath });

@@ -33,7 +33,10 @@ let mandatoryUpdateFlow = {
   totalBytes: 0,
   error: '',
   installerOpened: false,
+  // How many times the downloaded installer has vanished before it could be opened.
+  missingInstallers: 0,
 };
+const RELEASES_PAGE_URL = 'https://github.com/pavlo-ch/anty/releases/latest';
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', async () => {
@@ -2437,6 +2440,13 @@ function renderMandatoryUpdateUi() {
   progressEl.classList.add('hidden');
   progressFillEl.style.width = `${Math.min(100, Math.max(0, Number(mandatoryUpdateFlow.progress || 0)))}%`;
 
+  if (mandatoryUpdateFlow.missingInstallers >= 2) {
+    primaryBtn.textContent = 'Download manually';
+    restartBtn.classList.add('hidden');
+    statusEl.textContent = 'The installer was removed right after downloading — most likely by your antivirus. Download it from the releases page and run it.';
+    return;
+  }
+
   if (mandatoryUpdateFlow.error) {
     primaryBtn.textContent = 'Retry Download';
     restartBtn.classList.add('hidden');
@@ -2500,6 +2510,10 @@ async function triggerMandatoryUpdateDownload() {
 
 async function handleMandatoryUpdatePrimaryAction() {
   if (mandatoryUpdateFlow.downloading) return;
+  if (mandatoryUpdateFlow.missingInstallers >= 2) {
+    void window.api.openExternal(RELEASES_PAGE_URL);
+    return;
+  }
   if (!mandatoryUpdateFlow.downloaded) {
     await triggerMandatoryUpdateDownload();
     return;
@@ -2507,6 +2521,22 @@ async function handleMandatoryUpdatePrimaryAction() {
 
   try {
     const opened = await window.api.openUpdateInstaller();
+    // The downloaded file vanished (antivirus, cleanup). "Retry Download" used to keep
+    // reopening the same missing path; now the download is forgotten and fetched again
+    // once, and if it vanishes a second time the user is sent to the releases page.
+    if (opened?.reason === 'missing_local_installer') {
+      mandatoryUpdateFlow.missingInstallers += 1;
+      mandatoryUpdateFlow.downloaded = false;
+      mandatoryUpdateFlow.installerOpened = false;
+      if (mandatoryUpdateFlow.missingInstallers >= 2) {
+        mandatoryUpdateFlow.error = '';
+        renderMandatoryUpdateUi();
+        return;
+      }
+      showToast(opened.message, 'error');
+      await triggerMandatoryUpdateDownload();
+      return;
+    }
     if (!opened?.ok) {
       mandatoryUpdateFlow.error = opened?.message || 'Failed to open installer';
       renderMandatoryUpdateUi();
