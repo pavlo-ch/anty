@@ -2103,7 +2103,6 @@ function renderSettingsUpdateButton() {
   // this badge is the only thing that says one is there at all.
   const badge = document.getElementById('nav-settings-badge');
   if (badge) badge.classList.toggle('hidden', !pending);
-  document.querySelector('.nav-btn[data-page="settings"]')?.classList.toggle('has-update', pending);
 
   const btn = document.getElementById('btn-settings-check-update');
   if (!btn) return;
