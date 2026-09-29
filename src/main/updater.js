@@ -470,10 +470,14 @@ async function downloadMandatoryUpdate(options = {}) {
       ? Math.min(Math.floor(retryCountRaw), 5)
       : 3;
 
+    // An optional update goes through this same DMG download: checkMandatoryUpdate
+    // fills mandatoryUpdateInfo for any newer version, mandatory or not. Requiring
+    // `required` here made "Update Now" on an optional release answer "No mandatory
+    // update available." when the app had last seen itself as up to date.
     if (!mandatoryUpdateInfo) {
-      const check = await checkMandatoryUpdate();
-      if (!check.required) {
-        return { ok: false, reason: 'no_mandatory_update', message: 'No mandatory update available.' };
+      await checkMandatoryUpdate();
+      if (!mandatoryUpdateInfo) {
+        return { ok: false, reason: 'no_update', message: 'No update available.' };
       }
     }
 
@@ -807,20 +811,15 @@ function registerUpdater(window) {
     emitStatus({ state: 'latest' });
   });
 
+  // electron-updater's own download (the ZIP) must never drive the DMG update window.
+  // That window installs only the DMG that downloadMandatoryUpdate fetched. Reproduced
+  // 29.09.2026 on 1.2.15: with Anty open when a release is published, "Check for updates"
+  // starts electron-updater's ZIP; "Update" then fills mandatoryUpdateInfo; when the ZIP
+  // finished, the handler below marked the update downloaded with filePath null
+  // (downloadedBytes = the ZIP's 181,935,311), and "Install Update" answered "Downloaded
+  // installer file is missing" although no DMG had ever been downloaded.
   autoUpdater.on('download-progress', (progress) => {
     const percent = Number((progress?.percent || 0).toFixed(2));
-    if (mandatoryUpdateInfo) {
-      updateMandatoryState({
-        state: 'mandatory_downloading',
-        version: mandatoryUpdateInfo.version,
-        percent,
-        downloadedBytes: Number(progress?.transferred || 0),
-        totalBytes: Number(progress?.total || 0),
-        attempts: Number(mandatoryDownloadState.attempts || 1),
-        filePath: null,
-        message: null,
-      });
-    }
     emitStatus({ state: 'downloading', percent });
     logEvent('info', 'download_progress', { percent });
   });
@@ -829,21 +828,10 @@ function registerUpdater(window) {
     downloadTriggered = false;
     logEvent('info', 'update_downloaded', { version: info?.version });
 
+    // The update window is already handling this version with its own DMG download;
+    // this ZIP is not an installer it can open (see download-progress above).
     const isMandatory = Boolean(mandatoryUpdateInfo && isNewerVersion(info?.version || '', app.getVersion()));
-    if (isMandatory) {
-      updateMandatoryState({
-        state: 'mandatory_downloaded',
-        version: info?.version || mandatoryUpdateInfo.version,
-        percent: 100,
-        downloadedBytes: Number(mandatoryDownloadState.downloadedBytes || 0),
-        totalBytes: Number(mandatoryDownloadState.totalBytes || 0),
-        attempts: Number(mandatoryDownloadState.attempts || 1),
-        filePath: null,
-        message: null,
-      });
-      emitStatus({ state: 'mandatory_downloaded', version: info?.version || mandatoryUpdateInfo.version, mandatory: true });
-      return;
-    }
+    if (isMandatory) return;
 
     emitStatus({ state: 'downloaded', version: info?.version || null });
 
@@ -913,9 +901,9 @@ function registerUpdater(window) {
 
   ipcMain.handle('app:update:open-installer', async () => {
     if (!mandatoryUpdateInfo) {
-      const check = await checkMandatoryUpdate();
-      if (!check.required) {
-        return { ok: false, reason: 'no_mandatory_update', message: 'No mandatory update available.' };
+      await checkMandatoryUpdate();
+      if (!mandatoryUpdateInfo) {
+        return { ok: false, reason: 'no_update', message: 'No update available.' };
       }
     }
 

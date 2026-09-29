@@ -33,10 +33,16 @@ let mandatoryUpdateFlow = {
   totalBytes: 0,
   error: '',
   installerOpened: false,
-  // How many times the downloaded installer has vanished before it could be opened.
-  missingInstallers: 0,
 };
+// How many downloads of the installer have vanished before they could be opened. Kept
+// out of mandatoryUpdateFlow on purpose: showMandatoryUpdateModal rebuilds that object,
+// and a counter inside it came back undefined → NaN, so the limit below never hit and the
+// update re-downloaded endlessly (caught in a test with the file deleted every time).
+let missingInstallerCount = 0;
 const RELEASES_PAGE_URL = 'https://github.com/pavlo-ch/anty/releases/latest';
+// A vanished installer is fetched again and opened straight away, up to this many times,
+// before the user is sent to the releases page.
+const MAX_INSTALLER_REDOWNLOADS = 3;
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', async () => {
@@ -2440,7 +2446,7 @@ function renderMandatoryUpdateUi() {
   progressEl.classList.add('hidden');
   progressFillEl.style.width = `${Math.min(100, Math.max(0, Number(mandatoryUpdateFlow.progress || 0)))}%`;
 
-  if (mandatoryUpdateFlow.missingInstallers >= 2) {
+  if (missingInstallerCount >= MAX_INSTALLER_REDOWNLOADS) {
     primaryBtn.textContent = 'Download manually';
     restartBtn.classList.add('hidden');
     statusEl.textContent = 'The installer was removed right after downloading — most likely by your antivirus. Download it from the releases page and run it.';
@@ -2510,7 +2516,7 @@ async function triggerMandatoryUpdateDownload() {
 
 async function handleMandatoryUpdatePrimaryAction() {
   if (mandatoryUpdateFlow.downloading) return;
-  if (mandatoryUpdateFlow.missingInstallers >= 2) {
+  if (missingInstallerCount >= MAX_INSTALLER_REDOWNLOADS) {
     void window.api.openExternal(RELEASES_PAGE_URL);
     return;
   }
@@ -2521,20 +2527,25 @@ async function handleMandatoryUpdatePrimaryAction() {
 
   try {
     const opened = await window.api.openUpdateInstaller();
-    // The downloaded file vanished (antivirus, cleanup). "Retry Download" used to keep
-    // reopening the same missing path; now the download is forgotten and fetched again
-    // once, and if it vanishes a second time the user is sent to the releases page.
-    if (opened?.reason === 'missing_local_installer') {
-      mandatoryUpdateFlow.missingInstallers += 1;
+    // No installer on disk. "Retry Download" used to keep reopening the same missing
+    // path; now the download is forgotten, fetched again and — once it is there — opened
+    // right away, so the user still ends up installing. Only after
+    // MAX_INSTALLER_REDOWNLOADS vanished downloads are they sent to the releases page.
+    // The same trap without a file at all: this window thought the update was downloaded
+    // while the main process had nothing ("Download the update first.") — fetch it too.
+    if (opened?.reason === 'missing_local_installer' || opened?.reason === 'not_downloaded') {
+      const vanished = opened.reason === 'missing_local_installer';
+      if (vanished) missingInstallerCount += 1;
       mandatoryUpdateFlow.downloaded = false;
       mandatoryUpdateFlow.installerOpened = false;
-      if (mandatoryUpdateFlow.missingInstallers >= 2) {
+      if (missingInstallerCount >= MAX_INSTALLER_REDOWNLOADS) {
         mandatoryUpdateFlow.error = '';
         renderMandatoryUpdateUi();
         return;
       }
-      showToast(opened.message, 'error');
+      if (vanished) showToast(opened.message, 'error');
       await triggerMandatoryUpdateDownload();
+      if (mandatoryUpdateFlow.downloaded) await handleMandatoryUpdatePrimaryAction();
       return;
     }
     if (!opened?.ok) {
