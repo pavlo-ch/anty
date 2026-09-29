@@ -410,11 +410,9 @@
         locateDialog(colBtn)?.dialog,
       );
     }
-    const named = await waitFor(() => { const b = findColumnsButton(); return b && saysPreset(b); }, 5000);
-    if (!named) {
-      ui.note(`Saved, but the Columns button doesn't say ${PRESET.name} — check the Columns menu.`);
-      return 'warn';
-    }
+    // Дочекатись «Columns: ADV» — і все: пресет збережено. Застереження, коли підпис не
+    // встиг змінитись, дев назвав зайвим (29.09.2026).
+    await waitFor(() => { const b = findColumnsButton(); return b && saysPreset(b); }, 5000);
     return 'ok';
   }
 
@@ -465,6 +463,73 @@
     return parts.join('\n');
   }
 
+  /* ---------------- ручка «згорнути» (однакова в adv-columns.js і usd-toggle.js) ---------------- */
+
+  // Кнопки Anty (ADV columns, USD) стоять унизу праворуч і перекривають кнопки Facebook,
+  // напр. Save у діалогах. Ручка праворуч від них згортає й розгортає їх разом. Скрипти
+  // живуть в окремих ізольованих світах, спільний у них лише DOM: стан — атрибут
+  // data-anty-tools на <html>, наявні кнопки — data-anty-has-<назва>; ручку ставить той
+  // скрипт, що прийшов першим. Стан пам'ятає localStorage сайту: новий профіль —
+  // розгорнуто, далі — як лишили.
+  const TOOLS_KEY = '__antyToolsCollapsed';
+  const toolsRoot = () => document.documentElement;
+  const toolsCollapsed = () => toolsRoot().getAttribute('data-anty-tools') === 'collapsed';
+  const setToolAvailable = (name, available) => {
+    const value = available ? '1' : '0';
+    if (toolsRoot().getAttribute(`data-anty-has-${name}`) !== value) toolsRoot().setAttribute(`data-anty-has-${name}`, value);
+  };
+  const onToolsChange = (cb) => {
+    new MutationObserver(cb).observe(toolsRoot(), { attributes: true, attributeFilter: ['data-anty-tools'] });
+    cb();
+  };
+
+  function ensureToolsHandle() {
+    const html = toolsRoot();
+    if (!html.hasAttribute('data-anty-tools')) {
+      let collapsed = false;
+      try { collapsed = localStorage.getItem(TOOLS_KEY) === '1'; } catch (_) {}
+      html.setAttribute('data-anty-tools', collapsed ? 'collapsed' : 'open');
+    }
+    if (document.getElementById('anty-tools-handle')) return;
+    const handle = document.createElement('div');
+    handle.id = 'anty-tools-handle';
+    handle.style.display = 'none';
+    const shadow = handle.attachShadow({ mode: 'open' });
+    const css = `:host { all: initial; }
+      button { position: fixed; right: 0; bottom: 20px; z-index: 2147483000; width: 16px; height: 34px;
+        padding: 0; border: 0; border-radius: 6px 0 0 6px; background: #1c2b33; color: #fff; cursor: pointer;
+        font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        box-shadow: 0 2px 8px rgba(0,0,0,.2); opacity: .8; }
+      button:hover { opacity: 1; }`;
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      shadow.adoptedStyleSheets = [sheet];
+    } catch (_) {
+      const style = document.createElement('style');
+      style.textContent = css;
+      shadow.appendChild(style);
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    shadow.appendChild(btn);
+    html.appendChild(handle);
+    const render = () => {
+      const collapsed = toolsCollapsed();
+      btn.textContent = collapsed ? '‹' : '›';
+      btn.title = collapsed ? 'Show Anty buttons' : 'Hide Anty buttons';
+      const any = [...html.attributes].some((a) => a.name.startsWith('data-anty-has-') && a.value === '1');
+      handle.style.display = any ? '' : 'none';
+    };
+    btn.addEventListener('click', () => {
+      const next = toolsCollapsed() ? 'open' : 'collapsed';
+      html.setAttribute('data-anty-tools', next);
+      try { localStorage.setItem(TOOLS_KEY, next === 'collapsed' ? '1' : '0'); } catch (_) {}
+    });
+    new MutationObserver(render).observe(html, { attributes: true });
+    render();
+  }
+
   /* ---------------- інтерфейс ---------------- */
 
   let host = null; // наш shadow-host: його вміст ніколи не вважаємо частиною Ads Manager
@@ -473,11 +538,11 @@
     :host { all: initial; }
     .fab, .panel { position: fixed; z-index: 2147483000; box-sizing: border-box;
       font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #1c1e21; }
-    .fab { right: 20px; bottom: 20px; padding: 8px 14px; border: 0; border-radius: 6px;
+    .fab { right: 22px; bottom: 20px; padding: 8px 14px; border: 0; border-radius: 6px;
       background: #1c2b33; color: #fff; font-weight: 600; cursor: pointer;
       box-shadow: 0 2px 8px rgba(0,0,0,.2); }
     .fab:disabled { opacity: .6; cursor: default; }
-    .panel { right: 20px; bottom: 64px; width: 300px; padding: 12px; background: #fff; border-radius: 8px;
+    .panel { right: 22px; bottom: 64px; width: 300px; padding: 12px; background: #fff; border-radius: 8px;
       box-shadow: 0 4px 16px rgba(0,0,0,.2); }
     .panel[hidden] { display: none; }
     .title { font-weight: 600; margin-bottom: 6px; }
@@ -702,7 +767,13 @@
       return;
     }
     mountUi();
-    const sync = () => { host.style.display = onAdsManager() ? '' : 'none'; };
+    ensureToolsHandle();
+    const fab = host.shadowRoot.querySelector('.fab');
+    onToolsChange(() => { fab.style.display = toolsCollapsed() ? 'none' : ''; });
+    const sync = () => {
+      host.style.display = onAdsManager() ? '' : 'none';
+      setToolAvailable('adv', onAdsManager());
+    };
     sync();
     setInterval(sync, 1000);
   };
