@@ -19,6 +19,7 @@ const { getProfile, updateProfile, deleteProfile: deleteProfileRow, markProfileL
 const profileSync = require('./profile-sync');
 const warmup = require('./warmup');
 const { installAdvColumns } = require('./adv-columns');
+const { installUsdToggle } = require('./usd-toggle');
 const http = require('http');
 const net = require('net');
 
@@ -2092,6 +2093,7 @@ async function launchProfile(profileId, mainWindow) {
 
       const cleanupStartupBlocker = await installStartupNoiseBlocker(context).catch(() => null);
       const stopAdvColumns = installAdvColumns(context);
+      const stopUsdToggle = installUsdToggle(context);
       let page = await context.newPage();
       page = await openInitialTabs(context, page);
       cleanupStartupBlocker?.();
@@ -2106,6 +2108,7 @@ async function launchProfile(profileId, mainWindow) {
         try { closeWatcher?.stop?.(); } catch (_) {}
         try { stopAccessChallengeMonitor(); } catch (_) {}
         try { stopAdvColumns(); } catch (_) {}
+        try { stopUsdToggle(); } catch (_) {}
         try { await autosave.flush(); } catch (_) {}
         try { autosave.stop(); } catch (_) {}
         await saveCookies(context);
@@ -2123,7 +2126,7 @@ async function launchProfile(profileId, mainWindow) {
       closeWatcher = watchAllPagesClosed(context, () => {
         context.close().catch(() => finalizeClose());
       });
-      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor, stopAdvColumns });
+      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor, stopAdvColumns, stopUsdToggle });
       updateProfile(profileId, { status: 'running', running_on: os.hostname() });
       markProfileLaunched(profileId);
       enqueueProfileSync(profileId);
@@ -2162,6 +2165,7 @@ async function launchProfile(profileId, mainWindow) {
     // Кнопка ADV columns в Ads Manager — до відкриття вкладок, щоб відновлена вкладка
     // Ads Manager отримала її з першого ж завантаження.
     const stopAdvColumns = installAdvColumns(context);
+    const stopUsdToggle = installUsdToggle(context);
 
     // ── WARMUP (first-launch only) ─────────────────────────────────────────
     // If the profile has a warmup config and hasn't been warmed up yet,
@@ -2212,6 +2216,7 @@ async function launchProfile(profileId, mainWindow) {
       try { closeWatcher?.stop?.(); } catch (_) {}
       try { stopAccessChallengeMonitor(); } catch (_) {}
       try { stopAdvColumns(); } catch (_) {}
+      try { stopUsdToggle(); } catch (_) {}
       try { await autosave.flush(); } catch (_) {}
       try { autosave.stop(); } catch (_) {}
       // Save cookies defensively — context may already be partially closed
@@ -2235,7 +2240,7 @@ async function launchProfile(profileId, mainWindow) {
     closeWatcher = watchAllPagesClosed(context, () => {
       context.close().catch(() => finalizeClose());
     });
-    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor, stopAdvColumns });
+    runningBrowsers.set(profileId, { context, page, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor, stopAdvColumns, stopUsdToggle });
     updateProfile(profileId, { status: 'running', running_on: os.hostname() });
     markProfileLaunched(profileId);
     enqueueProfileSync(profileId);
@@ -2272,6 +2277,7 @@ async function stopProfile(profileId) {
     try { instance.closeWatcher?.stop?.(); } catch {}
     try { instance.stopAccessChallengeMonitor?.(); } catch {}
     try { instance.stopAdvColumns?.(); } catch {}
+    try { instance.stopUsdToggle?.(); } catch {}
     try {
       await instance.autosave?.flush?.();
       instance.autosave?.stop?.();
