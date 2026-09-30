@@ -186,6 +186,8 @@ function alignFingerprintToChrome(profileId, fingerprint) {
 // Electron mode: { context, page }
 // Server mode:   { browserServer, browser, context, page, wsEndpoint, isServer: true }
 const runningBrowsers = new Map();
+// The cloud pull must not overwrite the status of a profile open here (see profile-sync).
+profileSync.setLocalRunningCheck((id) => runningBrowsers.has(id) || runningBrowsers.has(Number(id)));
 
 function enqueueProfileSync(profileId) {
   try {

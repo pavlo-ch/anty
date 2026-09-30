@@ -130,10 +130,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderProfilesList(document.getElementById('search-input')?.value || '');
   }, 15000);
 
-  // Auto cloud sync: pull from cloud every 60s
+  // Auto cloud sync every 10 s, so a teammate's launch shows up within seconds. The pull
+  // is cursor-based — only rows changed since the last one come back — so it stays cheap.
   setInterval(() => {
     void runProfileCloudSync({ silent: true });
-  }, 60000);
+  }, 10000);
 
   // Keep country flag/timezone fresh when proxy IP rotation changes geolocation.
   setInterval(() => {
@@ -1202,7 +1203,9 @@ async function stopProfile(id) {
 
 async function forceStopProfile(id) {
   const profile = profiles.find((p) => p.id === id);
-  const device = profile?.running_on ? ` on "${profile.running_on}"` : ' on another device';
+  // Name the person first (running_by, filled by the platform); the computer only as a fallback.
+  const who = profile?.running_by || profile?.running_on;
+  const device = who ? ` — in use by "${who}"` : ' on another device';
   if (!window.confirm(`Force stop profile "${profile?.name || id}"${device}?\n\nUse this only if the other machine crashed or is offline.`)) return;
   if (pendingProfiles.has(id)) return;
   pendingProfiles.add(id);
@@ -1703,7 +1706,7 @@ function renderProfilesList(searchTerm = '') {
             </button>`}
             <button class="profile-launch-btn ${isRunningLocally ? 'running' : isRunningByOther ? 'other-running' : ''} ${isPending ? 'pending' : ''}"
                     onclick="event.stopPropagation(); ${isPending ? '' : isRunningByOther ? `forceStopProfile(${p.id})` : isRunningLocally ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
-                    title="${isPending ? 'Please wait...' : isRunningByOther ? 'Force stop (running on ' + escapeHtml(p.running_on || 'another device') + ')' : isRunningLocally ? 'Stop' : 'Launch'}"
+                    title="${isPending ? 'Please wait...' : isRunningByOther ? 'Force stop (in use by ' + escapeHtml(p.running_by || p.running_on || 'another device') + ')' : isRunningLocally ? 'Stop' : 'Launch'}"
                     ${isPending ? 'disabled' : ''}>
               ${isPending
                 ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>'
@@ -1723,7 +1726,7 @@ function renderProfilesList(searchTerm = '') {
           </div>
           <span class="profile-item-country">${p.created_by ? escapeHtml(p.created_by) : (countryCode || '')}</span>
           ${isRunningLocally ? '<span class="badge badge-status running">Running</span>' : ''}
-          ${isRunningByOther ? `<span class="badge badge-status in-use" title="Running on ${escapeHtml(p.running_on || 'unknown device')}">In use${p.running_on ? ': ' + escapeHtml(p.running_on) : ''}</span>` : ''}
+          ${isRunningByOther ? `<span class="badge badge-status in-use" title="${p.running_by ? 'Running by ' + escapeHtml(p.running_by) + (p.running_on ? ' on ' + escapeHtml(p.running_on) : '') : 'Running on ' + escapeHtml(p.running_on || 'unknown device')}">In use${(p.running_by || p.running_on) ? ': ' + escapeHtml(p.running_by || p.running_on) : ''}</span>` : ''}
         </div>
         <span class="profile-item-engine">Chromium</span>
       </div>

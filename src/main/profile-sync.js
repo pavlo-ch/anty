@@ -481,6 +481,7 @@ function normalizeCloudProfile(item) {
       team_id: String(root.teamId || '').trim(),
       cloud_updated_at: String(root.updatedAt || root.cloudUpdatedAt || '').trim(),
       running_on: String(root.runningOn || root.running_on || '').trim(),
+      running_by: String(root.runningBy || root.running_by || '').trim(),
       // Map cloud created_by_name → local created_by
       // Note: pull response returns createdBy as object {id, email, name} — extract .name
       created_by: String(
@@ -534,6 +535,12 @@ function setSyncCursor(cursor) {
 
 function getSyncCursor() {
   return String(db.getSetting(CURSOR_SETTING_KEY) || '').trim();
+}
+
+// Set by the launcher: whether a profile is open on this machine right now.
+let isRunningHere = () => false;
+function setLocalRunningCheck(fn) {
+  if (typeof fn === 'function') isRunningHere = fn;
 }
 
 function onLocalProfileUpsert(profile) {
@@ -799,6 +806,17 @@ async function pullProfilesFromCloud(options = {}) {
 
     const existing = db.getProfileByRemoteId(cloud.remoteId);
 
+    // A profile open on this machine right now keeps its own "running": the launcher
+    // knows. The row the cloud echoes back carries our own host in running_on, which the
+    // stale-lock rule reads as stale ("our own host") and turned into 'ready' — the next
+    // autosave then pushed that 'ready', so ~40 s after a launch the team saw the profile
+    // as free while it was in use (reproduced 30.09.2026 on 1.2.15).
+    if (existing && isRunningHere(existing.id)) {
+      delete cloud.data.status;
+      delete cloud.data.running_on;
+      delete cloud.data.running_by;
+    }
+
     if (cloud.deleted) {
       if (existing) {
         db.deleteProfile(existing.id);
@@ -966,5 +984,6 @@ module.exports = {
   pushProfileDeleteNow,
   runFullSync,
   scheduleSync,
-  getSyncStatus
+  getSyncStatus,
+  setLocalRunningCheck
 };
