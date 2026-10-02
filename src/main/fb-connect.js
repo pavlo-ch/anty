@@ -79,7 +79,8 @@ async function connect(profileId, openUrl, deps = defaultDeps()) {
   if (!remoteId) return { success: false, state: UNSYNCED };
   const result = await deps.post(deps.ticketUrl(), { profileId: remoteId });
   const url = result?.ok ? String(result.body?.url || '') : '';
-  if (!/^https:\/\//.test(url)) {
+  // https only, except a platform on this machine — that is how it is tested locally.
+  if (!/^(https:\/\/|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/)/.test(url)) {
     const state = result?.ok ? { kind: 'error', text: 'Platform returned no link. Try again.' } : toState(result);
     return { success: false, state };
   }
