@@ -1679,9 +1679,9 @@ function renderProfilesList(searchTerm = '') {
     const isPending = pendingProfiles.has(p.id);
     // last_launched_at, not modified_at — the latter also moves on edits and on
     // every platform sync, which made never-opened profiles read as "just now".
-    // A profile that was never opened shows when it was created, so a fresh one
-    // can be told apart from an old forgotten one.
-    const time = p.last_launched_at ? formatTime(p.last_launched_at) : formatCreated(p.created_at);
+    // A profile that was never opened counts from its creation, so a fresh one
+    // reads "just now" instead of "never".
+    const time = p.last_launched_at ? formatTime(p.last_launched_at) : (formatTime(p.created_at) || 'never');
     const timeTitle = p.last_launched_at ? 'Last opened' : 'Created, never opened';
     const systemLabel = getProfileSystemLabel(fp);
     const countryFlag = fp.locale?.flag || '';
@@ -2578,15 +2578,6 @@ function formatTime(dateStr) {
   return d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
 }
 
-/** Creation moment as "02.10 14:20" — absolute, unlike formatTime's "how long ago". */
-function formatCreated(dateStr) {
-  if (!dateStr) return 'never';
-  const d = new Date(dateStr + 'Z');
-  if (Number.isNaN(d.getTime())) return 'never';
-  const date = d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
-  const time = d.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
-  return `${date} ${time}`;
-}
 
 function getProfileCreatorLabel(profile) {
   if (profile?.team_id) return 'Team';
