@@ -1643,9 +1643,14 @@ function renderProfilesList(searchTerm = '') {
   }
 
   // Apply sort
+  // A never-opened profile sorts by its creation, the same moment its row shows,
+  // so a fresh one lands on top of "Last launched" rather than at the bottom.
+  const sortValue = (p) => (currentSortKey === 'last_launched_at'
+    ? p.last_launched_at || p.created_at || ''
+    : p[currentSortKey] || '');
   filtered = [...filtered].sort((a, b) => {
-    let aVal = a[currentSortKey] || '';
-    let bVal = b[currentSortKey] || '';
+    let aVal = sortValue(a);
+    let bVal = sortValue(b);
     if (currentSortKey === 'name') {
       aVal = aVal.toLowerCase();
       bVal = bVal.toLowerCase();
