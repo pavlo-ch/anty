@@ -1679,7 +1679,10 @@ function renderProfilesList(searchTerm = '') {
     const isPending = pendingProfiles.has(p.id);
     // last_launched_at, not modified_at — the latter also moves on edits and on
     // every platform sync, which made never-opened profiles read as "just now".
-    const time = p.last_launched_at ? formatTime(p.last_launched_at) : 'never';
+    // A profile that was never opened shows when it was created, so a fresh one
+    // can be told apart from an old forgotten one.
+    const time = p.last_launched_at ? formatTime(p.last_launched_at) : formatCreated(p.created_at);
+    const timeTitle = p.last_launched_at ? 'Last opened' : 'Created, never opened';
     const systemLabel = getProfileSystemLabel(fp);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';
@@ -1689,7 +1692,7 @@ function renderProfilesList(searchTerm = '') {
       <div class="profile-item ${isActive ? 'active' : ''} ${isRunningByOther ? 'other-running' : ''}" data-id="${p.id}" onclick="selectProfile(${p.id})">
         <div class="profile-item-header">
           <span class="profile-item-name">${escapeHtml(p.name)}</span>
-          <span class="profile-item-time">${time}</span>
+          <span class="profile-item-time" title="${timeTitle}">${time}</span>
           <div class="profile-item-actions">
             <button class="profile-delete-btn"
                     onclick="event.stopPropagation(); confirmDeleteProfile(${p.id})"
@@ -2573,6 +2576,16 @@ function formatTime(dateStr) {
   }
   
   return d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
+}
+
+/** Creation moment as "02.10 14:20" — absolute, unlike formatTime's "how long ago". */
+function formatCreated(dateStr) {
+  if (!dateStr) return 'never';
+  const d = new Date(dateStr + 'Z');
+  if (Number.isNaN(d.getTime())) return 'never';
+  const date = d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
+  const time = d.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+  return `${date} ${time}`;
 }
 
 function getProfileCreatorLabel(profile) {
