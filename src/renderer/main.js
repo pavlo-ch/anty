@@ -1798,9 +1798,14 @@ function renderProfilesList(searchTerm = '') {
   }
 
   // Apply sort
+  // A never-opened profile sorts by its creation, the same moment its row shows,
+  // so a fresh one lands on top of "Last launched" rather than at the bottom.
+  const sortValue = (p) => (currentSortKey === 'last_launched_at'
+    ? p.last_launched_at || p.created_at || ''
+    : p[currentSortKey] || '');
   filtered = [...filtered].sort((a, b) => {
-    let aVal = a[currentSortKey] || '';
-    let bVal = b[currentSortKey] || '';
+    let aVal = sortValue(a);
+    let bVal = sortValue(b);
     if (currentSortKey === 'name') {
       aVal = aVal.toLowerCase();
       bVal = bVal.toLowerCase();
@@ -1834,7 +1839,10 @@ function renderProfilesList(searchTerm = '') {
     const isPending = pendingProfiles.has(p.id);
     // last_launched_at, not modified_at — the latter also moves on edits and on
     // every platform sync, which made never-opened profiles read as "just now".
-    const time = p.last_launched_at ? formatTime(p.last_launched_at) : 'never';
+    // A profile that was never opened counts from its creation, so a fresh one
+    // reads "just now" instead of "never".
+    const time = p.last_launched_at ? formatTime(p.last_launched_at) : (formatTime(p.created_at) || 'never');
+    const timeTitle = p.last_launched_at ? 'Last opened' : 'Created, never opened';
     const systemLabel = getProfileSystemLabel(fp);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';
@@ -1844,7 +1852,7 @@ function renderProfilesList(searchTerm = '') {
       <div class="profile-item ${isActive ? 'active' : ''} ${isRunningByOther ? 'other-running' : ''}" data-id="${p.id}" onclick="selectProfile(${p.id})">
         <div class="profile-item-header">
           <span class="profile-item-name">${escapeHtml(p.name)}</span>
-          <span class="profile-item-time">${time}</span>
+          <span class="profile-item-time" title="${timeTitle}">${time}</span>
           <div class="profile-item-actions">
             <button class="profile-delete-btn"
                     onclick="event.stopPropagation(); confirmDeleteProfile(${p.id})"
@@ -2766,6 +2774,7 @@ function formatTime(dateStr) {
   
   return d.toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit' });
 }
+
 
 function getProfileCreatorLabel(profile) {
   if (profile?.team_id) return 'Team';
