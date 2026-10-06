@@ -51,8 +51,14 @@
       'ctr', //                                         CTR (all)
       'cpc', //                                         CPC (all)
       'clicks', //                                      Clicks (all)
-      // скрін 2 обидва рази надіслано дублем скріну 1: у діалозі «26 columns selected»,
-      // а видно 20, тож ~6 колонок між «Clicks (all)» і «Results» ще не відомі.
+      // скрін 2 (надіслано 06.10.2026; ключі звірено того ж дня). Landing page views і
+      // реєстрації — «omni»: без нього це лише Website-варіант або колонки немає взагалі.
+      'actions:link_click', //                          Link clicks
+      'actions:omni_landing_page_view', //              Landing page views
+      'cost_per_action_type:lead', //                   Cost per lead
+      'actions:lead', //                                Leads
+      'cost_per_action_type:omni_complete_registration', // Cost per registration completed
+      'actions:omni_complete_registration', //          Registrations completed
       // скрін 3
       'results', //                                     Results
       'cost_per_result', //                             Cost per result
