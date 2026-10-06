@@ -325,7 +325,7 @@ function registerIpcHandlers() {
     // Check if profile is already running on another team member's machine (status in DB)
     const profile = db.getProfile(id);
     if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id) && !isStaleRunningLock(profile)) {
-      return { success: false, error: 'This profile is already running on another team device' };
+      return { success: false, error: `This profile is already in use by ${profile.running_by || profile.running_on || 'another team device'}` };
     }
     const mainWindow = BrowserWindow.fromWebContents(event.sender);
     const result = await launcher.launchProfile(id, mainWindow);
@@ -357,7 +357,7 @@ function registerIpcHandlers() {
     // is then reused by normal launches.
     const profile = db.getProfile(id);
     if (profile?.status === 'running' && !launcher.getRunningProfiles().includes(id) && !isStaleRunningLock(profile)) {
-      return { success: false, error: 'This profile is already running on another team device' };
+      return { success: false, error: `This profile is already in use by ${profile.running_by || profile.running_on || 'another team device'}` };
     }
     const result = await launcher.openProfileForManualLogin(id, opts || {});
     const updated = db.getProfile(id);

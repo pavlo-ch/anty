@@ -233,6 +233,8 @@ function initDatabase(recoveryAttempted = false) {
   ensureColumn('profiles', 'created_by', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'warmup_url', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'running_on', "TEXT DEFAULT ''");
+  // Who runs it, by name — filled by the platform on push, read from pull (display only).
+  ensureColumn('profiles', 'running_by', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'storage_state', "TEXT DEFAULT ''");
   ensureColumn('profiles', 'last_open_tabs', "TEXT DEFAULT '[]'");
   // Separate from modified_at: the profile list needs "when was this last OPENED",
@@ -314,7 +316,7 @@ function initDatabase(recoveryAttempted = false) {
   // On startup, reset profiles that were "running" on THIS device (crashed last session).
   // Do NOT reset profiles running on other team members' devices.
   const thisHost = os.hostname();
-  db.prepare("UPDATE profiles SET status='ready', running_on='' WHERE status='running' AND (running_on='' OR running_on=?)").run(thisHost);
+  db.prepare("UPDATE profiles SET status='ready', running_on='', running_by='' WHERE status='running' AND (running_on='' OR running_on=?)").run(thisHost);
 
   console.log('[DB] Database initialized successfully');
   return db;
@@ -778,6 +780,7 @@ function updateProfile(id, data) {
     'status',
     'created_by',
     'running_on',
+    'running_by',
     'warmup_completed',
     'warmup_config'
   ];
