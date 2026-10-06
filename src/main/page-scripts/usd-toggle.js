@@ -198,6 +198,73 @@
     titled.clear();
   }
 
+  /* ---------------- ручка «згорнути» (однакова в adv-columns.js і usd-toggle.js) ---------------- */
+
+  // Кнопки Anty (ADV columns, USD) стоять унизу праворуч і перекривають кнопки Facebook,
+  // напр. Save у діалогах. Ручка праворуч від них згортає й розгортає їх разом. Скрипти
+  // живуть в окремих ізольованих світах, спільний у них лише DOM: стан — атрибут
+  // data-anty-tools на <html>, наявні кнопки — data-anty-has-<назва>; ручку ставить той
+  // скрипт, що прийшов першим. Стан пам'ятає localStorage сайту: новий профіль —
+  // розгорнуто, далі — як лишили.
+  const TOOLS_KEY = '__antyToolsCollapsed';
+  const toolsRoot = () => document.documentElement;
+  const toolsCollapsed = () => toolsRoot().getAttribute('data-anty-tools') === 'collapsed';
+  const setToolAvailable = (name, available) => {
+    const value = available ? '1' : '0';
+    if (toolsRoot().getAttribute(`data-anty-has-${name}`) !== value) toolsRoot().setAttribute(`data-anty-has-${name}`, value);
+  };
+  const onToolsChange = (cb) => {
+    new MutationObserver(cb).observe(toolsRoot(), { attributes: true, attributeFilter: ['data-anty-tools'] });
+    cb();
+  };
+
+  function ensureToolsHandle() {
+    const html = toolsRoot();
+    if (!html.hasAttribute('data-anty-tools')) {
+      let collapsed = false;
+      try { collapsed = localStorage.getItem(TOOLS_KEY) === '1'; } catch (_) {}
+      html.setAttribute('data-anty-tools', collapsed ? 'collapsed' : 'open');
+    }
+    if (document.getElementById('anty-tools-handle')) return;
+    const handle = document.createElement('div');
+    handle.id = 'anty-tools-handle';
+    handle.style.display = 'none';
+    const shadow = handle.attachShadow({ mode: 'open' });
+    const css = `:host { all: initial; }
+      button { position: fixed; right: 0; bottom: 20px; z-index: 2147483000; width: 16px; height: 34px;
+        padding: 0; border: 0; border-radius: 6px 0 0 6px; background: #1c2b33; color: #fff; cursor: pointer;
+        font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        box-shadow: 0 2px 8px rgba(0,0,0,.2); opacity: .8; }
+      button:hover { opacity: 1; }`;
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      shadow.adoptedStyleSheets = [sheet];
+    } catch (_) {
+      const style = document.createElement('style');
+      style.textContent = css;
+      shadow.appendChild(style);
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    shadow.appendChild(btn);
+    html.appendChild(handle);
+    const render = () => {
+      const collapsed = toolsCollapsed();
+      btn.textContent = collapsed ? '‹' : '›';
+      btn.title = collapsed ? 'Show Anty buttons' : 'Hide Anty buttons';
+      const any = [...html.attributes].some((a) => a.name.startsWith('data-anty-has-') && a.value === '1');
+      handle.style.display = any ? '' : 'none';
+    };
+    btn.addEventListener('click', () => {
+      const next = toolsCollapsed() ? 'open' : 'collapsed';
+      html.setAttribute('data-anty-tools', next);
+      try { localStorage.setItem(TOOLS_KEY, next === 'collapsed' ? '1' : '0'); } catch (_) {}
+    });
+    new MutationObserver(render).observe(html, { attributes: true });
+    render();
+  }
+
   /* ---------------- кнопка ---------------- */
 
   const CSS = `
@@ -209,7 +276,8 @@
     button[aria-pressed="true"] { background: #1c2b33; color: #fff; }
   `;
 
-  // В Ads Manager ліворуч від ADV columns (та кнопка — right: 20px, ~112px завширшки).
+  // В Ads Manager ліворуч від ADV columns (та — right: 22px, ~112px завширшки), праворуч —
+  // ручка «згорнути» біля самого краю.
   const onAdsManager = () => location.hostname === 'adsmanager.facebook.com' || location.pathname.startsWith('/adsmanager');
 
   function mountUi() {
@@ -238,8 +306,11 @@
     const wanted = () => { try { return localStorage.getItem(STORE_KEY) === '1'; } catch (_) { return false; } };
     const render = () => {
       btn.setAttribute('aria-pressed', String(on));
-      btn.style.right = onAdsManager() ? '140px' : '20px';
+      btn.style.right = onAdsManager() ? '142px' : '22px';
+      setToolAvailable('usd', host.style.display !== 'none');
     };
+    ensureToolsHandle();
+    onToolsChange(() => { btn.style.display = toolsCollapsed() ? 'none' : ''; });
 
     btn.addEventListener('click', () => {
       if (on) disable(); else enable();
