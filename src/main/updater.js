@@ -36,8 +36,25 @@ const ANTY_SOURCE = 'anty-browser';
 const USE_KEYCHAIN = String(process.env.ANTY_USE_KEYCHAIN || '').trim().toLowerCase() === 'true';
 const UPDATE_RETENTION_DIR_LIMIT = 1;
 
+// config/platform.json already names the log endpoint (logUrl); without reading it the
+// default here is empty, so no updater event ever reached the platform and a failed
+// update on a teammate's machine left nothing to look at.
+let configLogUrl = null;
+function getConfigLogUrl() {
+  if (configLogUrl !== null) return configLogUrl;
+  configLogUrl = '';
+  for (const dir of [app.getAppPath(), process.cwd()]) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'config', 'platform.json'), 'utf8'));
+      configLogUrl = String(parsed?.logUrl || '').trim();
+      if (configLogUrl) break;
+    } catch (_) {}
+  }
+  return configLogUrl;
+}
+
 function getPlatformLogUrl() {
-  return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || DEFAULT_PLATFORM_LOG_URL || '').trim();
+  return (db.getSetting('platform_log_url') || process.env.ANTY_PLATFORM_LOG_URL || DEFAULT_PLATFORM_LOG_URL || getConfigLogUrl() || '').trim();
 }
 
 function getOrCreateStableDeviceId() {
@@ -302,7 +319,11 @@ function getLegacyUpdatesDir() {
 }
 
 async function cleanupLegacyUpdatesDir(options = {}) {
-  const keepVersion = String(options.keepVersion || '').trim();
+  // A downloaded update that is waiting to be installed is never cleaned up, whoever
+  // calls this: a "Check for updates" or startup check in between used to be free to
+  // pick another directory as the one to keep and delete it.
+  const waiting = mandatoryDownloadState.state === 'mandatory_downloaded' ? String(mandatoryDownloadState.version || '') : '';
+  const keepVersion = String(options.keepVersion || waiting || '').trim();
   const keepLatestDirectoriesRaw = Number(options.keepLatestDirectories);
   const keepLatestDirectories = Number.isFinite(keepLatestDirectoriesRaw) && keepLatestDirectoriesRaw >= 0
     ? Math.floor(keepLatestDirectoriesRaw)
@@ -449,10 +470,14 @@ async function downloadMandatoryUpdate(options = {}) {
       ? Math.min(Math.floor(retryCountRaw), 5)
       : 3;
 
+    // An optional update goes through this same DMG download: checkMandatoryUpdate
+    // fills mandatoryUpdateInfo for any newer version, mandatory or not. Requiring
+    // `required` here made "Update Now" on an optional release answer "No mandatory
+    // update available." when the app had last seen itself as up to date.
     if (!mandatoryUpdateInfo) {
-      const check = await checkMandatoryUpdate();
-      if (!check.required) {
-        return { ok: false, reason: 'no_mandatory_update', message: 'No mandatory update available.' };
+      await checkMandatoryUpdate();
+      if (!mandatoryUpdateInfo) {
+        return { ok: false, reason: 'no_update', message: 'No update available.' };
       }
     }
 
@@ -786,20 +811,15 @@ function registerUpdater(window) {
     emitStatus({ state: 'latest' });
   });
 
+  // electron-updater's own download (the ZIP) must never drive the DMG update window.
+  // That window installs only the DMG that downloadMandatoryUpdate fetched. Reproduced
+  // 29.09.2026 on 1.2.15: with Anty open when a release is published, "Check for updates"
+  // starts electron-updater's ZIP; "Update" then fills mandatoryUpdateInfo; when the ZIP
+  // finished, the handler below marked the update downloaded with filePath null
+  // (downloadedBytes = the ZIP's 181,935,311), and "Install Update" answered "Downloaded
+  // installer file is missing" although no DMG had ever been downloaded.
   autoUpdater.on('download-progress', (progress) => {
     const percent = Number((progress?.percent || 0).toFixed(2));
-    if (mandatoryUpdateInfo) {
-      updateMandatoryState({
-        state: 'mandatory_downloading',
-        version: mandatoryUpdateInfo.version,
-        percent,
-        downloadedBytes: Number(progress?.transferred || 0),
-        totalBytes: Number(progress?.total || 0),
-        attempts: Number(mandatoryDownloadState.attempts || 1),
-        filePath: null,
-        message: null,
-      });
-    }
     emitStatus({ state: 'downloading', percent });
     logEvent('info', 'download_progress', { percent });
   });
@@ -808,21 +828,10 @@ function registerUpdater(window) {
     downloadTriggered = false;
     logEvent('info', 'update_downloaded', { version: info?.version });
 
+    // The update window is already handling this version with its own DMG download;
+    // this ZIP is not an installer it can open (see download-progress above).
     const isMandatory = Boolean(mandatoryUpdateInfo && isNewerVersion(info?.version || '', app.getVersion()));
-    if (isMandatory) {
-      updateMandatoryState({
-        state: 'mandatory_downloaded',
-        version: info?.version || mandatoryUpdateInfo.version,
-        percent: 100,
-        downloadedBytes: Number(mandatoryDownloadState.downloadedBytes || 0),
-        totalBytes: Number(mandatoryDownloadState.totalBytes || 0),
-        attempts: Number(mandatoryDownloadState.attempts || 1),
-        filePath: null,
-        message: null,
-      });
-      emitStatus({ state: 'mandatory_downloaded', version: info?.version || mandatoryUpdateInfo.version, mandatory: true });
-      return;
-    }
+    if (isMandatory) return;
 
     emitStatus({ state: 'downloaded', version: info?.version || null });
 
@@ -892,9 +901,9 @@ function registerUpdater(window) {
 
   ipcMain.handle('app:update:open-installer', async () => {
     if (!mandatoryUpdateInfo) {
-      const check = await checkMandatoryUpdate();
-      if (!check.required) {
-        return { ok: false, reason: 'no_mandatory_update', message: 'No mandatory update available.' };
+      await checkMandatoryUpdate();
+      if (!mandatoryUpdateInfo) {
+        return { ok: false, reason: 'no_update', message: 'No update available.' };
       }
     }
 
@@ -904,7 +913,17 @@ function registerUpdater(window) {
 
     const localPath = String(mandatoryDownloadState.filePath || '').trim();
     if (!localPath || !fs.existsSync(localPath)) {
-      return { ok: false, reason: 'missing_local_installer', message: 'Downloaded installer file is missing. Re-download update.' };
+      // Something removed the file after it was downloaded — on Windows usually the
+      // antivirus quarantining an unsigned installer. Forget the download so the next
+      // attempt fetches it again instead of reopening a path that is gone for good.
+      logEvent('error', 'mandatory_installer_missing', {
+        version: mandatoryDownloadState.version,
+        filePath: localPath,
+        platform: process.platform,
+        dirExists: localPath ? fs.existsSync(path.dirname(localPath)) : false,
+      });
+      updateMandatoryState({ state: 'idle', percent: 0, downloadedBytes: 0, totalBytes: 0, filePath: null, message: null });
+      return { ok: false, reason: 'missing_local_installer', message: 'The downloaded update file is gone. Downloading it again…' };
     }
 
     logEvent('info', 'mandatory_open_installer', { version: mandatoryUpdateInfo.version, filePath: localPath });
