@@ -3,3 +3,8 @@ dist/
 .DS_Store
 *.db
 .gitnexus
+
+.env*
+data/
+test-results/
+*.db-*

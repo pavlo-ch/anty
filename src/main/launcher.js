@@ -443,13 +443,7 @@ async function installStartupNoiseBlocker(context) {
 }
 
 function getDataDir() {
-  if (process.env.ANTY_DATA_DIR) return process.env.ANTY_DATA_DIR;
-  try {
-    const { app } = require('electron');
-    return app.getPath('userData');
-  } catch {
-    return path.join(os.homedir(), '.anty');
-  }
+  return require('./database').getDataDir();
 }
 
 // The "FB Acc" bookmark is a javascript: bookmarklet, kept in a config asset rather
@@ -1736,6 +1730,7 @@ async function launchProfile(profileId, mainWindow) {
   const fingerprint = alignFingerprintToChrome(profileId, JSON.parse(profile.fingerprint || '{}'));
   const userDataDir = getUserDataDir(profileId);
   let proxyBridge = null;
+  let serverContext = null;
   const startAction = String(fingerprint.startAction || 'open-page');
 
   console.log(`[Launcher] Launching profile ${profileId}: ${profile.name}`);
@@ -2062,57 +2057,51 @@ async function launchProfile(profileId, mainWindow) {
 
     // ── SERVER / HEADLESS MODE ──────────────────────────────────────────────
     if (mainWindow === null || (typeof mainWindow === 'object' && mainWindow && mainWindow.__serverMode)) {
-      const browserServer = await chromium.launchServer({
-        headless: true,
-        executablePath,
+      // Keep the same on-disk Chrome profile on every server visit. The former
+      // launchServer + newContext path discarded IndexedDB and Chrome preferences.
+      const portFile = path.join(userDataDir, 'DevToolsActivePort');
+      const importMarker = path.join(userDataDir, '.anty-server-imported');
+      const hasPersistedCookies = ['Cookies', 'Network/Cookies'].some(file =>
+        fs.existsSync(path.join(userDataDir, 'Default', file)));
+      fs.rmSync(portFile, { force: true });
+      const context = serverContext = await chromium.launchPersistentContext(userDataDir, {
+        ...launchOptions,
+        ...contextOptions,
+        headless: process.env.ANTY_SERVER_HEADLESS !== 'false',
         args: [
-          '--disable-infobars',
-          '--no-first-run',
-          '--no-default-browser-check',
-          '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
-          `--window-size=${viewportWidth},${viewportHeight}`,
+          ...launchOptions.args.filter(arg => !arg.startsWith('--remote-debugging-port=')),
+          '--remote-debugging-port=0',
+          '--remote-debugging-address=127.0.0.1',
         ],
         ignoreDefaultArgs: serverIgnoreDefaultArgs,
       });
-
-      const wsEndpoint = browserServer.wsEndpoint();
-      const browser = await chromium.connect(wsEndpoint);
-      const serverContextOptions = {
-        ...contextOptions,
-        viewport: { width: viewportWidth, height: viewportHeight },
-        deviceScaleFactor: 1,
-      };
-      const context = parsedStorageState
-        ? await browser.newContext({ ...serverContextOptions, storageState: parsedStorageState })
-        : await browser.newContext({ ...serverContextOptions });
-
+      const wsEndpoint = await require('../server/cdp-endpoint').readCdpEndpoint(userDataDir);
       if (injectionScript) await context.addInitScript(injectionScript);
-      if (!parsedStorageState) {
-        await importCookies(context);
+      if (!fs.existsSync(importMarker)) {
+        if (!hasPersistedCookies && !await importStorageState(context)) await importCookies(context);
+        fs.writeFileSync(importMarker, '1', { mode: 0o600 });
       }
 
       const cleanupStartupBlocker = await installStartupNoiseBlocker(context).catch(() => null);
       const stopAdvColumns = installAdvColumns(context);
       const stopUsdToggle = installUsdToggle(context);
-      let page = await context.newPage();
+      let page = context.pages()[0] || await context.newPage();
       page = await openInitialTabs(context, page);
       cleanupStartupBlocker?.();
       const stopAccessChallengeMonitor = installAccessChallengeMonitor(context, profileId, mainWindow);
       const autosave = startStateAutosave(profileId, context);
 
-      let finalized = false;
+      let finalizePromise;
       let closeWatcher = null;
-      const finalizeClose = async () => {
-        if (finalized) return;
-        finalized = true;
+      const finalizeClose = () => {
+        if (finalizePromise) return finalizePromise;
+        finalizePromise = (async () => {
         try { closeWatcher?.stop?.(); } catch (_) {}
         try { stopAccessChallengeMonitor(); } catch (_) {}
         try { stopAdvColumns(); } catch (_) {}
         try { stopUsdToggle(); } catch (_) {}
         try { await autosave.flush(); } catch (_) {}
         try { autosave.stop(); } catch (_) {}
-        await saveCookies(context);
-        await saveStorageState(context);
         syncProfileExtensionsToShared(userDataDir);
         try { await proxyBridge?.close?.(); } catch (_) {}
         runningBrowsers.delete(profileId);
@@ -2122,11 +2111,13 @@ async function launchProfile(profileId, mainWindow) {
           profileSync.scheduleSync();
         }
         console.log(`[Launcher] Profile ${profileId} closed (server mode)`);
+        })();
+        return finalizePromise;
       };
       closeWatcher = watchAllPagesClosed(context, () => {
         context.close().catch(() => finalizeClose());
       });
-      runningBrowsers.set(profileId, { browserServer, browser, context, page, wsEndpoint, isServer: true, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor, stopAdvColumns, stopUsdToggle });
+      runningBrowsers.set(profileId, { context, page, wsEndpoint, isServer: true, finalizeClose, proxyBridge, closeWatcher, autosave, userDataDir, stopAccessChallengeMonitor, stopAdvColumns, stopUsdToggle });
       updateProfile(profileId, { status: 'running', running_on: os.hostname() });
       markProfileLaunched(profileId);
       enqueueProfileSync(profileId);
@@ -2134,7 +2125,7 @@ async function launchProfile(profileId, mainWindow) {
       context.on('close', finalizeClose);
 
       console.log(`[Launcher] Profile ${profileId} launched (headless) — wsEndpoint: ${wsEndpoint}`);
-      return { success: true, wsEndpoint };
+      return { success: true, wsEndpoint, protocol: 'cdp' };
     }
 
     // ── ELECTRON / GUI MODE ─────────────────────────────────────────────────
@@ -2255,6 +2246,7 @@ async function launchProfile(profileId, mainWindow) {
     return { success: true };
 
   } catch (error) {
+    try { await serverContext?.close(); } catch (_) {}
     try { await proxyBridge?.close?.(); } catch (_) {}
     console.error(`[Launcher] Failed to launch profile ${profileId}:`, error.message);
     return { success: false, error: error.message };
@@ -2284,7 +2276,7 @@ async function stopProfile(profileId) {
     } catch {}
     try {
       const allCookies = await instance.context.cookies();
-      if (allCookies.length > 0) {
+      if (allCookies.length > 0 || instance.isServer) {
         const updated = updateProfile(profileId, { cookies: JSON.stringify(allCookies) });
         if (updated?.__changed) {
           enqueueProfileSync(profileId);
@@ -2296,7 +2288,7 @@ async function stopProfile(profileId) {
       const state = await instance.context.storageState();
       const cookieCount = Array.isArray(state?.cookies) ? state.cookies.length : 0;
       const originCount = Array.isArray(state?.origins) ? state.origins.length : 0;
-      if (cookieCount > 0 || originCount > 0) {
+      if (cookieCount > 0 || originCount > 0 || instance.isServer) {
         const updated = updateProfile(profileId, { storage_state: JSON.stringify(state) });
         if (updated?.__changed) {
           enqueueProfileSync(profileId);
@@ -2305,6 +2297,7 @@ async function stopProfile(profileId) {
       }
     } catch {}
     await instance.context.close();
+    await instance.finalizeClose?.();
     if (instance.browserServer) await instance.browserServer.close().catch(() => {});
     if (instance.userDataDir) {
       syncProfileExtensionsToShared(instance.userDataDir);
