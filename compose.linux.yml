@@ -1,0 +1,47 @@
+services:
+  anty:
+    hostname: ${ANTY_HOSTNAME:-anty-outbound-runtime}
+    build:
+      context: .
+      dockerfile: Dockerfile.linux
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    image: anty-linux:local
+    restart: unless-stopped
+    init: true
+    shm_size: 1gb
+    mem_limit: 2g
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 60s
+    volumes:
+      - anty-profiles:/data
+    # API, CDP and optional VNC stay inside the container namespace. No ports.
+  agent:
+    profiles: [worker]
+    build:
+      context: ${OUTBOUND_AGENT_DIR:-../outbound-linux/agent}
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    image: outbound-linux-agent:local
+    restart: unless-stopped
+    init: true
+    network_mode: service:anty
+    depends_on:
+      anty:
+        condition: service_healthy
+    environment:
+      WARMUP_ANTY_API: http://127.0.0.1:3032
+      WARMUP_PORTAL: ${WARMUP_PORTAL:-http://127.0.0.1:4173}
+      WARMUP_AGENT_TOKEN: ${WARMUP_AGENT_TOKEN:-}
+    volumes:
+      - agent-runs:/app/agent/runs
+    mem_limit: 512m
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 60s
+volumes:
+  anty-profiles:
+  agent-runs:

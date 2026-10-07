@@ -23,6 +23,7 @@ const {
   initDatabase,
   listProfiles,
   getProfile,
+  getProfileByRemoteId,
   createProfile,
   updateProfile,
   deleteProfile: dbDeleteProfile,
@@ -51,6 +52,8 @@ const HOST = '127.0.0.1';
 // ── Mini router ─────────────────────────────────────────────────────────────
 
 const routes = [];
+const starting = new Set();
+const owners = new Map();
 
 function route(method, pattern, handler) {
   // Convert "/api/profiles/:id/start" → regex + param names
@@ -109,6 +112,8 @@ function serverError(res, err) { send(res, 500, { ok: false, error: String(err?.
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+route('GET', '/health', async (_req, res) => ok(res, { protocol: 'cdp', running: launcher.getRunningProfiles().length }));
+
 // GET /api/profiles — list all profiles with running status
 route('GET', '/api/profiles', async (_req, res, _params) => {
   const profiles = listProfiles();
@@ -117,6 +122,8 @@ route('GET', '/api/profiles', async (_req, res, _params) => {
     const p = withoutStaleRunningLock(raw, { runningLocally: running.has(raw.id) });
     return {
     id: p.id,
+    remote_id: p.remote_id,
+    running_on: p.running_on,
     name: p.name,
     status: running.has(p.id) ? 'running' : (p.status || 'ready'),
     proxy: p.proxy_host ? `${p.proxy_type || 'http'}://${p.proxy_host}:${p.proxy_port}` : null,
@@ -127,6 +134,20 @@ route('GET', '/api/profiles', async (_req, res, _params) => {
     };
   });
   ok(res, { profiles: list });
+});
+
+// Resolve the cloud id without returning cookies or proxy credentials.
+route('GET', '/api/profiles/by-remote/:remoteId', async (_req, res, { remoteId }) => {
+  const raw = getProfileByRemoteId(remoteId);
+  if (!raw) return notFound(res, 'Profile is not available in this server scope');
+  const runningLocally = launcher.getRunningProfiles().includes(raw.id) || starting.has(raw.id);
+  const p = withoutStaleRunningLock(raw, { runningLocally });
+  ok(res, { profile: {
+    id: p.id, remote_id: p.remote_id, name: p.name,
+    running: runningLocally || p.status === 'running',
+    hasProxy: Boolean(p.proxy_host && Number(p.proxy_port) > 0),
+    proxyServer: p.proxy_host ? `${p.proxy_type || 'http'}://${p.proxy_host}:${p.proxy_port}` : null,
+  } });
 });
 
 // GET /api/profiles/:id — single profile details
@@ -301,27 +322,51 @@ route('DELETE', '/api/profiles/:id', async (_req, res, { id }) => {
   ok(res, { deleted: Number(id) });
 });
 
-// POST /api/profiles/:id/start — launch headless browser
-// Returns wsEndpoint that any Playwright/CDP client can connect to
-route('POST', '/api/profiles/:id/start', async (_req, res, { id }) => {
+// CDP is used so the agent does not need Anty's exact Playwright version.
+route('POST', '/api/profiles/:id/start', async (req, res, { id }) => {
   const profileId = Number(id);
-  const profile = getProfile(profileId);
-  if (!profile) return notFound(res, `Profile ${id} not found`);
-
-  // Pass sentinel so launcher knows it's headless/server mode
-  const result = await launcher.launchProfile(profileId, { __serverMode: true });
-  if (!result.success) return serverError(res, result.error);
-
-  ok(res, {
-    profileId,
-    wsEndpoint: result.wsEndpoint,
-    message: 'Browser started. Connect via Playwright: chromium.connect(wsEndpoint)',
-  });
+  const raw = getProfile(profileId);
+  if (!raw) return notFound(res, `Profile ${id} not found`);
+  let body;
+  try { body = await readBody(req); } catch { return badRequest(res, 'Invalid JSON body'); }
+  const p = withoutStaleRunningLock(raw);
+  if (starting.has(profileId) || launcher.getRunningProfiles().includes(profileId) || p.status === 'running') {
+    return send(res, 409, { ok: false, error: 'Profile is already running or starting' });
+  }
+  if (body.requireProxy && !(p.proxy_host && Number(p.proxy_port) > 0)) {
+    return badRequest(res, 'Profile has no proxy');
+  }
+  if (body.ownerToken !== undefined && !/^[a-zA-Z0-9-]{20,128}$/.test(body.ownerToken)) {
+    return badRequest(res, 'Invalid owner token');
+  }
+  starting.add(profileId);
+  if (body.ownerToken) owners.set(profileId, body.ownerToken);
+  try {
+    const result = await launcher.launchProfile(profileId, { __serverMode: true });
+    if (!result.success) {
+      owners.delete(profileId);
+      return serverError(res, result.error);
+    }
+    ok(res, { profileId, wsEndpoint: result.wsEndpoint, protocol: result.protocol,
+      message: 'Connect with chromium.connectOverCDP(wsEndpoint)' });
+  } finally {
+    starting.delete(profileId);
+  }
 });
 
 // POST /api/profiles/:id/stop — stop running browser
-route('POST', '/api/profiles/:id/stop', async (_req, res, { id }) => {
+route('POST', '/api/profiles/:id/stop', async (req, res, { id }) => {
   const profileId = Number(id);
+  let body;
+  try { body = await readBody(req); } catch { return badRequest(res, 'Invalid JSON body'); }
+  if (starting.has(profileId)) return send(res, 409, { ok: false, error: 'Profile is still starting' });
+  if (!launcher.getRunningProfiles().includes(profileId) && body.ownerToken) {
+    owners.delete(profileId);
+    return ok(res, { stopped: profileId });
+  }
+  if ((body.ownerToken || owners.has(profileId)) && body.ownerToken !== owners.get(profileId)) {
+    return send(res, 409, { ok: false, error: 'Profile belongs to another browser session' });
+  }
   try {
     const liveState = await launcher.getStorageState(profileId);
     if (liveState && (Array.isArray(liveState.cookies) || Array.isArray(liveState.origins))) {
@@ -334,6 +379,7 @@ route('POST', '/api/profiles/:id/stop', async (_req, res, { id }) => {
   // Push updated cookies to cloud after session ends
   const saved = getProfile(profileId);
   if (saved) { profileSync.onLocalProfileUpsert(saved); profileSync.scheduleSync(); }
+  owners.delete(profileId);
   ok(res, { stopped: profileId });
 });
 
@@ -460,6 +506,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
+  if (req.headers.origin) return send(res, 403, { ok: false, error: 'Browser-origin requests are not allowed' });
   const { pathname } = new URL(req.url, `http://${HOST}`);
   const match = matchRoute(req.method, pathname);
 
@@ -475,6 +522,7 @@ const server = http.createServer(async (req, res) => {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
+require('fs').mkdirSync(require('../main/database').getDataDir(), { recursive: true, mode: 0o700 });
 initDatabase();
 console.log('[API] Database initialized');
 
@@ -488,7 +536,7 @@ server.listen(PORT, HOST, () => {
   console.log('  DELETE /api/profiles/:id');
   console.log('  PUT    /api/profiles/:id/notes     { notes: "…" }');
   console.log('  PATCH  /api/profiles/:id/proxy     { proxy: "http://user:pass@host:port" | null }');
-  console.log('  POST   /api/profiles/:id/start   → { wsEndpoint }');
+  console.log('  POST   /api/profiles/:id/start   → { wsEndpoint, protocol: cdp }');
   console.log('  POST   /api/profiles/:id/stop');
   console.log('  GET    /api/profiles/:id/ws');
   console.log('  POST   /api/proxy/check');

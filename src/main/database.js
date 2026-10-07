@@ -611,7 +611,6 @@ function getProfile(id, options = {}) {
 
 function createProfile(data = {}) {
   const { generateFingerprint, generateFingerprintFromUA } = require('./fingerprint');
-  const { getAccountState } = require('./auth');
   const generateDefaultFingerprint = () => (
     data.user_agent ? generateFingerprintFromUA(data.user_agent) : generateFingerprint()
   );
@@ -633,7 +632,7 @@ function createProfile(data = {}) {
   let createdBy = data.created_by || '';
   if (!createdBy) {
     try {
-      const acc = getAccountState();
+      const acc = require('./auth').getAccountState();
       createdBy = acc.displayName || acc.email || '';
     } catch {}
   }
@@ -1040,7 +1039,7 @@ function setSetting(key, value) {
 }
 
 module.exports = {
-  initDatabase, getDb,
+  initDatabase, getDb, getDataDir,
   listProfiles, getProfile, createProfile, updateProfile, deleteProfile, getProfileByRemoteId,
   markProfileLaunched,
   resolveActiveScope, adoptLegacyProfilesIntoScope, reconcileScopeRename, promoteScopeToTeamId,
