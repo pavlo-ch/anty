@@ -1932,7 +1932,7 @@ async function launchProfile(profileId, mainWindow) {
       }
     }
 
-    async function importStorageState(ctx) {
+    async function importStorageState(ctx, { once = false } = {}) {
       if (!parsedStorageState) return false;
 
       const cookies = Array.isArray(parsedStorageState.cookies)
@@ -1953,7 +1953,27 @@ async function launchProfile(profileId, mainWindow) {
             }))
         : [];
 
-      if (origins.length > 0) {
+      if (origins.length > 0 && once) {
+        // Seed the persistent store once, before opening real tabs. An init
+        // script would replay the cloud snapshot on every navigation, undoing
+        // changed values and restoring keys removed by logout in this session.
+        const seedPage = await ctx.newPage();
+        try {
+          await seedPage.route('**/*', route => route.fulfill({
+            status: 200, contentType: 'text/html', body: '<!doctype html><title>Storage import</title>'
+          }));
+          for (const entry of origins) {
+            const url = new URL(entry.origin);
+            if (!['http:', 'https:'].includes(url.protocol) || url.origin !== entry.origin) continue;
+            await seedPage.goto(`${url.origin}/`, { waitUntil: 'domcontentloaded' });
+            await seedPage.evaluate(items => {
+              for (const item of items) localStorage.setItem(item.name, item.value);
+            }, entry.localStorage);
+          }
+        } finally {
+          await seedPage.close();
+        }
+      } else if (origins.length > 0) {
         await ctx.addInitScript(({ origins }) => {
           try {
             const current = window.location.origin;
@@ -2078,7 +2098,7 @@ async function launchProfile(profileId, mainWindow) {
       const wsEndpoint = await require('../server/cdp-endpoint').readCdpEndpoint(userDataDir);
       if (injectionScript) await context.addInitScript(injectionScript);
       if (!fs.existsSync(importMarker)) {
-        if (!hasPersistedCookies && !await importStorageState(context)) await importCookies(context);
+        if (!hasPersistedCookies && !await importStorageState(context, { once: true })) await importCookies(context);
         fs.writeFileSync(importMarker, '1', { mode: 0o600 });
       }
 

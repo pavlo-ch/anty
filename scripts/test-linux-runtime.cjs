@@ -39,7 +39,13 @@ async function main() {
     }, 201)).profile;
     id = profile.id;
     const remoteId = 'fixture-' + randomUUID();
-    await api(`/api/profiles/${id}`, { remote_id: remoteId });
+    await api(`/api/profiles/${id}`, {
+      remote_id: remoteId,
+      storage_state: { cookies: [], origins: [{ origin: 'http://session.fixture.invalid', localStorage: [
+        { name: 'session', value: 'imported-fixture' },
+        { name: 'logout-key', value: 'must-not-return' },
+      ] }] },
+    });
     const found = (await api(`/api/profiles/by-remote/${remoteId}`)).profile;
     assert.equal(found.id, id);
     assert.equal(found.hasProxy, true);
@@ -55,9 +61,11 @@ async function main() {
     const context = attached.contexts()[0];
     const page = context.pages()[0] || await context.newPage();
     await page.goto('http://session.fixture.invalid');
+    assert.equal(await page.evaluate(() => localStorage.getItem('session')), 'imported-fixture');
     await context.addCookies([{ name: 'persistent', value: 'fixture-cookie', domain: 'session.fixture.invalid', path: '/', expires: Date.now() / 1000 + 3600 }]);
     await page.evaluate(async () => {
       localStorage.setItem('session', 'updated-fixture');
+      localStorage.removeItem('logout-key');
       const db = await new Promise((resolve, reject) => {
         const req = indexedDB.open('fixture', 1);
         req.onupgradeneeded = () => req.result.createObjectStore('state');
@@ -71,6 +79,12 @@ async function main() {
       });
       db.close();
     });
+    await page.reload();
+    assert.deepEqual(await page.evaluate(() => [localStorage.getItem('session'), localStorage.getItem('logout-key')]), ['updated-fixture', null], 'First-session reload replayed the cloud snapshot');
+    const newTab = await context.newPage();
+    await newTab.goto('http://session.fixture.invalid');
+    assert.deepEqual(await newTab.evaluate(() => [localStorage.getItem('session'), localStorage.getItem('logout-key')]), ['updated-fixture', null], 'New tab replayed the cloud snapshot');
+    await newTab.close();
     await api(`/api/profiles/${id}/stop`, { ownerToken: randomUUID() }, 409);
     await api(`/api/profiles/${id}/stop`, { ownerToken });
     await attached.close(); attached = null;
@@ -90,6 +104,7 @@ async function main() {
     await page2.goto('http://session.fixture.invalid');
     assert.equal((await second.context.cookies()).find(c => c.name === 'persistent')?.value, 'fixture-cookie');
     assert.equal(await page2.evaluate(() => localStorage.getItem('session')), 'updated-fixture');
+    assert.equal(await page2.evaluate(() => localStorage.getItem('logout-key')), null);
     assert.equal(await page2.evaluate(async () => {
       const db = await new Promise(resolve => { const req = indexedDB.open('fixture'); req.onsuccess = () => resolve(req.result); });
       const value = await new Promise(resolve => { const req = db.transaction('state').objectStore('state').get('key'); req.onsuccess = () => resolve(req.result); });
@@ -100,7 +115,7 @@ async function main() {
     const stored = (await api(`/api/profiles/${id}`)).profile;
     assert.equal(stored.status, 'ready');
     assert.equal((await api('/api/running')).running.length, 0);
-    fs.writeFileSync(path.join(process.env.ANTY_DATA_DIR, 'fixture-result.json'), JSON.stringify({ id, remoteId, proxyHits: hits, cookie: true, localStorage: true, indexedDB: true, agentAdapter: Boolean(agentRoot) }));
+    fs.writeFileSync(path.join(process.env.ANTY_DATA_DIR, 'fixture-result.json'), JSON.stringify({ id, remoteId, proxyHits: hits, cookie: true, localStorage: true, firstImport: true, firstSessionReload: true, newTab: true, deletedKey: true, indexedDB: true, agentAdapter: Boolean(agentRoot) }));
     console.log('PASS Linux persistent profile: cookie, localStorage, IndexedDB, proxy, launch ownership' + (agentRoot ? ', Outbound CDP adapter' : ''));
   } finally {
     await attached?.close().catch(() => {});
