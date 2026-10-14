@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const db = require('./database');
+const i18n = require('./i18n');
 
 let mainWindow = null;
 let initialized = false;
@@ -837,12 +838,12 @@ function registerUpdater(window) {
 
     const { response } = await dialog.showMessageBox(mainWindow, {
       type: 'info',
-      buttons: ['Restart now', 'Later'],
+      buttons: [i18n.t('Restart now'), i18n.t('Later')],
       defaultId: 0,
       cancelId: 1,
-      title: 'Update ready',
-      message: `Version ${info?.version || 'new'} is downloaded.`,
-      detail: 'Restart app to install update.'
+      title: i18n.t('Update ready'),
+      message: i18n.t('Version {0} is downloaded.', info?.version || 'new'),
+      detail: i18n.t('Restart app to install update.')
     });
 
     if (response === 0) {

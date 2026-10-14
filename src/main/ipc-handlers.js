@@ -4,6 +4,7 @@ const launcher = require('./launcher');
 const auth = require('./auth');
 const profileSync = require('./profile-sync');
 const fbConnect = require('./fb-connect');
+const i18n = require('./i18n');
 const extensions = require('./extensions');
 const warmup = require('./warmup');
 const { isStaleRunningLock, withoutStaleRunningLock } = require('./running-lock');
@@ -75,6 +76,10 @@ function restoreProfilePatch(snapshot) {
 
 function registerIpcHandlers() {
   ipcMain.handle('app:version', () => app.getVersion());
+  ipcMain.handle('app:set-language', (_, lang) => {
+    i18n.setLanguage(String(lang || 'auto'));
+    return { ok: true };
+  });
   ipcMain.handle('app:open-user-data', async () => {
     const dir = app.getPath('userData');
     const err = await shell.openPath(dir);
@@ -271,7 +276,7 @@ function registerIpcHandlers() {
   ipcMain.handle('extensions:add-folder', async () => {
     requireLoggedIn();
     const result = await dialog.showOpenDialog({
-      title: 'Pick an unpacked extension folder',
+      title: i18n.t('Pick an unpacked extension folder'),
       properties: ['openDirectory'],
     });
     if (result.canceled || !result.filePaths?.length) return { success: false, canceled: true };

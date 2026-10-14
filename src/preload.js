@@ -92,6 +92,7 @@ contextBridge.exposeInMainWorld('api', {
   restartApp: () => ipcRenderer.invoke('app:restart'),
   quitApp: () => ipcRenderer.invoke('app:quit'),
   openUserData: () => ipcRenderer.invoke('app:open-user-data'),
+  setLanguage: (lang) => ipcRenderer.invoke('app:set-language', lang),
 
   // Events
   onProfileStatus: (callback) => {

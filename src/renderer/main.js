@@ -1,3 +1,6 @@
+// Переклад для рядків, які склеюються в коді з числом чи імʼям (решту перекладає i18n.js сам).
+const tr = (source, ...values) => (window.i18n ? window.i18n.t(source, ...values)
+  : source.replace(/\{(\d+)\}/g, (_, i) => values[Number(i)] ?? ''));
 // ===== Anty Browser — Renderer UI Logic =====
 
 let profiles = [];
@@ -595,6 +598,11 @@ function setupEventListeners() {
   document.getElementById('settings-default-platform')?.addEventListener('change', (e) => {
     setActivePlatformTab(e.target.value, { save: true, render: true });
   });
+  const languageSelect = document.getElementById('settings-language');
+  if (languageSelect && window.i18n) {
+    languageSelect.value = window.i18n.stored();
+    languageSelect.addEventListener('change', (e) => window.i18n.setLanguage(e.target.value));
+  }
 
   // Account
   document.getElementById('btn-account-logout')?.addEventListener('click', logoutAccount);
@@ -1357,8 +1365,11 @@ async function forceStopProfile(id) {
   const profile = profiles.find((p) => p.id === id);
   // Name the person first (running_by, filled by the platform); the computer only as a fallback.
   const who = profile?.running_by || profile?.running_on;
-  const device = who ? ` — in use by "${who}"` : ' on another device';
-  if (!window.confirm(`Force stop profile "${profile?.name || id}"${device}?\n\nUse this only if the other machine crashed or is offline.`)) return;
+  const name = profile?.name || id;
+  const question = who
+    ? tr('Force stop profile "{0}" — in use by "{1}"?', name, who)
+    : tr('Force stop profile "{0}" on another device?', name);
+  if (!window.confirm(`${question}\n\n${tr('Use this only if the other machine crashed or is offline.')}`)) return;
   if (pendingProfiles.has(id)) return;
   pendingProfiles.add(id);
   renderProfilesList(document.getElementById('search-input')?.value || '');
@@ -1866,7 +1877,7 @@ function renderProfilesList(searchTerm = '') {
             </button>`}
             <button class="profile-launch-btn ${isRunningLocally ? 'running' : isRunningByOther ? 'other-running' : ''} ${isPending ? 'pending' : ''}"
                     onclick="event.stopPropagation(); ${isPending ? '' : isRunningByOther ? `forceStopProfile(${p.id})` : isRunningLocally ? `stopProfile(${p.id})` : `launchProfile(${p.id})`}"
-                    title="${isPending ? 'Please wait...' : isRunningByOther ? 'Force stop (in use by ' + escapeHtml(p.running_by || p.running_on || 'another device') + ')' : isRunningLocally ? 'Stop' : 'Launch'}"
+                    title="${isPending ? 'Please wait...' : isRunningByOther ? tr('Force stop (in use by {0})', escapeHtml(p.running_by || p.running_on || tr('another device'))) : isRunningLocally ? 'Stop' : 'Launch'}"
                     ${isPending ? 'disabled' : ''}>
               ${isPending
                 ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>'
@@ -3081,7 +3092,7 @@ function paintProxyList() {
   if (countEl) {
     countEl.textContent = term
       ? `${rows.length} of ${proxiesCache.length}`
-      : `${proxiesCache.length} ${proxiesCache.length === 1 ? 'proxy' : 'proxies'}`;
+      : (proxiesCache.length === 1 ? tr('{0} proxy', 1) : tr('{0} proxies', proxiesCache.length));
   }
 
   if (!rows.length) {
@@ -3106,11 +3117,11 @@ function paintProxyList() {
     } else if (p.last_check_status === 'ok') {
       if (p.last_check_ip) meta.push(escapeHtml(p.last_check_ip));
       if (p.last_check_country) meta.push(escapeHtml(p.last_check_country));
-      if (p.last_check_at) meta.push(`checked ${escapeHtml(formatTime(p.last_check_at))}`);
+      if (p.last_check_at) meta.push(tr('checked {0}', escapeHtml(formatTime(p.last_check_at))));
     } else if (p.last_check_status === 'fail') {
       meta.push(`<span class="fail-text">${escapeHtml(p.last_check_error || 'check failed')}</span>`);
     } else {
-      meta.push('not checked');
+      meta.push(tr('not checked'));
     }
 
     return `
@@ -3119,11 +3130,11 @@ function paintProxyList() {
         <div class="proxy-main">
           <div class="proxy-host">${escapeHtml(proxyLabel(p))}${showName
             ? `<button class="proxy-name" title="Rename" onclick="proxyRename(${p.id})">${escapeHtml(p.name)}</button>`
-            : `<button class="proxy-name add" title="Add a name" onclick="proxyRename(${p.id})">+ name</button>`}</div>
+            : `<button class="proxy-name add" title="Add a name" onclick="proxyRename(${p.id})">${tr('+ name')}</button>`}</div>
           <div class="proxy-meta">${meta.join(' · ')}</div>
         </div>
         ${used
-          ? `<button class="proxy-usage link" title="Show profiles" onclick="proxyShowProfiles(${p.id})">used by ${used} profile${used === 1 ? '' : 's'}</button>`
+          ? `<button class="proxy-usage link" title="Show profiles" onclick="proxyShowProfiles(${p.id})">${used === 1 ? tr('used by {0} profile', 1) : tr('used by {0} profiles', used)}</button>`
           : '<span class="proxy-usage unused">unused</span>'}
         <div class="proxy-actions">
           ${p.ip_change_link ? `<button class="icon-btn" title="Open IP change link" onclick="proxyRotate(${p.id})">${ICON_ROTATE}</button>` : ''}
@@ -3161,7 +3172,7 @@ async function addProxiesFromInput() {
   window.__proxyAddAutoGrow?.();
   await renderProxyList();
 
-  if (added && !failed.length) showToast(`Added ${added} ${added === 1 ? 'proxy' : 'proxies'}`, 'success');
+  if (added && !failed.length) showToast(added === 1 ? tr('Added {0} proxy', added) : tr('Added {0} proxies', added), 'success');
   else if (added && failed.length) showToast(`Added ${added}, could not parse ${failed.length}`, 'error');
   else showToast('Could not parse that proxy — expected host:port:user:pass', 'error');
 }
@@ -3251,7 +3262,7 @@ function proxyShowProfiles(id) {
   const users = proxyUsageCache[id] || [];
   if (!proxy || !users.length) return;
   document.getElementById('proxy-usage-title').textContent =
-    `${users.length} profile${users.length === 1 ? '' : 's'} on ${proxyLabel(proxy)}`;
+    (users.length === 1 ? tr('{0} profile on {1}', 1, proxyLabel(proxy)) : tr('{0} profiles on {1}', users.length, proxyLabel(proxy)));
   document.getElementById('proxy-usage-list').innerHTML =
     users.slice().sort((a, b) => a.localeCompare(b))
       .map((n) => `<div class="proxy-usage-item">${escapeHtml(n)}</div>`).join('');
@@ -3311,7 +3322,7 @@ async function proxyDelete(id) {
   if (!proxy) return;
   const used = (proxyUsageCache[id] || []).length;
   const warn = used
-    ? `${proxyLabel(proxy)} is used by ${used} profile${used === 1 ? '' : 's'}. They will be left without a proxy. Delete anyway?`
+    ? tr(used === 1 ? '{0} is used by {1} profile. They will be left without a proxy. Delete anyway?' : '{0} is used by {1} profiles. They will be left without a proxy. Delete anyway?', proxyLabel(proxy), used)
     : `Delete proxy ${proxyLabel(proxy)}?`;
   if (!window.confirm(warn)) return;
   await window.api.deleteProxy(id);
@@ -3392,7 +3403,7 @@ function paintExtensionList() {
   if (countEl) {
     countEl.textContent = term
       ? `${rows.length} of ${extensionsCache.length}`
-      : `${extensionsCache.length} ${extensionsCache.length === 1 ? 'extension' : 'extensions'}`;
+      : (extensionsCache.length === 1 ? tr('{0} extension', 1) : tr('{0} extensions', extensionsCache.length));
   }
 
   if (!rows.length) {
@@ -3468,7 +3479,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (res?.canceled) return;
     if (!res?.success) { showToast(res?.error || 'Could not add that folder', 'error'); return; }
     await renderExtensionList();
-    showToast(`Added ${res.extension?.name || 'extension'}`, 'success');
+    showToast(tr('Added {0}', res.extension?.name || tr('extension')), 'success');
   });
 });
 
