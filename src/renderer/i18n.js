@@ -7,7 +7,7 @@
  * placeholder / aria-label, щойно той зʼявляється — у списку, тості, модалці.
  * Рядок зі змінними записаний у словнику з {0}, {1}… і перекладається як шаблон.
  *
- * Мова: ?lang= в адресі (так її передає платформа у вебверсії) → вибір у
+ * Мова: ?lang= в адресі чи cookie ba_lang (так її передає платформа у вебверсії) → вибір у
  * Settings → мова системи. Зміна мови перезавантажує вікно: так простіше, ніж
  * повертати англійський текст на місце.
  *
@@ -40,6 +40,9 @@
   function resolveLanguage() {
     const fromUrl = normalize(new URLSearchParams(location.search).get('lang'));
     if (fromUrl) return fromUrl;
+    // Вебверсія на платформі: мова платформи в cookie ba_lang (у десктопі його немає).
+    const fromCookie = normalize((document.cookie.match(/(?:^|;\s*)ba_lang=([^;]+)/) || [])[1]);
+    if (fromCookie) return fromCookie;
     const stored = readStored();
     if (SUPPORTED.includes(stored)) return stored;
     return systemLanguage();
