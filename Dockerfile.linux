@@ -1,0 +1,19 @@
+ARG NODE_IMAGE=node:22-bookworm-slim
+FROM ${NODE_IMAGE}
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium xvfb x11-utils x11vnc util-linux fonts-liberation ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY src ./src
+COPY config ./config
+COPY scripts ./scripts
+COPY ops/linux-entrypoint.sh /usr/local/bin/anty-start
+COPY ops/linux-session-start.sh /usr/local/bin/anty-session-start
+RUN chmod +x /usr/local/bin/anty-start /usr/local/bin/anty-session-start
+ENV ANTY_DATA_DIR=/data ANTY_CHROME_PATH=/usr/bin/chromium \
+    ANTY_ENGINE=chrome ANTY_SERVER_HEADLESS=false ANTY_DEDICATED_STORE=true DISPLAY=:99
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD \
+    node -e "if(process.env.ANTY_SERVER_HEADLESS==='false'&&require('node:child_process').spawnSync('xdpyinfo',['-display',process.env.DISPLAY],{stdio:'ignore',timeout:2000}).status!==0)process.exit(1);fetch('http://127.0.0.1:3032/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["anty-start"]

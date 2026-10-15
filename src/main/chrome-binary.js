@@ -35,11 +35,15 @@ const CHROME_PATHS = isWin
       '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
       '/Applications/Chromium.app/Contents/MacOS/Chromium',
       '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
       '/usr/bin/google-chrome',
     ];
 
 /** Absolute path of the Chrome/Chromium binary, or null if none is installed. */
 function resolveChromeExecutable() {
+  if (process.env.ANTY_CHROME_PATH) {
+    return fs.existsSync(process.env.ANTY_CHROME_PATH) ? process.env.ANTY_CHROME_PATH : null;
+  }
   for (const p of CHROME_PATHS) {
     if (fs.existsSync(p)) return p;
   }

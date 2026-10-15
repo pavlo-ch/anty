@@ -7,6 +7,7 @@ Anti-detect browser з підміною fingerprint, ізоляцією проф
 ## Зміст
 
 - [Запуск](#запуск)
+- [Linux + Outbound-Sales](docs/linux-server.md)
 - [Профілі](#профілі)
 - [Fingerprint](#fingerprint)
 - [REST API (серверний режим)](#rest-api-серверний-режим)
@@ -25,7 +26,9 @@ npm install
 npm start
 ```
 
-### Серверний режим (без GUI, для ботів)
+### Серверний режим (для агентів)
+
+Для Linux Docker, збереження профілів, імпорту та Outbound-Sales дивись [інструкцію](docs/linux-server.md). API залишається приватним на loopback.
 
 ```bash
 npm run start:server
@@ -199,6 +202,7 @@ POST /api/profiles/:id/start
 ```json
 {
   "ok": true,
+  "protocol": "cdp",
   "wsEndpoint": "ws://127.0.0.1:54321/devtools/browser/abc..."
 }
 ```
@@ -207,10 +211,11 @@ POST /api/profiles/:id/start
 
 ```js
 const { chromium } = require('playwright-core');
-const browser = await chromium.connect(wsEndpoint);
+const browser = await chromium.connectOverCDP(wsEndpoint);
 const [page] = browser.contexts()[0].pages();
 await page.goto('https://www.facebook.com');
-// cookies зберігаються автоматично при закритті
+// Завершуй через POST /api/profiles/:id/stop: Anty зберігає стан до закриття.
+// Endpoint тепер CDP; chromium.connect() (Playwright protocol) не підходить.
 ```
 
 ---

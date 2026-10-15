@@ -13,12 +13,7 @@ const path = require('path');
 const os = require('os');
 
 function getDataDir() {
-  if (process.env.ANTY_DATA_DIR) return process.env.ANTY_DATA_DIR;
-  try {
-    return require('electron').app.getPath('userData');
-  } catch (_) {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'anty-browser');
-  }
+  return require('./database').getDataDir();
 }
 
 function getExtensionsRoot() {
