@@ -76,8 +76,12 @@
     patterns.sort((a, b) => b.weight - a.weight);
   }
 
+  // Пробіл у шаблоні стоїть для латиниці («Marko 正在使用»); між двома ієрогліфами він зайвий.
+  const CJK_GAP = /([\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]) +(?=[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef])/g;
   function fill(target, values) {
-    return target.replace(/\{(\d+)\}/g, (_, i) => (values[Number(i)] != null ? values[Number(i)] : ''));
+    return target
+      .replace(/\{(\d+)\}/g, (_, i) => (values[Number(i)] != null ? values[Number(i)] : ''))
+      .replace(CJK_GAP, '$1');
   }
 
   /** Переклад рядка; null — перекладу немає (лишаємо як є). */
