@@ -152,8 +152,9 @@ With this variable the server store stops living its own life:
 - **Start** (`POST /api/profiles/:id/start`) first pulls the profile's row from the
   cloud and applies its fingerprint, user agent, proxy, cookies and storage state.
   The cloud session replaces cookies left in the Chrome profile folder. If the cloud
-  is unreachable the start answers 503, and a profile open on another machine
-  answers 409. Neither starts on a stale copy.
+  is unreachable the start answers 503 rather than starting on a stale copy. A
+  profile open on another machine still opens (the owner's call), and the reply
+  carries `runningElsewhere: true` and `runningOn`.
 - **Stop** pushes only the session back (cookies, storage state, last launched at)
   into the cloud row as it is now. Fingerprint, proxy, name and status are not
   touched. If the profile was opened elsewhere in the meantime, nothing is pushed,

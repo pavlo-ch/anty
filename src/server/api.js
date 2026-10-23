@@ -338,7 +338,10 @@ route('POST', '/api/profiles/:id/start', async (req, res, { id }) => {
   let body;
   try { body = await readBody(req); } catch { return badRequest(res, 'Invalid JSON body'); }
   const p = withoutStaleRunningLock(raw);
-  if (starting.has(profileId) || launcher.getRunningProfiles().includes(profileId) || p.status === 'running') {
+  // У хмарному режимі статус у БД — це хмарний (його ставить і десктоп), тож «уже
+  // запущено» означає лише те, що справді працює на цьому сервері.
+  const lockedInDb = !profileSync.CLOUD_SOURCE && p.status === 'running';
+  if (starting.has(profileId) || launcher.getRunningProfiles().includes(profileId) || lockedInDb) {
     return send(res, 409, { ok: false, error: 'Profile is already running or starting' });
   }
   if (body.requireProxy && !(p.proxy_host && Number(p.proxy_port) > 0)) {
@@ -349,6 +352,7 @@ route('POST', '/api/profiles/:id/start', async (req, res, { id }) => {
   }
   starting.add(profileId);
   if (body.ownerToken) owners.set(profileId, body.ownerToken);
+  let cloudWarning = null;
   try {
     // Хмара — джерело правди: стартуємо з хмарним відбитком, проксі й сесією.
     // Хмара недоступна — не стартуємо на застарілій копії, агент повторить пізніше.
@@ -358,10 +362,9 @@ route('POST', '/api/profiles/:id/start', async (req, res, { id }) => {
         owners.delete(profileId);
         return send(res, 503, { ok: false, error: `Cloud profile unavailable: ${adopted.reason}` });
       }
-      if (adopted.runningElsewhere) {
-        owners.delete(profileId);
-        return send(res, 409, { ok: false, error: `Profile is open on ${adopted.runningOn || 'another device'}` });
-      }
+      // Відкритий на іншій машині — однаково відкриваємо (рішення власника), але
+      // кажемо про це агенту; push сесії на stop тоді пропуститься сам.
+      if (adopted.runningElsewhere) cloudWarning = { runningElsewhere: true, runningOn: adopted.runningOn || '' };
       const fresh = getProfile(profileId);
       if (body.requireProxy && !(fresh?.proxy_host && Number(fresh.proxy_port) > 0)) {
         owners.delete(profileId);
@@ -374,6 +377,7 @@ route('POST', '/api/profiles/:id/start', async (req, res, { id }) => {
       return serverError(res, result.error);
     }
     ok(res, { profileId, wsEndpoint: result.wsEndpoint, protocol: result.protocol,
+      ...(cloudWarning || {}),
       message: 'Connect with chromium.connectOverCDP(wsEndpoint)' });
   } finally {
     starting.delete(profileId);
