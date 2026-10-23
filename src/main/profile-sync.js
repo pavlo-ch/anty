@@ -28,6 +28,13 @@ const CURSOR_SETTING_KEY = 'profiles_sync_cursor';
 const CLOUD_BOOTSTRAP_SETTING_KEY = 'profiles_cloud_bootstrapped';
 const USE_KEYCHAIN = String(process.env.ANTY_USE_KEYCHAIN || '').trim().toLowerCase() === 'true';
 
+// Серверний інстанс (Linux runtime для Outbound): хмара — джерело правди.
+// Профіль перед стартом береться з хмари, після стопу назад іде лише сесія
+// (cookies, storage_state, last_launched_at). Локальні копії в хмару не пушаться
+// ніколи: ні черга, ні повний синк — інакше застарілі серверні відбитки й проксі
+// перезаписали б профілі команди.
+const CLOUD_SOURCE = String(process.env.ANTY_CLOUD_SOURCE || '').trim() === '1';
+
 let staticPlatformConfigCache = null;
 let syncInProgress = false;
 let syncScheduled = null;
@@ -537,12 +544,14 @@ function getSyncCursor() {
 }
 
 function onLocalProfileUpsert(profile) {
+  if (CLOUD_SOURCE) return null;
   const normalized = normalizeProfileForPayload(profile);
   if (!normalized) return null;
   return db.enqueueProfileSync('profile_upsert', { profile: normalized });
 }
 
 function onLocalProfileDelete(profile) {
+  if (CLOUD_SOURCE) return null;
   const normalized = normalizeProfileForPayload(profile);
   if (!normalized) return null;
   // Drop this profile's pending upserts first: pushed after the delete they would
@@ -753,6 +762,83 @@ async function pushQueueToCloud(limit = 100) {
   return { ok: failed === 0, pushed, failed };
 }
 
+/**
+ * Один рядок із хмари → локальна БД (оновити, створити або видалити).
+ * Спільне для повного pull і для серверного режиму, що тягне профіль перед стартом.
+ * null — нічого не змінено.
+ */
+function applyCloudItem(cloud) {
+  // A stale 'running' lock (a crash, force-quit, or renamed host left it behind) would
+  // otherwise arrive as permanently "in use" and hide the launch button. Downgrade it
+  // to 'ready' on the way in when no machine is credibly using it — no owner, our own
+  // host, no launch timestamp, or an old one. A real launch re-asserts the lock in the
+  // cloud, so a genuine remote session (recent timestamp on another host) is preserved.
+  if (cloud.data.status === 'running' && isStaleRunningLock(cloud.data)) {
+    cloud.data.status = 'ready';
+    cloud.data.running_on = '';
+  }
+
+  const existing = db.getProfileByRemoteId(cloud.remoteId);
+
+  if (cloud.deleted) {
+    if (existing) {
+      db.deleteProfile(existing.id);
+      return { action: 'deleted', id: existing.id };
+    }
+    return null;
+  }
+
+  // Resolve proxy object → local proxy_id (findOrCreateProxy deduplicates by host+port+username+type)
+  // Pull only SETS a proxy — it never clears one. If cloud returns null, the local
+  // proxy_id is left untouched (proxy is local-first; cloud null may just mean the
+  // push hasn't been processed yet or the profile predates proxy sync).
+  const proxyData = cloud.data._proxy;
+  delete cloud.data._proxy;
+  if (proxyData && proxyData.host) {
+    try {
+      const proxy = db.findOrCreateProxy(proxyData);
+      if (proxy) cloud.data.proxy_id = proxy.id;
+    } catch (_) {
+      // Non-fatal: proxy stays unset rather than blocking the whole pull
+    }
+  }
+
+  if (existing) {
+    // An empty tab list arriving from the cloud never clears one we already hold.
+    // The web client does not send tabs at all, and the platform turns that absence
+    // into an empty array, so a pull could wipe a session's restored tabs that the
+    // desktop had saved correctly. Only a real, non-empty list replaces ours; the
+    // desktop still clears its own tabs directly when a profile closes with none.
+    if (Array.isArray(cloud.data.last_open_tabs) && cloud.data.last_open_tabs.length === 0) {
+      let keptTabs = [];
+      try { keptTabs = JSON.parse(existing.last_open_tabs || '[]'); } catch (_) { keptTabs = []; }
+      if (Array.isArray(keptTabs) && keptTabs.length > 0) delete cloud.data.last_open_tabs;
+    }
+    // Warmup completion only ever goes 0 -> 1. The cloud still holds 0 for most
+    // profiles, and the flag is set locally without queueing a push, so a pull would
+    // hand that 0 straight back and re-open the warmup prompt on a profile that was
+    // already warmed — then that 0 gets pushed on, which is how it spread.
+    if (Number(cloud.data.warmup_completed) === 0 && Number(existing.warmup_completed) === 1) {
+      delete cloud.data.warmup_completed;
+    }
+    db.updateProfile(existing.id, cloud.data);
+    return { action: 'updated', id: existing.id };
+  }
+
+  const created = db.createProfile({
+    name: cloud.data.name,
+    start_page: cloud.data.start_page,
+    notes: cloud.data.notes,
+    tags: cloud.data.tags
+  });
+  // A profile arriving from the team is an already-used, aged profile — not a fresh
+  // fingerprint that needs warming. Default it to "warmed" so pulling it does not
+  // trigger a warmup that fills it with warmup cookies and overwrites the shared
+  // (e.g. LinkedIn) session on the next push. Honoured once the cloud carries the flag.
+  db.updateProfile(created.id, { ...cloud.data, warmup_completed: cloud.data.warmup_completed ?? 1 });
+  return { action: 'created', id: created.id };
+}
+
 async function pullProfilesFromCloud(options = {}) {
   const pullUrl = getProfilesPullUrl();
   if (!isLoggedIn()) {
@@ -787,76 +873,7 @@ async function pullProfilesFromCloud(options = {}) {
     if (!cloud.remoteId) continue;
     if (cloud.teamId) seenTeamIds.add(cloud.teamId);
 
-    // A stale 'running' lock (a crash, force-quit, or renamed host left it behind) would
-    // otherwise arrive as permanently "in use" and hide the launch button. Downgrade it
-    // to 'ready' on the way in when no machine is credibly using it — no owner, our own
-    // host, no launch timestamp, or an old one. A real launch re-asserts the lock in the
-    // cloud, so a genuine remote session (recent timestamp on another host) is preserved.
-    if (cloud.data.status === 'running' && isStaleRunningLock(cloud.data)) {
-      cloud.data.status = 'ready';
-      cloud.data.running_on = '';
-    }
-
-    const existing = db.getProfileByRemoteId(cloud.remoteId);
-
-    if (cloud.deleted) {
-      if (existing) {
-        db.deleteProfile(existing.id);
-        pulled += 1;
-      }
-      continue;
-    }
-
-    // Resolve proxy object → local proxy_id (findOrCreateProxy deduplicates by host+port+username+type)
-    // Pull only SETS a proxy — it never clears one. If cloud returns null, the local
-    // proxy_id is left untouched (proxy is local-first; cloud null may just mean the
-    // push hasn't been processed yet or the profile predates proxy sync).
-    const proxyData = cloud.data._proxy;
-    delete cloud.data._proxy;
-    if (proxyData && proxyData.host) {
-      try {
-        const proxy = db.findOrCreateProxy(proxyData);
-        if (proxy) cloud.data.proxy_id = proxy.id;
-      } catch (_) {
-        // Non-fatal: proxy stays unset rather than blocking the whole pull
-      }
-    }
-
-    if (existing) {
-      // An empty tab list arriving from the cloud never clears one we already hold.
-      // The web client does not send tabs at all, and the platform turns that absence
-      // into an empty array, so a pull could wipe a session's restored tabs that the
-      // desktop had saved correctly. Only a real, non-empty list replaces ours; the
-      // desktop still clears its own tabs directly when a profile closes with none.
-      if (Array.isArray(cloud.data.last_open_tabs) && cloud.data.last_open_tabs.length === 0) {
-        let keptTabs = [];
-        try { keptTabs = JSON.parse(existing.last_open_tabs || '[]'); } catch (_) { keptTabs = []; }
-        if (Array.isArray(keptTabs) && keptTabs.length > 0) delete cloud.data.last_open_tabs;
-      }
-      // Warmup completion only ever goes 0 -> 1. The cloud still holds 0 for most
-      // profiles, and the flag is set locally without queueing a push, so a pull would
-      // hand that 0 straight back and re-open the warmup prompt on a profile that was
-      // already warmed — then that 0 gets pushed on, which is how it spread.
-      if (Number(cloud.data.warmup_completed) === 0 && Number(existing.warmup_completed) === 1) {
-        delete cloud.data.warmup_completed;
-      }
-      db.updateProfile(existing.id, cloud.data);
-      pulled += 1;
-      continue;
-    }
-
-    const created = db.createProfile({
-      name: cloud.data.name,
-      start_page: cloud.data.start_page,
-      notes: cloud.data.notes,
-      tags: cloud.data.tags
-    });
-    // A profile arriving from the team is an already-used, aged profile — not a fresh
-    // fingerprint that needs warming. Default it to "warmed" so pulling it does not
-    // trigger a warmup that fills it with warmup cookies and overwrites the shared
-    // (e.g. LinkedIn) session on the next push. Honoured once the cloud carries the flag.
-    db.updateProfile(created.id, { ...cloud.data, warmup_completed: cloud.data.warmup_completed ?? 1 });
-    pulled += 1;
+    if (applyCloudItem(cloud)) pulled += 1;
   }
 
   // The platform just served these rows for this session's token, so a single team
@@ -881,6 +898,10 @@ async function pullProfilesFromCloud(options = {}) {
 }
 
 async function runFullSync(options = {}) {
+  // Серверний режим «хмара — джерело правди»: жодного повного синку, див. CLOUD_SOURCE.
+  if (CLOUD_SOURCE) {
+    return { ok: true, skipped: true, reason: 'cloud_source_mode' };
+  }
   if (syncInProgress) {
     return { ok: false, skipped: true, reason: 'sync_in_progress', lastSyncResult };
   }
@@ -957,7 +978,112 @@ function getSyncStatus() {
   };
 }
 
+
+// ── Серверний режим «хмара — джерело правди» (ANTY_CLOUD_SOURCE=1) ────────────
+
+const CLOUD_PULL_MAX_PAGES = 50;
+
+/** Сесія без ручного входу: токени з БД, а коли їх немає — device-token цього пристрою. */
+async function ensureCloudSession() {
+  if (isLoggedIn()) return { ok: true };
+  const renewed = await refreshAccessTokenViaDevice();
+  return renewed.ok ? { ok: true } : { ok: false, reason: renewed.reason || 'device_token_failed' };
+}
+
+/**
+ * Свіжий рядок профілю з хмари за remote_id — сирим (як його віддає pull) і
+ * нормалізованим. Pull віддає команду пачками за updated_at, тож гортаємо до збігу.
+ */
+async function fetchCloudProfile(remoteId) {
+  const wanted = String(remoteId || '').trim();
+  if (!wanted) return { ok: false, reason: 'no_remote_id' };
+  const pullUrl = getProfilesPullUrl();
+  if (!pullUrl) return { ok: false, reason: 'pull_url_not_configured' };
+  const session = await ensureCloudSession();
+  if (!session.ok) return { ok: false, reason: session.reason };
+
+  let cursor = '';
+  for (let page = 0; page < CLOUD_PULL_MAX_PAGES; page += 1) {
+    const result = await fetchWithAuthRetry(pullUrl, {
+      source: ANTY_SOURCE,
+      appVersion: getAppVersion(),
+      device: getDeviceInfo(),
+      cursor,
+    });
+    if (!result.ok) {
+      return { ok: false, reason: result.body?.error || result.reason || `pull_failed_${result.status}` };
+    }
+    const items = extractProfilesList(result.body);
+    const raw = items.find((item) => String(item?.remoteId || item?.id || '') === wanted);
+    if (raw) return { ok: true, raw, cloud: normalizeCloudProfile(raw) };
+    const next = extractCursor(result.body);
+    if (!items.length || !next || next === cursor) break;
+    cursor = next;
+  }
+  return { ok: false, reason: 'not_found_in_cloud' };
+}
+
+/** Профіль відкритий на іншій машині (не наш хост, лок не застарів). */
+function isRunningElsewhere(cloud) {
+  return cloud?.data?.status === 'running' && !isStaleRunningLock(cloud.data);
+}
+
+/**
+ * Перед стартом: локальна копія стає такою, як у хмарі (відбиток, UA, проксі,
+ * кукі, storage_state). Для remote_id, якого тут ще немає, — створює копію.
+ */
+async function adoptCloudProfile(remoteId) {
+  const fetched = await fetchCloudProfile(remoteId);
+  if (!fetched.ok) return fetched;
+  if (fetched.cloud.deleted) return { ok: false, reason: 'deleted_in_cloud' };
+  const busy = isRunningElsewhere(fetched.cloud);
+  const applied = applyCloudItem(fetched.cloud);
+  const profile = applied ? db.getProfile(applied.id) : db.getProfileByRemoteId(remoteId);
+  return { ok: Boolean(profile), profile, action: applied?.action || 'unchanged', runningElsewhere: busy,
+    runningOn: fetched.cloud.data.running_on || '' };
+}
+
+/**
+ * Після стопу: у хмарний рядок іде лише сесія — cookies, storage_state,
+ * last_launched_at. Решта (відбиток, проксі, назва, статус) лишається хмарною.
+ * Нічого не пише, якщо профіль тим часом відкрили на іншій машині.
+ */
+async function pushCloudSession(profile) {
+  if (!profile?.remote_id) return { ok: false, skipped: true, reason: 'no_remote_id' };
+  const fetched = await fetchCloudProfile(profile.remote_id);
+  if (!fetched.ok) return fetched;
+  if (fetched.cloud.deleted) return { ok: false, skipped: true, reason: 'deleted_in_cloud' };
+  if (isRunningElsewhere(fetched.cloud)) {
+    return { ok: false, skipped: true, reason: 'running_elsewhere', runningOn: fetched.cloud.data.running_on || '' };
+  }
+  // Серверний стоп зберігає живу сесію в storage_state; поле cookies могло лишитися
+  // від минулого візиту, тож кукі беремо звідти, коли вони там є.
+  const storageState = parseJsonSafe(profile.storage_state || '{}') || {};
+  const liveCookies = Array.isArray(storageState.cookies) && storageState.cookies.length ? storageState.cookies : null;
+  const payload = {
+    ...fetched.raw,
+    localId: profile.id,
+    remoteId: profile.remote_id,
+    cookies: liveCookies || parseJsonSafe(profile.cookies || '[]') || [],
+    storageState,
+    lastLaunchedAt: profile.last_launched_at || fetched.raw.lastLaunchedAt || '',
+    createdByName: fetched.raw.createdBy?.name || '',
+  };
+  delete payload.createdBy;
+  const result = await pushActionToCloud('profile_upsert', { profile: payload });
+  if (result.ok) {
+    const updatedAt = extractCloudUpdatedAt(result.body);
+    if (updatedAt) db.updateProfile(profile.id, { cloud_updated_at: updatedAt });
+  }
+  return result;
+}
+
 module.exports = {
+  CLOUD_SOURCE,
+  fetchCloudProfile,
+  adoptCloudProfile,
+  pushCloudSession,
+  ensureCloudSession,
   isCloudProfilesRequired,
   ensureCloudReady,
   onLocalProfileUpsert,

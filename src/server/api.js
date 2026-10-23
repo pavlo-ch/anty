@@ -138,7 +138,15 @@ route('GET', '/api/profiles', async (_req, res, _params) => {
 
 // Resolve the cloud id without returning cookies or proxy credentials.
 route('GET', '/api/profiles/by-remote/:remoteId', async (_req, res, { remoteId }) => {
-  const raw = getProfileByRemoteId(remoteId);
+  let raw = getProfileByRemoteId(remoteId);
+  // Хмарний режим: профіль, якого тут ще немає, береться з хмари.
+  if (!raw && profileSync.CLOUD_SOURCE) {
+    const adopted = await profileSync.adoptCloudProfile(remoteId);
+    if (!adopted.ok && adopted.reason !== 'not_found_in_cloud') {
+      return send(res, 503, { ok: false, error: `Cloud profile unavailable: ${adopted.reason}` });
+    }
+    raw = adopted.profile || null;
+  }
   if (!raw) return notFound(res, 'Profile is not available in this server scope');
   const runningLocally = launcher.getRunningProfiles().includes(raw.id) || starting.has(raw.id);
   const p = withoutStaleRunningLock(raw, { runningLocally });
@@ -342,6 +350,24 @@ route('POST', '/api/profiles/:id/start', async (req, res, { id }) => {
   starting.add(profileId);
   if (body.ownerToken) owners.set(profileId, body.ownerToken);
   try {
+    // Хмара — джерело правди: стартуємо з хмарним відбитком, проксі й сесією.
+    // Хмара недоступна — не стартуємо на застарілій копії, агент повторить пізніше.
+    if (profileSync.CLOUD_SOURCE && raw.remote_id) {
+      const adopted = await profileSync.adoptCloudProfile(raw.remote_id);
+      if (!adopted.ok) {
+        owners.delete(profileId);
+        return send(res, 503, { ok: false, error: `Cloud profile unavailable: ${adopted.reason}` });
+      }
+      if (adopted.runningElsewhere) {
+        owners.delete(profileId);
+        return send(res, 409, { ok: false, error: `Profile is open on ${adopted.runningOn || 'another device'}` });
+      }
+      const fresh = getProfile(profileId);
+      if (body.requireProxy && !(fresh?.proxy_host && Number(fresh.proxy_port) > 0)) {
+        owners.delete(profileId);
+        return badRequest(res, 'Profile has no proxy');
+      }
+    }
     const result = await launcher.launchProfile(profileId, { __serverMode: true });
     if (!result.success) {
       owners.delete(profileId);
@@ -378,9 +404,16 @@ route('POST', '/api/profiles/:id/stop', async (req, res, { id }) => {
   if (!result.success) return badRequest(res, result.error);
   // Push updated cookies to cloud after session ends
   const saved = getProfile(profileId);
-  if (saved) { profileSync.onLocalProfileUpsert(saved); profileSync.scheduleSync(); }
+  let cloud = null;
+  if (profileSync.CLOUD_SOURCE) {
+    // У хмару — лише сесія; відбиток, проксі й назва там не змінюються.
+    if (saved) {
+      const pushed = await profileSync.pushCloudSession(saved);
+      cloud = { pushed: Boolean(pushed.ok), reason: pushed.ok ? undefined : pushed.reason };
+    }
+  } else if (saved) { profileSync.onLocalProfileUpsert(saved); profileSync.scheduleSync(); }
   owners.delete(profileId);
-  ok(res, { stopped: profileId });
+  ok(res, { stopped: profileId, ...(cloud ? { cloud } : {}) });
 });
 
 // GET /api/profiles/:id/ws — get wsEndpoint for already running profile

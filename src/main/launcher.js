@@ -2097,7 +2097,14 @@ async function launchProfile(profileId, mainWindow) {
       });
       const wsEndpoint = await require('../server/cdp-endpoint').readCdpEndpoint(userDataDir);
       if (injectionScript) await context.addInitScript(injectionScript);
-      if (!fs.existsSync(importMarker)) {
+      const cloudHasSession = Boolean(parsedStorageState) || (profile.cookies && profile.cookies !== '[]');
+      if (profileSync.CLOUD_SOURCE && cloudHasSession) {
+        // Хмара — джерело правди: перед стартом api.js уже поклав сюди хмарну сесію,
+        // і вона перекриває кукі, що лишились у теці профілю з минулого візиту.
+        await context.clearCookies();
+        if (!await importStorageState(context, { once: true })) await importCookies(context);
+        fs.writeFileSync(importMarker, '1', { mode: 0o600 });
+      } else if (!fs.existsSync(importMarker)) {
         if (!hasPersistedCookies && !await importStorageState(context, { once: true })) await importCookies(context);
         fs.writeFileSync(importMarker, '1', { mode: 0o600 });
       }

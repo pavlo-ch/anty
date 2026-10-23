@@ -144,3 +144,28 @@ including Chrome directories. Retain the previous image. Roll back by stopping
 both services, restoring the backup to the stopped volume if needed, and starting
 the previous image. A fixture pass does not prove live recipient selection or
 CRM inbox writes; those need a supervised account run through the portal.
+
+## Cloud as the source of truth (`ANTY_CLOUD_SOURCE=1`)
+
+With this variable the server store stops living its own life:
+
+- **Start** (`POST /api/profiles/:id/start`) first pulls the profile's row from the
+  cloud and applies its fingerprint, user agent, proxy, cookies and storage state.
+  The cloud session replaces cookies left in the Chrome profile folder. If the cloud
+  is unreachable the start answers 503, and a profile open on another machine
+  answers 409. Neither starts on a stale copy.
+- **Stop** pushes only the session back (cookies, storage state, last launched at)
+  into the cloud row as it is now. Fingerprint, proxy, name and status are not
+  touched. If the profile was opened elsewhere in the meantime, nothing is pushed,
+  and the stop reply says so in `cloud.reason`.
+- **`GET /api/profiles/by-remote/:remoteId`** creates the local copy from the cloud
+  when it is not here yet.
+- Local edits are never queued and the full sync never runs, so old server copies
+  cannot overwrite the team's profiles.
+- **Sign-in** is the store's own tokens, or `auth/device-token` for this store's
+  `anty_device_id` when there are none. No manual login.
+
+Switching an existing store over is a one-off: stop the runtime, then run
+`scripts/cloud-align-server-profiles.cjs --dry-run`, then run it without the flag.
+It backs up the database, aligns every profile with the cloud and empties
+`profile_sync_queue`.
