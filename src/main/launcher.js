@@ -1963,12 +1963,25 @@ async function launchProfile(profileId, mainWindow) {
             status: 200, contentType: 'text/html', body: '<!doctype html><title>Storage import</title>'
           }));
           for (const entry of origins) {
-            const url = new URL(entry.origin);
+            let url;
+            try { url = new URL(entry.origin); } catch (_) { continue; }
             if (!['http:', 'https:'].includes(url.protocol) || url.origin !== entry.origin) continue;
-            await seedPage.goto(`${url.origin}/`, { waitUntil: 'domcontentloaded' });
-            await seedPage.evaluate(items => {
-              for (const item of items) localStorage.setItem(item.name, item.value);
-            }, entry.localStorage);
+            // У вживаному профілі сторінку origin може перевести на іншу адресу його
+            // service worker — тоді evaluate падає з «Execution context was destroyed».
+            // Одна така сторінка не має зривати весь запуск: друга спроба, потім пропуск.
+            let seeded = false;
+            for (let attempt = 0; attempt < 2 && !seeded; attempt += 1) {
+              try {
+                await seedPage.goto(`${url.origin}/`, { waitUntil: 'domcontentloaded' });
+                await seedPage.evaluate(items => {
+                  for (const item of items) localStorage.setItem(item.name, item.value);
+                }, entry.localStorage);
+                seeded = true;
+              } catch (_) {
+                await seedPage.waitForLoadState('domcontentloaded').catch(() => {});
+              }
+            }
+            if (!seeded) console.warn(`[Launcher] localStorage seed skipped for ${url.origin}`);
           }
         } finally {
           await seedPage.close();
