@@ -19,6 +19,7 @@ let availableUpdateInfo = null;
 let proxyLocaleBackfillRunning = false;
 let profileCloudSyncRunning = false;
 let autoSaveTimer = null;
+let editorRefreshPending = false;
 let autoSaveInFlight = false;
 let autoSaveQueued = false;
 let suppressAutoSave = false;
@@ -76,7 +77,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     renderProfilesList();
     if (selectedProfileId === data.profileId) {
-      loadProfileEditor(data.profileId);
+      if (isEditingProfile()) editorRefreshPending = true;
+      else loadProfileEditor(data.profileId);
     }
   });
 
@@ -175,6 +177,16 @@ async function renderAppVersion() {
   }
 }
 
+/** Людина зараз щось змінює в профілі: курсор у полі або зміна ще не збережена. */
+function isEditingProfile() {
+  if (autoSaveTimer || autoSaveInFlight || autoSaveQueued) return true;
+  const el = document.activeElement;
+  if (!el || el === document.body) return false;
+  if (el.id === 'search-input') return false;
+  const field = el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+  return field && Boolean(el.closest('#page-profiles'));
+}
+
 async function loadData() {
   try {
     [profiles, proxies, folders, groups, tags] = await Promise.all([
@@ -204,9 +216,14 @@ async function runProfileCloudSync(options = {}) {
     if (pulled > 0) {
       await loadData();
       renderProfilesList(document.getElementById('search-input')?.value || '');
-      if (selectedProfileId) {
-        await loadProfileEditor(selectedProfileId);
-      }
+      if (selectedProfileId) editorRefreshPending = true;
+    }
+    // Редактор перемальовується, лише коли людина в ньому нічого не набирає. Синк іде
+    // кожні 10 с і приносить навіть наші власні збереження, тож перемальовування під
+    // час набору скидало поле, в яке писали.
+    if (editorRefreshPending && selectedProfileId && !isEditingProfile()) {
+      editorRefreshPending = false;
+      await loadProfileEditor(selectedProfileId);
     }
 
     if (options.silent) return;
@@ -1958,7 +1975,8 @@ async function backfillProxyLocaleForExistingProfiles(options = {}) {
       await loadData();
       renderProfilesList(document.getElementById('search-input')?.value || '');
       if (selectedProfileId) {
-        await loadProfileEditor(selectedProfileId);
+        if (isEditingProfile()) editorRefreshPending = true;
+        else await loadProfileEditor(selectedProfileId);
       }
     }
   } finally {
