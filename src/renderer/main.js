@@ -1451,6 +1451,13 @@ function parseProxyInput(str, typeOverride) {
     rest = protoMatch[2];
   }
 
+  // host;port;user;pass (так видає proxy-seller) — до гілки з «@»: у паролі він буває,
+  // і тоді рядок помилково розбирався б як user:pass@host:port.
+  const semi = rest.split(';').map((x) => x.trim());
+  if (semi.length >= 4 && /^\d+$/.test(semi[1])) {
+    return { type, host: semi[0], port: parseInt(semi[1]) || 0, username: semi[2], password: semi.slice(3).join(';') };
+  }
+
   const atIdx = rest.indexOf('@');
   if (atIdx !== -1) {
     const creds = rest.slice(0, atIdx).split(':');
@@ -1458,9 +1465,7 @@ function parseProxyInput(str, typeOverride) {
     return { type, host: hp[0] || '', port: parseInt(hp[1]) || 0, username: creds[0] || '', password: creds[1] || '' };
   }
 
-  // host:port:user:pass, або з крапкою з комою — так віддає, наприклад, proxy-seller:
-  // host;port;user;pass
-  const parts = rest.includes(';') ? rest.split(';').map((x) => x.trim()) : rest.split(':');
+  const parts = rest.split(':');
   return { type, host: parts[0] || '', port: parseInt(parts[1]) || 0, username: parts[2] || '', password: parts[3] || '' };
 }
 

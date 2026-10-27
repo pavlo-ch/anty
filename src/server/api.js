@@ -421,6 +421,12 @@ function parseProxyString(str) {
     rest = protoMatch[2];
   }
 
+  // host;port;user;pass (так видає proxy-seller) — до гілки з «@»: у паролі він буває.
+  const semi = rest.split(';').map((x) => x.trim());
+  if (semi.length >= 4 && /^\d+$/.test(semi[1])) {
+    return { type, host: semi[0], port: semi[1], username: semi[2], password: semi.slice(3).join(';') };
+  }
+
   // Standard URL format: user:pass@host:port
   const atIdx = rest.indexOf('@');
   if (atIdx !== -1) {
@@ -437,8 +443,8 @@ function parseProxyString(str) {
     };
   }
 
-  // Legacy format: host:port:user:pass (або host;port;user;pass, як у proxy-seller)
-  const parts = rest.includes(';') ? rest.split(';').map((x) => x.trim()) : rest.split(':');
+  // Legacy format: host:port:user:pass
+  const parts = rest.split(':');
   if (parts.length < 2) return null;
   return {
     type,
