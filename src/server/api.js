@@ -437,8 +437,8 @@ function parseProxyString(str) {
     };
   }
 
-  // Legacy format: host:port:user:pass
-  const parts = rest.split(':');
+  // Legacy format: host:port:user:pass (або host;port;user;pass, як у proxy-seller)
+  const parts = rest.includes(';') ? rest.split(';').map((x) => x.trim()) : rest.split(':');
   if (parts.length < 2) return null;
   return {
     type,

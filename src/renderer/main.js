@@ -1458,8 +1458,9 @@ function parseProxyInput(str, typeOverride) {
     return { type, host: hp[0] || '', port: parseInt(hp[1]) || 0, username: creds[0] || '', password: creds[1] || '' };
   }
 
-  // Legacy: host:port:user:pass
-  const parts = rest.split(':');
+  // host:port:user:pass, або з крапкою з комою — так віддає, наприклад, proxy-seller:
+  // host;port;user;pass
+  const parts = rest.includes(';') ? rest.split(';').map((x) => x.trim()) : rest.split(':');
   return { type, host: parts[0] || '', port: parseInt(parts[1]) || 0, username: parts[2] || '', password: parts[3] || '' };
 }
 
