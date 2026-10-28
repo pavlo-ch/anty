@@ -201,6 +201,39 @@ function enqueueProfileSync(profileId) {
 // not stall the whole save.
 const LIVE_STORAGE_READ_TIMEOUT_MS = 1500;
 
+// Cloud-mode start seeds the cloud localStorage into the profile folder. The marker
+// remembers which snapshot the folder already holds (written after a seed and at
+// stop), so an unchanged snapshot is not replayed origin by origin on every start.
+const SEEDED_ORIGINS_MARKER = '.anty-seeded-origins';
+// The whole seed may take this long; the rest of the origins wait for the next start.
+const LOCAL_STORAGE_SEED_BUDGET_MS = 45000;
+
+function normalizeStorageOrigins(list) {
+  return Array.isArray(list)
+    ? list
+        .filter((entry) => entry && typeof entry.origin === 'string' && Array.isArray(entry.localStorage))
+        .map((entry) => ({
+          origin: entry.origin,
+          localStorage: entry.localStorage
+            .filter((item) => item && typeof item.name === 'string')
+            .map((item) => ({ name: item.name, value: String(item.value ?? '') }))
+        }))
+    : [];
+}
+
+function storageOriginsHash(origins) {
+  const sorted = origins
+    .map((entry) => [entry.origin, entry.localStorage.map((item) => [item.name, item.value]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+}
+
+function writeSeededOriginsMarker(userDataDir, origins) {
+  try {
+    fs.writeFileSync(path.join(userDataDir, SEEDED_ORIGINS_MARKER), storageOriginsHash(normalizeStorageOrigins(origins)), { mode: 0o600 });
+  } catch (_) {}
+}
+
 function pageHttpOrigin(page) {
   try {
     const parsed = new URL(page.url());
@@ -1932,7 +1965,7 @@ async function launchProfile(profileId, mainWindow) {
       }
     }
 
-    async function importStorageState(ctx, { once = false } = {}) {
+    async function importStorageState(ctx, { once = false, skipSeededOrigins = false } = {}) {
       if (!parsedStorageState) return false;
 
       const cookies = Array.isArray(parsedStorageState.cookies)
@@ -1942,18 +1975,24 @@ async function launchProfile(profileId, mainWindow) {
         await ctx.addCookies(cookies);
       }
 
-      const origins = Array.isArray(parsedStorageState.origins)
-        ? parsedStorageState.origins
-            .filter((entry) => entry && typeof entry.origin === 'string' && Array.isArray(entry.localStorage))
-            .map((entry) => ({
-              origin: entry.origin,
-              localStorage: entry.localStorage
-                .filter((item) => item && typeof item.name === 'string')
-                .map((item) => ({ name: item.name, value: String(item.value ?? '') }))
-            }))
-        : [];
+      const origins = normalizeStorageOrigins(parsedStorageState.origins);
+      const originsHash = origins.length > 0 && once ? storageOriginsHash(origins) : '';
+      const markerPath = path.join(userDataDir, SEEDED_ORIGINS_MARKER);
+      const alreadySeeded = skipSeededOrigins && originsHash
+        && (() => { try { return fs.readFileSync(markerPath, 'utf8').trim() === originsHash; } catch (_) { return false; } })();
 
-      if (origins.length > 0 && once) {
+      if (alreadySeeded) {
+        console.log(`[Launcher] localStorage of ${origins.length} origin(s) already in the profile folder, seed skipped`);
+        // Playwright's storageState() reports localStorage only for origins opened in
+        // this run. Without the seed that is a handful, and the stop would push a
+        // session with the rest gone — so origins not opened keep their cloud copy.
+        const readLive = ctx.storageState.bind(ctx);
+        ctx.storageState = async (...args) => {
+          const live = await readLive(...args);
+          const seen = new Set((live?.origins || []).map((entry) => entry.origin));
+          return { ...live, origins: [...(live?.origins || []), ...origins.filter((entry) => !seen.has(entry.origin))] };
+        };
+      } else if (origins.length > 0 && once) {
         // Seed the persistent store once, before opening real tabs. An init
         // script would replay the cloud snapshot on every navigation, undoing
         // changed values and restoring keys removed by logout in this session.
@@ -1962,7 +2001,14 @@ async function launchProfile(profileId, mainWindow) {
           await seedPage.route('**/*', route => route.fulfill({
             status: 200, contentType: 'text/html', body: '<!doctype html><title>Storage import</title>'
           }));
-          for (const entry of origins) {
+          const deadline = Date.now() + LOCAL_STORAGE_SEED_BUDGET_MS;
+          let complete = true;
+          for (const [index, entry] of origins.entries()) {
+            if (Date.now() > deadline) {
+              console.warn(`[Launcher] localStorage seed out of time, ${origins.length - index} of ${origins.length} origin(s) left for the next start`);
+              complete = false;
+              break;
+            }
             let url;
             try { url = new URL(entry.origin); } catch (_) { continue; }
             if (!['http:', 'https:'].includes(url.protocol) || url.origin !== entry.origin) continue;
@@ -1972,7 +2018,7 @@ async function launchProfile(profileId, mainWindow) {
             let seeded = false;
             for (let attempt = 0; attempt < 2 && !seeded; attempt += 1) {
               try {
-                await seedPage.goto(`${url.origin}/`, { waitUntil: 'domcontentloaded' });
+                await seedPage.goto(`${url.origin}/`, { waitUntil: 'domcontentloaded', timeout: 10000 });
                 await seedPage.evaluate(items => {
                   for (const item of items) localStorage.setItem(item.name, item.value);
                 }, entry.localStorage);
@@ -1982,6 +2028,9 @@ async function launchProfile(profileId, mainWindow) {
               }
             }
             if (!seeded) console.warn(`[Launcher] localStorage seed skipped for ${url.origin}`);
+          }
+          if (complete) {
+            try { fs.writeFileSync(markerPath, originsHash, { mode: 0o600 }); } catch (_) {}
           }
         } finally {
           await seedPage.close();
@@ -2115,7 +2164,7 @@ async function launchProfile(profileId, mainWindow) {
         // Хмара — джерело правди: перед стартом api.js уже поклав сюди хмарну сесію,
         // і вона перекриває кукі, що лишились у теці профілю з минулого візиту.
         await context.clearCookies();
-        if (!await importStorageState(context, { once: true })) await importCookies(context);
+        if (!await importStorageState(context, { once: true, skipSeededOrigins: true })) await importCookies(context);
         fs.writeFileSync(importMarker, '1', { mode: 0o600 });
       } else if (!fs.existsSync(importMarker)) {
         if (!hasPersistedCookies && !await importStorageState(context, { once: true })) await importCookies(context);
@@ -2335,6 +2384,8 @@ async function stopProfile(profileId) {
           console.log(`[Launcher] Saved storage_state for profile ${profileId}`);
         }
       }
+      // Ця сесія піде в хмару, а її localStorage уже лежить у теці профілю.
+      if (instance.isServer && instance.userDataDir) writeSeededOriginsMarker(instance.userDataDir, state?.origins);
     } catch {}
     await instance.context.close();
     await instance.finalizeClose?.();
