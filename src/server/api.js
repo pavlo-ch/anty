@@ -397,15 +397,26 @@ route('POST', '/api/profiles/:id/stop', async (req, res, { id }) => {
   if ((body.ownerToken || owners.has(profileId)) && body.ownerToken !== owners.get(profileId)) {
     return send(res, 409, { ok: false, error: 'Profile belongs to another browser session' });
   }
-  try {
-    const liveState = await launcher.getStorageState(profileId);
-    if (liveState && (Array.isArray(liveState.cookies) || Array.isArray(liveState.origins))) {
-      updateProfile(profileId, { storage_state: liveState });
+  if (body.force === true) {
+    // Примусовий stop: звичайне закриття не довше ~20 с, далі SIGKILL браузера
+    // і профіль звільнено без збереження й без push сесії в хмару.
+    const forced = await launcher.forceStopProfile(profileId);
+    if (!forced.success) return badRequest(res, forced.error);
+    if (forced.forced) {
+      owners.delete(profileId);
+      return ok(res, { stopped: profileId, forced: true, killed: forced.killed });
     }
-  } catch (_) {}
+  } else {
+    try {
+      const liveState = await launcher.getStorageState(profileId);
+      if (liveState && (Array.isArray(liveState.cookies) || Array.isArray(liveState.origins))) {
+        updateProfile(profileId, { storage_state: liveState });
+      }
+    } catch (_) {}
 
-  const result = await launcher.stopProfile(profileId);
-  if (!result.success) return badRequest(res, result.error);
+    const result = await launcher.stopProfile(profileId);
+    if (!result.success) return badRequest(res, result.error);
+  }
   // Push updated cookies to cloud after session ends
   const saved = getProfile(profileId);
   let cloud = null;

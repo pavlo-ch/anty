@@ -2355,6 +2355,64 @@ async function stopProfile(profileId) {
   }
 }
 
+/**
+ * PIDs of the Chrome launched with this --user-data-dir and everything it spawned.
+ * The main process is the only one carrying the flag; renderers and the GPU process
+ * hang off it, so they are collected through the parent chain.
+ */
+function findBrowserProcessTree(userDataDir) {
+  if (!userDataDir) return [];
+  let out = '';
+  try {
+    out = require('child_process').execFileSync('ps', ['-axo', 'pid=,ppid=,args='], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  } catch (_) { return []; }
+  const flag = `--user-data-dir=${userDataDir}`;
+  const rows = out.split('\n').map((line) => line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter(Boolean)
+    .map((m) => ({ pid: Number(m[1]), ppid: Number(m[2]), args: m[3] }));
+  const tree = new Set(rows.filter((r) => r.pid !== process.pid && r.args.split(/\s+/).includes(flag)).map((r) => r.pid));
+  let grew = tree.size > 0;
+  while (grew) {
+    grew = false;
+    for (const r of rows) if (tree.has(r.ppid) && !tree.has(r.pid)) { tree.add(r.pid); grew = true; }
+  }
+  return Array.from(tree);
+}
+
+/**
+ * Stop that cannot hang: the usual stopProfile (save the session, close Chrome) gets
+ * graceMs; if it is still stuck — a browser at the memory ceiling never answers
+ * storageState() or close() — its process tree is SIGKILLed and the profile is
+ * released without saving anything. Returns { success, forced }.
+ */
+async function forceStopProfile(profileId, { graceMs = 20000 } = {}) {
+  const instance = runningBrowsers.get(profileId);
+  if (!instance) return { ...(await stopProfile(profileId)), forced: false };
+
+  let timer;
+  const timedOut = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), graceMs); });
+  const graceful = stopProfile(profileId).catch((error) => ({ success: false, error: error.message }));
+  const first = await Promise.race([graceful, timedOut]);
+  clearTimeout(timer);
+  if (first !== 'timeout' && first.success) return { ...first, forced: false };
+
+  const pids = findBrowserProcessTree(instance.userDataDir);
+  for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch (_) {} }
+  console.warn(`[Launcher] Profile ${profileId}: stop did not finish in ${graceMs} ms, SIGKILL ${pids.length} process(es)`);
+
+  // The dead browser fires context 'close' → finalizeClose; give it a moment, then
+  // release the profile ourselves in case nothing fired.
+  await Promise.race([
+    Promise.resolve(instance.finalizeClose?.()).catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 3000)),
+  ]);
+  try { instance.closeWatcher?.stop?.(); } catch (_) {}
+  try { instance.autosave?.stop?.(); } catch (_) {}
+  try { await instance.proxyBridge?.close?.(); } catch (_) {}
+  runningBrowsers.delete(profileId);
+  updateProfile(profileId, { status: 'ready', running_on: '' });
+  return { success: true, forced: true, killed: pids.length };
+}
+
 async function stopAllProfiles() {
   const ids = Array.from(runningBrowsers.keys());
   const failed = [];
@@ -2714,6 +2772,7 @@ module.exports = {
   launchProfile,
   openProfileForManualLogin,
   stopProfile,
+  forceStopProfile,
   stopAllProfiles,
   getRunningProfiles,
   getWsEndpoint,
