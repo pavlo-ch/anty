@@ -1790,7 +1790,7 @@ function setProxyCheckState(state, info = {}) {
   btn.disabled = state === 'checking';
   if (state === 'checking') {
     btn.classList.add('checking');
-    btn.innerHTML = `<span class="spinner"></span><span>${escapeHtml(tr('Checking'))}</span>`;
+    btn.innerHTML = '<span class="spinner"></span>';
     btn.title = tr('Check proxy');
   } else if (state === 'ok') {
     btn.classList.add('ok');
@@ -1799,7 +1799,7 @@ function setProxyCheckState(state, info = {}) {
     btn.title = [info.ip, info.country].filter(Boolean).join(' · ') + ' — ' + tr('Check again');
   } else if (state === 'fail') {
     btn.classList.add('fail');
-    btn.innerHTML = `${ICON_PROXY_CHECK}<span>${escapeHtml(tr('Failed'))}</span>`;
+    btn.innerHTML = `<span>${escapeHtml(tr('Failed'))}</span>`;
     btn.title = (info.error || '') + ' — ' + tr('Check again');
   } else {
     btn.innerHTML = `${ICON_PROXY_CHECK}<span>${escapeHtml(tr('Check'))}</span>`;
