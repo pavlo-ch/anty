@@ -962,6 +962,34 @@ body.platform-win32 .titlebar-btn.close:hover {
   flex-shrink: 0;
 }
 
+.proxy-check-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  min-width: 112px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+.proxy-check-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary, #fff); background: var(--bg-hover); }
+.proxy-check-btn:disabled { cursor: default; }
+.proxy-check-btn .spinner { width: 12px; height: 12px; }
+.proxy-check-btn.ok { border-color: var(--green); background: var(--green-bg); color: var(--green); }
+.proxy-check-btn.fail { border-color: var(--red); background: rgba(244, 67, 54, 0.12); color: var(--red); }
+.proxy-check-flag { font-size: 16px; line-height: 1; }
+.proxy-input-row .small-select { width: 96px; }
+
 .proxy-input-row .icon-btn:hover {
   border-color: var(--accent);
   background: var(--bg-hover);

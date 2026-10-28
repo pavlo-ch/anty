@@ -258,6 +258,7 @@ function initDatabase(recoveryAttempted = false) {
   ensureColumn('proxies', 'last_check_country', "TEXT DEFAULT ''");
   ensureColumn('proxies', 'last_check_error', "TEXT DEFAULT ''");
   ensureColumn('proxies', 'last_check_at', "TEXT DEFAULT ''");
+  ensureColumn('proxies', 'last_check_country_code', "TEXT DEFAULT ''");
 
   ensureColumn('account_state', 'team_name', "TEXT DEFAULT ''");
   ensureColumn('account_state', 'team_id', "TEXT DEFAULT ''");
@@ -963,7 +964,7 @@ function updateProxy(id, data) {
   const sets = [];
   const values = [];
   for (const field of ['name', 'type', 'host', 'port', 'username', 'password', 'ip_change_link',
-                       'last_check_status', 'last_check_ip', 'last_check_country', 'last_check_error', 'last_check_at']) {
+                       'last_check_status', 'last_check_ip', 'last_check_country', 'last_check_country_code', 'last_check_error', 'last_check_at']) {
     if (data[field] !== undefined) {
       sets.push(`${field} = ?`);
       values.push(data[field]);

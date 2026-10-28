@@ -497,7 +497,11 @@ function setupEventListeners() {
   });
 
   // Check proxy
+  setProxyCheckState('idle');
   document.getElementById('btn-check-proxy').addEventListener('click', checkCurrentProxy);
+  // Інший проксі в полі — старий результат перевірки до нього не стосується.
+  document.getElementById('editor-proxy-value').addEventListener('input', () => setProxyCheckState('idle'));
+  document.getElementById('editor-proxy-type').addEventListener('change', () => setProxyCheckState('idle'));
 
   // (proxy library select removed — proxy is per-profile only)
 
@@ -1766,6 +1770,60 @@ async function saveProxy() {
   }
 }
 
+const ICON_PROXY_CHECK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>`;
+
+/** Прапор з коду країни: 'US' → 🇺🇸. */
+function flagFromCountryCode(code) {
+  const cc = String(code || '').toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc)) return '';
+  return String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+}
+
+/**
+ * Кнопка перевірки проксі в редакторі показує результат: прапор і код країни,
+ * «Failed» або просто «Check», поки проксі не перевіряли.
+ */
+function setProxyCheckState(state, info = {}) {
+  const btn = document.getElementById('btn-check-proxy');
+  if (!btn) return;
+  btn.classList.remove('ok', 'fail', 'checking');
+  btn.disabled = state === 'checking';
+  if (state === 'checking') {
+    btn.classList.add('checking');
+    btn.innerHTML = `<span class="spinner"></span><span>${escapeHtml(tr('Checking'))}</span>`;
+    btn.title = tr('Check proxy');
+  } else if (state === 'ok') {
+    btn.classList.add('ok');
+    const flag = flagFromCountryCode(info.countryCode);
+    btn.innerHTML = `<span class="proxy-check-flag">${flag || '✓'}</span><span>${escapeHtml(info.countryCode || 'OK')}</span>`;
+    btn.title = [info.ip, info.country].filter(Boolean).join(' · ') + ' — ' + tr('Check again');
+  } else if (state === 'fail') {
+    btn.classList.add('fail');
+    btn.innerHTML = `${ICON_PROXY_CHECK}<span>${escapeHtml(tr('Failed'))}</span>`;
+    btn.title = (info.error || '') + ' — ' + tr('Check again');
+  } else {
+    btn.innerHTML = `${ICON_PROXY_CHECK}<span>${escapeHtml(tr('Check'))}</span>`;
+    btn.title = tr('Check proxy');
+  }
+}
+
+/** Останній результат перевірки проксі цього профілю — зі списку проксі. */
+async function showStoredProxyCheck(profile) {
+  setProxyCheckState('idle');
+  if (!profile?.proxy_id) return;
+  let proxy = proxiesCache.find((p) => p.id === profile.proxy_id);
+  if (!proxy) {
+    try { proxiesCache = (await window.api.getProxies()) || []; } catch (_) { return; }
+    proxy = proxiesCache.find((p) => p.id === profile.proxy_id);
+  }
+  if (!proxy || selectedProfileId !== profile.id) return;
+  if (proxy.last_check_status === 'ok') {
+    setProxyCheckState('ok', { countryCode: proxy.last_check_country_code, country: proxy.last_check_country, ip: proxy.last_check_ip });
+  } else if (proxy.last_check_status === 'fail') {
+    setProxyCheckState('fail', { error: proxy.last_check_error });
+  }
+}
+
 async function checkCurrentProxy() {
   const proxyValue = document.getElementById('editor-proxy-value').value;
   if (!proxyValue) {
@@ -1780,24 +1838,32 @@ async function checkCurrentProxy() {
     return;
   }
 
-  const checkBtn = document.getElementById('btn-check-proxy');
-  checkBtn.innerHTML = '<span class="spinner"></span>';
-  checkBtn.disabled = true;
-
+  setProxyCheckState('checking');
+  const profileId = selectedProfileId;
   try {
     const result = await window.api.checkProxy(proxyData);
+    if (selectedProfileId !== profileId) return;
     if (result.success) {
-      const countryPart = result.countryCode ? ` ${result.flag || ''} ${result.countryCode}` : '';
-      const langPart = result.language ? ` ${result.language}` : '';
-      showToast(`Proxy OK! IP: ${result.ip}${countryPart}${langPart}`, 'success');
+      setProxyCheckState('ok', { countryCode: result.countryCode, country: result.country, ip: result.ip });
     } else {
+      setProxyCheckState('fail', { error: result.error });
       showToast(`Proxy check failed: ${result.error}`, 'error');
     }
+    // Той самий проксі, що збережений у профілі, — результат іде і в список проксі.
+    const profile = profiles.find((p) => p.id === profileId);
+    if (profile?.proxy_id && profile.proxy_host === proxyData.host && String(profile.proxy_port) === String(proxyData.port)) {
+      const patch = result.success
+        ? { last_check_status: 'ok', last_check_ip: result.ip || '', last_check_country: result.country || '', last_check_country_code: result.countryCode || '', last_check_error: '', last_check_at: utcStamp() }
+        : { last_check_status: 'fail', last_check_ip: '', last_check_country: '', last_check_country_code: '', last_check_error: result.error || 'Proxy check failed', last_check_at: utcStamp() };
+      try {
+        await window.api.updateProxy(profile.proxy_id, patch);
+        const cached = proxiesCache.find((p) => p.id === profile.proxy_id);
+        if (cached) Object.assign(cached, patch);
+      } catch (_) {}
+    }
   } catch (err) {
+    setProxyCheckState('fail', { error: err.message });
     showToast('Proxy check error: ' + err.message, 'error');
-  } finally {
-    checkBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>`;
-    checkBtn.disabled = false;
   }
 }
 
@@ -2043,6 +2109,7 @@ async function loadProfileEditor(id) {
     } else {
       document.getElementById('editor-proxy-value').value = '';
     }
+    void showStoredProxyCheck(profile);
 
     // Cookies — reset dropzone state and populate
     const cookies = profile.cookies || '[]';
@@ -3140,7 +3207,7 @@ function paintProxyList() {
       meta.push('checking...');
     } else if (p.last_check_status === 'ok') {
       if (p.last_check_ip) meta.push(escapeHtml(p.last_check_ip));
-      if (p.last_check_country) meta.push(escapeHtml(p.last_check_country));
+      if (p.last_check_country) meta.push(`${flagFromCountryCode(p.last_check_country_code)} ${escapeHtml(p.last_check_country)}`.trim());
       if (p.last_check_at) meta.push(tr('checked {0}', escapeHtml(formatTime(p.last_check_at))));
     } else if (p.last_check_status === 'fail') {
       meta.push(`<span class="fail-text">${escapeHtml(p.last_check_error || 'check failed')}</span>`);
@@ -3213,8 +3280,8 @@ async function proxyCheck(id) {
       username: proxy.username, password: proxy.password,
     });
     const patch = res?.success
-      ? { last_check_status: 'ok', last_check_ip: res.ip || '', last_check_country: res.country || '', last_check_error: '', last_check_at: utcStamp() }
-      : { last_check_status: 'fail', last_check_ip: '', last_check_country: '', last_check_error: res?.error || 'Proxy check failed', last_check_at: utcStamp() };
+      ? { last_check_status: 'ok', last_check_ip: res.ip || '', last_check_country: res.country || '', last_check_country_code: res.countryCode || '', last_check_error: '', last_check_at: utcStamp() }
+      : { last_check_status: 'fail', last_check_ip: '', last_check_country: '', last_check_country_code: '', last_check_error: res?.error || 'Proxy check failed', last_check_at: utcStamp() };
     await window.api.updateProxy(id, patch);
     Object.assign(proxy, patch);
     return res?.success === true;
