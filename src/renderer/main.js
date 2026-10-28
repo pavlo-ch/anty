@@ -3296,10 +3296,12 @@ async function proxyCheck(id) {
 
 async function proxyCheckAll() {
   const btn = document.getElementById('btn-proxy-check-all');
-  if (btn) { btn.disabled = true; btn.textContent = 'Checking...'; }
+  if (btn) btn.disabled = true;
   // Sequential on purpose: firing every proxy at once makes slow providers time out.
   let ok = 0;
-  for (const p of [...proxiesCache]) {
+  const all = [...proxiesCache];
+  for (const [i, p] of all.entries()) {
+    if (btn) btn.innerHTML = `<span class="spinner"></span><span>${i + 1} / ${all.length}</span>`;
     if (await proxyCheck(p.id)) ok += 1;
   }
   if (btn) { btn.disabled = false; btn.textContent = 'Check all'; }
