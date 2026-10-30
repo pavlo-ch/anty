@@ -255,18 +255,28 @@ body.platform-win32 .titlebar-btn.close:hover {
 }
 
 /* Count of things waiting on a page — today only the pending update. Sits on the
-   icon rather than in the page, so it is seen from wherever the user is. Just the
-   number: the green pill, glow and pulse it used to have read as nagging
-   (owner, 29.09.2026: «засильно пінгує, достатньо цифри без кольору і блиманя»). */
+   icon rather than in the page, so it is seen from wherever the user is. A plain
+   pill behind the number (back on request, 30.10.2026), but none of the glow and
+   pulse it once had: those read as nagging (owner, 29.09.2026: «засильно пінгує»). */
 .nav-badge {
   position: absolute;
   top: 4px;
-  right: 7px;
-  font-size: 11px;
+  right: 5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1;
-  color: var(--text-primary);
 }
+.nav-badge.hidden { display: none; }
 
 /* An update waiting turns "Check for updates" into an obvious call to action. */
 .settings-btn.update-ready {
