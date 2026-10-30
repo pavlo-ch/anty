@@ -1820,11 +1820,11 @@ function setProxyCheckState(state, info = {}) {
   } else if (state === 'ok') {
     btn.classList.add('ok');
     const flag = flagFromCountryCode(info.countryCode);
-    btn.innerHTML = `<span class="proxy-check-flag">${flag || '✓'}</span><span>${escapeHtml(info.countryCode || 'OK')}</span>`;
+    btn.innerHTML = `<span class="proxy-check-flag">${flag || '✓'}</span><span>${escapeHtml(info.countryCode || 'OK')}</span><span class="proxy-check-again">${ICON_PROXY_CHECK}</span>`;
     btn.title = [info.ip, info.country].filter(Boolean).join(' · ') + ' — ' + tr('Check again');
   } else if (state === 'fail') {
     btn.classList.add('fail');
-    btn.innerHTML = `<span>${escapeHtml(tr('Failed'))}</span>`;
+    btn.innerHTML = `<span>${escapeHtml(tr('Failed'))}</span><span class="proxy-check-again">${ICON_PROXY_CHECK}</span>`;
     btn.title = (info.error || '') + ' — ' + tr('Check again');
   } else {
     btn.innerHTML = `${ICON_PROXY_CHECK}<span>${escapeHtml(tr('Check'))}</span>`;

@@ -968,7 +968,7 @@ body.platform-win32 .titlebar-btn.close:hover {
   justify-content: center;
   gap: 5px;
   height: 34px;
-  width: 82px;
+  width: 96px;
   padding: 0 8px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -986,8 +986,11 @@ body.platform-win32 .titlebar-btn.close:hover {
 .proxy-check-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary, #fff); background: var(--bg-hover); }
 .proxy-check-btn:disabled { cursor: default; }
 .proxy-check-btn .spinner { width: 12px; height: 12px; }
-.proxy-check-btn.ok { border-color: var(--green); background: var(--green-bg); color: var(--green); }
-.proxy-check-btn.fail { border-color: var(--red); background: rgba(244, 67, 54, 0.12); color: var(--red); }
+.proxy-check-btn.ok { color: var(--text-primary); }
+.proxy-check-btn.fail { color: var(--red); }
+.proxy-check-again { display: inline-flex; color: var(--text-muted); margin-left: 2px; }
+.proxy-check-again svg { width: 13px; height: 13px; }
+.proxy-check-btn:hover .proxy-check-again { color: var(--accent); }
 .proxy-check-flag { font-size: 16px; line-height: 1; }
 .proxy-check-btn.proxy-check-all { width: 112px; height: 36px; }
 .proxy-input-row .small-select { width: 78px; padding-left: 10px; padding-right: 22px; background-position: right 8px center; }
