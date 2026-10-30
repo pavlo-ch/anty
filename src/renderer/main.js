@@ -498,7 +498,7 @@ function setupEventListeners() {
 
   // Check proxy
   setProxyCheckState('idle');
-  document.getElementById('btn-check-proxy').addEventListener('click', checkCurrentProxy);
+  document.getElementById('btn-check-proxy').addEventListener('click', () => checkCurrentProxy());
   // Інший проксі в полі — старий результат перевірки до нього не стосується.
   document.getElementById('editor-proxy-value').addEventListener('input', () => setProxyCheckState('idle'));
   document.getElementById('editor-proxy-type').addEventListener('change', () => setProxyCheckState('idle'));
@@ -1833,7 +1833,13 @@ function setProxyCheckState(state, info = {}) {
 }
 
 /** Останній результат перевірки проксі цього профілю — зі списку проксі. */
+// Відкрив профіль — проксі перевіряється сам; результат молодший за 5 хвилин показується
+// як є, бо редактор перемальовується після кожної синхронізації.
+const PROXY_AUTO_CHECK_FRESH_MS = 5 * 60 * 1000;
+let proxyCheckInFlight = null; // id профілю, чий проксі зараз перевіряється
+
 async function showStoredProxyCheck(profile) {
+  if (proxyCheckInFlight && proxyCheckInFlight === profile?.id) { setProxyCheckState('checking'); return; }
   setProxyCheckState('idle');
   if (!profile?.proxy_id) return;
   let proxy = proxiesCache.find((p) => p.id === profile.proxy_id);
@@ -1842,6 +1848,9 @@ async function showStoredProxyCheck(profile) {
     proxy = proxiesCache.find((p) => p.id === profile.proxy_id);
   }
   if (!proxy || selectedProfileId !== profile.id) return;
+  // Старий результат нічого не каже про проксі зараз — замість нього одразу нова перевірка.
+  const checkedAt = proxy.last_check_at ? Date.parse(proxy.last_check_at.replace(' ', 'T') + 'Z') : 0;
+  if (!(Date.now() - checkedAt < PROXY_AUTO_CHECK_FRESH_MS)) { void checkCurrentProxy({ silent: true }); return; }
   if (proxy.last_check_status === 'ok') {
     setProxyCheckState('ok', { countryCode: proxy.last_check_country_code || countryCodeFromName(proxy.last_check_country), country: proxy.last_check_country, ip: proxy.last_check_ip });
   } else if (proxy.last_check_status === 'fail') {
@@ -1849,22 +1858,25 @@ async function showStoredProxyCheck(profile) {
   }
 }
 
-async function checkCurrentProxy() {
+/** silent — автоперевірка при відкритті профілю: результат лише на кнопці, без тостів. */
+async function checkCurrentProxy({ silent = false } = {}) {
   const proxyValue = document.getElementById('editor-proxy-value').value;
   if (!proxyValue) {
-    showToast('Enter proxy value first', 'error');
+    if (!silent) showToast('Enter proxy value first', 'error');
     return;
   }
 
   const typeOverride = document.getElementById('editor-proxy-type').value;
   const proxyData = parseProxyInput(proxyValue, typeOverride);
   if (!proxyData || !proxyData.host) {
-    showToast('Could not parse proxy — use host:port:user:pass or http://user:pass@host:port', 'error');
+    if (!silent) showToast('Could not parse proxy — use host:port:user:pass or http://user:pass@host:port', 'error');
     return;
   }
 
-  setProxyCheckState('checking');
   const profileId = selectedProfileId;
+  if (proxyCheckInFlight === profileId) return;
+  proxyCheckInFlight = profileId;
+  setProxyCheckState('checking');
   try {
     const result = await window.api.checkProxy(proxyData);
     if (selectedProfileId !== profileId) return;
@@ -1872,11 +1884,11 @@ async function checkCurrentProxy() {
       setProxyCheckState('ok', { countryCode: result.countryCode, country: result.country, ip: result.ip });
     } else {
       setProxyCheckState('fail', { error: result.error });
-      showToast(`Proxy check failed: ${result.error}`, 'error');
+      if (!silent) showToast(`Proxy check failed: ${result.error}`, 'error');
     }
     // Той самий проксі, що збережений у профілі, — результат іде і в список проксі.
     const profile = profiles.find((p) => p.id === profileId);
-    if (profile?.proxy_id && profile.proxy_host === proxyData.host && String(profile.proxy_port) === String(proxyData.port)) {
+    if (profile?.proxy_id && profile.proxy_host === proxyData.host) {
       const patch = result.success
         ? { last_check_status: 'ok', last_check_ip: result.ip || '', last_check_country: result.country || '', last_check_country_code: result.countryCode || '', last_check_error: '', last_check_at: utcStamp() }
         : { last_check_status: 'fail', last_check_ip: '', last_check_country: '', last_check_country_code: '', last_check_error: result.error || 'Proxy check failed', last_check_at: utcStamp() };
@@ -1887,8 +1899,10 @@ async function checkCurrentProxy() {
       } catch (_) {}
     }
   } catch (err) {
-    setProxyCheckState('fail', { error: err.message });
-    showToast('Proxy check error: ' + err.message, 'error');
+    if (selectedProfileId === profileId) setProxyCheckState('fail', { error: err.message });
+    if (!silent) showToast('Proxy check error: ' + err.message, 'error');
+  } finally {
+    if (proxyCheckInFlight === profileId) proxyCheckInFlight = null;
   }
 }
 
