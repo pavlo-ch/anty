@@ -1772,6 +1772,31 @@ async function saveProxy() {
 
 const ICON_PROXY_CHECK = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>`;
 
+/**
+ * Код країни з англійської назви ('Mexico' → 'MX'). Проксі, перевірені до 1.2.19,
+ * мають у базі лише назву, без коду.
+ */
+let countryCodeByName = null;
+function countryCodeFromName(name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return '';
+  if (!countryCodeByName) {
+    countryCodeByName = new Map();
+    try {
+      const names = new Intl.DisplayNames(['en'], { type: 'region' });
+      for (let a = 65; a <= 90; a += 1) {
+        for (let b = 65; b <= 90; b += 1) {
+          const code = String.fromCharCode(a, b);
+          const label = names.of(code);
+          // Перший код виграє: 'GB' раніше за зарезервований 'UK', 'RU' — за 'SU'.
+          if (label && label !== code && !countryCodeByName.has(label.toLowerCase())) countryCodeByName.set(label.toLowerCase(), code);
+        }
+      }
+    } catch (_) {}
+  }
+  return countryCodeByName.get(key) || '';
+}
+
 /** Прапор з коду країни: 'US' → 🇺🇸. */
 function flagFromCountryCode(code) {
   const cc = String(code || '').toUpperCase();
@@ -1818,7 +1843,7 @@ async function showStoredProxyCheck(profile) {
   }
   if (!proxy || selectedProfileId !== profile.id) return;
   if (proxy.last_check_status === 'ok') {
-    setProxyCheckState('ok', { countryCode: proxy.last_check_country_code, country: proxy.last_check_country, ip: proxy.last_check_ip });
+    setProxyCheckState('ok', { countryCode: proxy.last_check_country_code || countryCodeFromName(proxy.last_check_country), country: proxy.last_check_country, ip: proxy.last_check_ip });
   } else if (proxy.last_check_status === 'fail') {
     setProxyCheckState('fail', { error: proxy.last_check_error });
   }
@@ -3207,7 +3232,7 @@ function paintProxyList() {
       meta.push('checking...');
     } else if (p.last_check_status === 'ok') {
       if (p.last_check_ip) meta.push(escapeHtml(p.last_check_ip));
-      if (p.last_check_country) meta.push(`${flagFromCountryCode(p.last_check_country_code)} ${escapeHtml(p.last_check_country)}`.trim());
+      if (p.last_check_country) meta.push(`${flagFromCountryCode(p.last_check_country_code || countryCodeFromName(p.last_check_country))} ${escapeHtml(p.last_check_country)}`.trim());
       if (p.last_check_at) meta.push(tr('checked {0}', escapeHtml(formatTime(p.last_check_at))));
     } else if (p.last_check_status === 'fail') {
       meta.push(`<span class="fail-text">${escapeHtml(p.last_check_error || 'check failed')}</span>`);
