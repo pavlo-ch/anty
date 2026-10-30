@@ -966,10 +966,10 @@ body.platform-win32 .titlebar-btn.close:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
   height: 34px;
-  width: 96px;
-  padding: 0 8px;
+  width: 78px;
+  padding: 0 6px;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
