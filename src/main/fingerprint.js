@@ -565,7 +565,23 @@ function generateFingerprint(customUA, _profileOverride) {
   };
 }
 
+/**
+ * The font list as an array. Before 1.2.21 the editor saved the fonts mode by
+ * spreading the array into an object ({0: 'Arial', 1: …, mode}), and the
+ * injected fonts.check() then threw on fp.fonts.some — so read either shape.
+ */
+function fontList(fonts) {
+  if (Array.isArray(fonts)) return fonts.filter((f) => typeof f === 'string');
+  if (!fonts || typeof fonts !== 'object') return [];
+  return Object.keys(fonts)
+    .filter((k) => /^\d+$/.test(k))
+    .sort((a, b) => Number(a) - Number(b))
+    .map((k) => fonts[k])
+    .filter((f) => typeof f === 'string');
+}
+
 function buildInjectionScript(fingerprint) {
+  fingerprint = { ...fingerprint, fonts: fontList(fingerprint?.fonts) };
   // No client-hint / userAgentData payload is built here any more: Chrome derives
   // the whole set from the overridden UA string correctly on its own, including
   // the build's real GREASE brand and full version. See the userAgentData note in
@@ -968,7 +984,7 @@ function buildInjectionScript(fingerprint) {
   }
   
   // ===== 9. FONTS =====
-  if (document.fonts && document.fonts.check) {
+  if (fp.fonts.length > 0 && document.fonts && document.fonts.check) {
     const origCheck = document.fonts.check.bind(document.fonts);
     document.fonts.check = function(font, text) {
       const fontName = font.replace(/["']/g, '').split(',').map(f => f.trim());
@@ -1366,6 +1382,7 @@ module.exports = {
   parseUA,
   alignUAToInstalledChrome,
   buildInjectionScript,
+  fontList,
   FINGERPRINT_PROFILES,
   getLocaleByCountry,
   countryCodeToFlag,
