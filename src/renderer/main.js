@@ -753,7 +753,9 @@ function collectProfileEditorData() {
 
   if (canvasMode) fp = { ...fp, canvas: { ...fp.canvas, mode: canvasMode } };
   if (audioMode) fp = { ...fp, audio: { ...fp.audio, mode: audioMode } };
-  if (fontsMode) fp = { ...fp, fonts: { ...fp.fonts, mode: fontsMode } };
+  // The fonts mode lives beside the list: spreading the list into an object with
+  // a mode key broke the injected fonts.check() (it calls fp.fonts.some).
+  if (fontsMode) fp = { ...fp, fonts: fontListOf(fp.fonts), fontsMode };
   if (webrtcMode) fp = { ...fp, webrtc: { ...fp.webrtc, mode: webrtcMode } };
   if (mediaMode) fp = { ...fp, mediaDevices: { ...fp.mediaDevices, mode: mediaMode } };
   if (geoMode) {
@@ -1612,6 +1614,13 @@ async function checkCurrentProxy() {
   }
 }
 
+/** Список шрифтів масивом — і зі старого запису-обʼєкта {0: 'Arial', …, mode}. */
+function fontListOf(fonts) {
+  if (Array.isArray(fonts)) return fonts;
+  if (!fonts || typeof fonts !== 'object') return [];
+  return Object.keys(fonts).filter((k) => /^\d+$/.test(k)).sort((a, b) => a - b).map((k) => fonts[k]);
+}
+
 // ===== RENDERING =====
 function renderProfilesList(searchTerm = '') {
   const list = document.getElementById('profiles-list');
@@ -1870,7 +1879,7 @@ async function loadProfileEditor(id) {
     // Fingerprint mode selects (were never populated — changes appeared to work but reset on reopen)
     document.getElementById('editor-canvas-mode').value = fp.canvas?.mode || 'noise';
     document.getElementById('editor-audio-mode').value = fp.audio?.mode || 'noise';
-    document.getElementById('editor-fonts-mode').value = fp.fonts?.mode || 'emulate';
+    document.getElementById('editor-fonts-mode').value = fp.fontsMode || fp.fonts?.mode || 'emulate';
     document.getElementById('editor-webrtc-mode').value = fp.webrtc?.mode || 'disabled';
     document.getElementById('editor-media-mode').value = fp.mediaDevices?.mode || 'emulate';
     const geoMode = fp.geo?.mode || 'auto';
