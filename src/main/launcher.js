@@ -15,6 +15,7 @@ const extensionsLibrary = require('./extensions');
 const { buildInjectionScript, getLocaleByCountry, countryCodeToFlag, parseUA, alignUAToInstalledChrome } = require('./fingerprint');
 const { resolveChromeExecutable, candidatePaths } = require('./chrome-binary');
 const { resolveEngineExecutable, engineUsesJsInjection, buildEngineFlags } = require('./engine');
+const { profileAppExecutable, removeProfileApp, shortName } = require('./profile-app');
 const { getProfile, updateProfile, deleteProfile: deleteProfileRow, markProfileLaunched } = require('./database');
 const profileSync = require('./profile-sync');
 const warmup = require('./warmup');
@@ -1710,6 +1711,7 @@ async function deleteProfile(profileId, options = {}) {
 
   const userDataDir = getUserDataDir(numericId);
   try {
+    removeProfileApp(getDataDir(), numericId);
     if (fs.existsSync(userDataDir)) {
       fs.rmSync(userDataDir, { recursive: true, force: true });
     }
@@ -1780,6 +1782,8 @@ async function launchProfile(profileId, mainWindow) {
         '--disable-infobars',
         '--no-first-run',
         '--no-default-browser-check',
+        // Назва вікна = назва профілю: її показує панель задач Windows і перемикач вікон.
+        `--window-name=${shortName(profile.name)}`,
         '--disable-quic',
         '--disable-features=AsyncDns,UseDnsHttpsSvcbAlpn',
         // Stop WebRTC from gathering real-IP ICE candidates (srflx/host) that
@@ -1810,7 +1814,10 @@ async function launchProfile(profileId, mainWindow) {
       console.log(`[Launcher] Engine: ${engine} (${engineArgs.length} flags, JS injection off)`);
     }
     if (executablePath) {
-      launchOptions.executablePath = executablePath;
+      // macOS: у Dock вікно профілю підписане назвою профілю, а не «Google Chrome».
+      launchOptions.executablePath = (engine === 'chrome'
+        && profileAppExecutable({ executablePath, profileId, profileName: profile.name, dataDir: getDataDir() }))
+        || executablePath;
     } else {
       const installHint = process.platform === 'win32'
         ? 'Install Google Chrome from https://www.google.com/chrome and try again.'
