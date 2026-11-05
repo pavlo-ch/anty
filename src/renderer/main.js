@@ -472,6 +472,12 @@ function setupEventListeners() {
   // Platform selector → update start_page only
   document.getElementById('editor-platform')?.addEventListener('change', () => renderFbBlock());
   document.getElementById('btn-fb-connect')?.addEventListener('click', () => void connectFacebookToken());
+  document.getElementById('btn-fb-change')?.addEventListener('click', () => {
+    if (!selectedProfileId) return;
+    fbFormOpen.add(selectedProfileId);
+    renderFbBlock();
+    document.getElementById('fb-token-input')?.focus();
+  });
   document.getElementById('btn-fb-login')?.addEventListener('click', () => { if (selectedProfileId) void connectFacebook(selectedProfileId); });
   document.getElementById('editor-platform')?.addEventListener('change', (e) => {
     const platform = e.target.value;
@@ -1019,6 +1025,8 @@ function setFbState(id, state) {
   renderFbBlock();
 }
 
+const fbFormOpen = new Set(); // профілі, де поля токена розгорнули попри «Connected»
+
 function renderFbBlock() {
   const block = document.getElementById('fb-connect-block');
   if (!block) return;
@@ -1037,6 +1045,11 @@ function renderFbBlock() {
   else if (s?.kind === 'error' || s?.kind === 'unsynced') { text = s.text || 'Error'; cls = 'err'; }
   statusEl.textContent = text;
   statusEl.className = `fb-connect-status ${cls}`;
+  // Підключено — порожні поля токена лише збивали з пантелику (токен лежить на
+  // платформі, назад Anty його не показує): ховаємо їх за кнопкою.
+  const collapsed = s?.kind === 'connected' && !fbFormOpen.has(selectedProfileId);
+  document.getElementById('fb-connect-form').hidden = collapsed;
+  document.getElementById('btn-fb-change').hidden = !collapsed;
 }
 
 async function connectFacebookToken() {
@@ -1051,6 +1064,7 @@ async function connectFacebookToken() {
     const result = await window.api.fbConnectToken(id, { accessToken: tokenEl.value, adAccountId: accountEl.value });
     if (result?.success) {
       tokenEl.value = ''; // токен уже на платформі — у полі йому більше не місце
+      fbFormOpen.delete(id);
       setFbState(id, result.state);
       const st = result.state || {};
       showToast(`Facebook connected${st.fbUserName ? ': ' + st.fbUserName : ''} · ${st.adAccounts || 0} ad account${st.adAccounts === 1 ? '' : 's'}`, 'success');

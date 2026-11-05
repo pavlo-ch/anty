@@ -155,6 +155,8 @@
                 <label class="editor-label">Facebook → BlackAffiliate</label>
                 <span class="fb-connect-status" id="fb-connect-status"></span>
               </div>
+              <button class="fb-connect-change" id="btn-fb-change" hidden>Connect another token</button>
+              <div id="fb-connect-form">
               <div class="editor-row">
                 <div class="editor-field">
                   <input type="text" id="fb-token-input" class="editor-input" placeholder="Access token (EAA…)" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" />
@@ -168,6 +170,7 @@
                 <button class="btn btn-fb-login" id="btn-fb-login" title="Opens Meta's permission window in this profile — needs the Facebook app set up on the platform">Connect via Facebook login</button>
               </div>
               <div class="editor-hint">The token goes to the platform, encrypted and tied to your team. Anty doesn't keep it.</div>
+              </div>
             </div>
             <!-- Hidden legacy fields -->
             <select id="editor-folder" style="display:none"></select>

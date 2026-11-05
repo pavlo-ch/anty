@@ -726,6 +726,9 @@ body.platform-win32 .titlebar-btn.close:hover {
 .fb-connect-status.warn { color: var(--yellow); }
 .fb-connect-status.err { color: var(--red); }
 .fb-connect-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+#fb-connect-form[hidden], .fb-connect-change[hidden] { display: none; }
+.fb-connect-change { margin-top: 8px; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.fb-connect-change:hover { color: var(--accent); }
 .btn-fb-login { background: transparent; border: 1px solid rgba(255, 255, 255, 0.18); color: #c9cde0; }
 .btn-fb-login:hover { border-color: #1877f2; color: #fff; }
 
