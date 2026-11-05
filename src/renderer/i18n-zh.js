@@ -64,7 +64,6 @@ window.ANTY_I18N_DICTS['zh-CN'] = {
   "Check for a newer version": "检查新版本",
   "Check for updates": "检查更新",
   "Check proxy": "检测代理 IP",
-  "Connect another token": "连接其他令牌",
   "Checking": "检测中",
   "Check again": "再次检测",
   "Failed": "失败",
