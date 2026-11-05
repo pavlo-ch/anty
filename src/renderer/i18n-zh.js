@@ -477,7 +477,7 @@ window.ANTY_I18N_DICTS['zh-CN'] = {
   "The downloaded update file is gone. Downloading it again…": "已下载的更新文件不见了，正在重新下载……",
   "The installer was removed right after downloading — most likely by your antivirus. Download it from the releases page and run it.": "安装程序下载后立即被删除，很可能是杀毒软件所致。请从发布页面下载并运行。",
   "The profile launch was not confirmed. If Anty Browser is installed, allow the browser to open it and sign in to the same account. Version 1.2.6 or later is required for background launch. Otherwise, download or update the app below.": "未能确认浏览器环境已启动。如果已安装 Anty Browser，请允许浏览器打开它，并登录同一账号。后台启动需要 1.2.6 或更高版本。否则，请在下方下载或更新应用。",
-  "The token goes to the platform, encrypted and tied to your team. Anty doesn't keep it.": "访问口令会加密发送到平台，并与你的团队绑定。Anty 不会保存它。",
+  "The token is kept on the platform for your team and shown here.": "访问口令保存在平台上供你的团队使用，并在此显示。",
   "This is a required update. Install it to keep using Anty Browser.": "这是必需的更新。请安装后继续使用 Anty Browser。",
   "This is done": "新建的浏览器环境只需执行",
   "This is done once for a fresh profile.": "新建的浏览器环境只需执行一次。",

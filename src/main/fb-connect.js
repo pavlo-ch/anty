@@ -52,6 +52,8 @@ function toState(result, now = Date.now()) {
     fbUserName: b.fbUserName || null,
     adAccounts: Number(b.adAccounts || 0),
     expiresAt: b.expiresAt || null,
+    // Сам токен — щоб поле показувало, яким токеном профіль підключено.
+    accessToken: typeof b.accessToken === 'string' ? b.accessToken : '',
   };
   // Платформа віддає connected:false і для expired/revoked — статус поруч.
   if (!b.connected) {

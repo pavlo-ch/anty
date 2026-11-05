@@ -1037,6 +1037,12 @@ function renderFbBlock() {
   else if (s?.kind === 'error' || s?.kind === 'unsynced') { text = s.text || 'Error'; cls = 'err'; }
   statusEl.textContent = text;
   statusEl.className = `fb-connect-status ${cls}`;
+  // Поле показує токен, яким профіль підключено; те, що людина саме вписує, не чіпаємо.
+  const tokenEl = document.getElementById('fb-token-input');
+  if (tokenEl && document.activeElement !== tokenEl && tokenEl.dataset.shown !== `${selectedProfileId}:${s?.accessToken || ''}`) {
+    tokenEl.value = s?.accessToken || '';
+    tokenEl.dataset.shown = `${selectedProfileId}:${s?.accessToken || ''}`;
+  }
 }
 
 async function connectFacebookToken() {
@@ -1050,7 +1056,6 @@ async function connectFacebookToken() {
   try {
     const result = await window.api.fbConnectToken(id, { accessToken: tokenEl.value, adAccountId: accountEl.value });
     if (result?.success) {
-      tokenEl.value = ''; // токен уже на платформі — у полі йому більше не місце
       setFbState(id, result.state);
       const st = result.state || {};
       showToast(`Facebook connected${st.fbUserName ? ': ' + st.fbUserName : ''} · ${st.adAccounts || 0} ad account${st.adAccounts === 1 ? '' : 's'}`, 'success');
