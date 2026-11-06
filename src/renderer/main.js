@@ -999,20 +999,6 @@ const FB_POLL_EVERY_MS = 3000;
 const FB_POLL_FOR_MS = 5 * 60 * 1000;
 const fbPolling = new Set();
 
-function fbBadge(id) {
-  const s = fbStates.get(id);
-  if (!s) return '';
-  const accounts = `${s.adAccounts} ad account${s.adAccounts === 1 ? '' : 's'}`;
-  if (s.kind === 'connected') {
-    return `<span class="badge badge-fb ok" title="Facebook connected to BlackAffiliate${s.fbUserName ? ': ' + escapeHtml(s.fbUserName) : ''} · ${accounts}">f</span>`;
-  }
-  if (s.kind === 'expiring' || s.kind === 'expired') {
-    return `<span class="badge badge-fb warn" title="${s.kind === 'expired' ? 'Facebook access ended' : 'Facebook access ends soon'} — reconnect in the profile's Facebook block">f</span>`;
-  }
-  if (s.kind === 'waiting') return '<span class="badge badge-fb wait" title="Waiting for Facebook confirmation">f</span>';
-  return '';
-}
-
 function setFbState(id, state) {
   fbStates.set(id, state);
   renderProfilesList(document.getElementById('search-input')?.value || '');
@@ -1999,7 +1985,6 @@ function renderProfilesList(searchTerm = '') {
     const systemLabel = getProfileSystemLabel(fp);
     const countryFlag = fp.locale?.flag || '';
     const countryCode = fp.locale?.country || '';
-    const hasProxy = !!(p.proxy_host);
     
     return `
       <div class="profile-item ${isActive ? 'active' : ''} ${isRunningByOther ? 'other-running' : ''}" data-id="${p.id}" onclick="selectProfile(${p.id})">
@@ -2035,8 +2020,6 @@ function renderProfilesList(searchTerm = '') {
           <div class="profile-item-badges">
             <span class="badge badge-os" title="${escapeHtml(systemLabel)}">${getOsBadgeMarkup(fp)}</span>
             ${countryFlag ? `<span class="badge badge-country" title="${countryCode}">${countryFlag}</span>` : ''}
-            ${hasProxy ? `<span class="badge badge-proxy" title="Proxy active">⇄</span>` : ''}
-            ${fbBadge(p.id)}
           </div>
           <span class="profile-item-country">${p.created_by ? escapeHtml(p.created_by) : (countryCode || '')}</span>
           ${isRunningLocally ? '<span class="badge badge-status running">Running</span>' : ''}
