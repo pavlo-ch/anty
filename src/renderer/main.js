@@ -1907,7 +1907,9 @@ async function checkCurrentProxy({ silent = false } = {}) {
 }
 
 // ===== RENDERING =====
-function renderProfilesList(searchTerm = '') {
+// Без аргументу — те, що зараз у пошуку: десяток місць перемальовує список
+// (вибір профілю, синхронізація, зміна статусу), і жодне не має скидати фільтр.
+function renderProfilesList(searchTerm = document.getElementById('search-input')?.value || '') {
   const list = document.getElementById('profiles-list');
   const emptyState = document.getElementById('empty-state');
   const countEl = document.getElementById('search-count');
@@ -2037,7 +2039,10 @@ function selectProfile(id) {
   renderProfilesList();
   loadProfileEditor(id);
   const fbTokenEl = document.getElementById('fb-token-input');
-  if (fbTokenEl) fbTokenEl.value = ''; // токен одного профілю не має перейти до іншого
+  if (fbTokenEl) { // токен одного профілю не має перейти до іншого; свій renderFbBlock підставить знову
+    fbTokenEl.value = '';
+    delete fbTokenEl.dataset.shown;
+  }
   renderFbBlock();
   void refreshFacebookState(id);
 }
