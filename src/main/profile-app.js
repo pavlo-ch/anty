@@ -6,6 +6,11 @@
 //   • Frameworks і Resources — клони APFS (cp -c): місця не займають, копіюються
 //     за частку секунди. Симлінки не годяться: пісочниця GPU-процесу Chrome не
 //     відкриває фреймворк через шлях поза своїм бандлом, і Chrome падає.
+//   • Bundle id лишається Chrome-івський (com.google.Chrome). Свій id на кожен
+//     профіль означав для macOS нову програму, і кожен профіль питав дозволу
+//     на сповіщення («Chloe Stewart: сповіщення»); спільний id для всіх копій
+//     вішав Chrome на старті. З id Chrome діє вже даний Chrome дозвіл, а
+//     посилання macOS і далі відкриває /Applications/Google Chrome.app.
 //   • Змінений Info.plist ламає підпис Google, і macOS вбиває процес (SIGKILL),
 //     тож бандл підписується ad-hoc. Камеру це не зачіпає: TCC питає Anty
 //     (responsible process), а не Chrome; Keychain теж — Playwright дає
@@ -51,7 +56,7 @@ function profileAppExecutable({ executablePath, profileId, profileName, dataDir 
     const version = readVersion(source);
     const root = path.join(dataDir, 'profile-apps', `profile_${profileId}`);
     const marker = path.join(root, '.built');
-    const stamp = JSON.stringify({ name, version, source });
+    const stamp = JSON.stringify({ name, version, source, layout: 2 });
 
     const existing = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '';
     if (existing === stamp) {
@@ -74,7 +79,6 @@ function profileAppExecutable({ executablePath, profileId, profileName, dataDir 
     const plist = path.join(contents, 'Info.plist');
     execFileSync('plutil', ['-replace', 'CFBundleName', '-string', name, plist]);
     execFileSync('plutil', ['-replace', 'CFBundleDisplayName', '-string', name, plist]);
-    execFileSync('plutil', ['-replace', 'CFBundleIdentifier', '-string', `com.anty.profile.p${profileId}`, plist]);
     // Без ключа Keystone (оновлювача Google) копія не намагається оновлювати себе.
     try { execFileSync('plutil', ['-remove', 'KSProductID', plist]); } catch (_) {}
     try { execFileSync('xattr', ['-cr', bundle]); } catch (_) {}
